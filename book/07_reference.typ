@@ -145,24 +145,38 @@ accepted reply. The commit write precedes local application and later catch up.
 
 = Further study
 
-Start with the local paper `docs/lamport-paxos.pdf`. Then read Lamport's "Paxos
-Made Simple". Compare the state with ZooKeeper's Zab recovery and with the plain
-struct boundary of OmniPaxos. Read TigerStyle beside the Zig source. Its rules
-about bounds, assertions, initialization, and comments are especially relevant
-to consensus code. LibPaxos is useful for studying a small C core, preexecuted
-phase one windows, buffered transport, and the cost of heap based quorum state.
-MySQL XCom shows a larger production C and C++ design with compact reply sets.
+For readers who wish to dive deeper into the theoretical and engineering aspects of consensus, we recommend the following literature and implementations:
 
-Useful links:
+== Core Theoretical Papers
 
-- #link("https://lamport.azurewebsites.net/pubs/paxos-simple.pdf")
-- #link("https://cwiki.apache.org/confluence/display/ZOOKEEPER/Zab1.0")
-- #link("https://omnipaxos.com/")
-- #link("https://bitbucket.org/sciascid/libpaxos")
-- #link("https://dev.mysql.com/doc/dev/mysql-server/9.7.0/xcom__base_8h_source.html")
-- #link("https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md")
-- #link("https://typst.app/universe/package/fletcher")
-- #link("https://typst.app/universe/package/cetz")
+- *Leslie Lamport, "The Part-Time Parliament" (1998)*: The original Paxos paper, presenting the algorithm through the metaphor of a Greek island's legislature. Safe but notoriously difficult to read.
+- *Leslie Lamport, "Paxos Made Simple" (2001)*: A classic, much more direct explanation of Paxos derived from first principles.
+- *Heidi Howard et al., "Flexible Paxos: Quorum Intersection Revisited" (2016)*: A major breakthrough showing that Paxos does not require majorities for both phases—only that every Phase 1 (prepare) quorum intersects with every Phase 2 (accept) quorum. This allows cheap, small write quorums at the cost of larger recovery quorums.
+
+== Reconfiguration and Snapshots
+
+- *Leslie Lamport et al., "Reconfiguring a Replicated State Machine" (Vertical Paxos) (2009)*: Explains how to change configuration on the fly using auxiliary consensus instances to choose the configuration sequence.
+- *Diego Ongaro and John Ousterhout, "In Search of an Understandable Consensus Algorithm" (Raft) (2014)*: While presenting a different protocol, it provides an excellent discussion on joint consensus reconfiguration and log compaction via snapshots.
+
+== Alternative Protocols and Scaling
+
+- *M. Moraru et al., "There Is More Consensus in an Egalitarian Parliament" (EPaxos) (2013)*: An egalitarian Paxos variant where any replica can act as a leader for any command, resolving conflicts dynamically to achieve lower latency.
+- *Michael Whittaker et al., "Compartmentalized Paxos" (2020)*: Deconstructs the single-leader bottleneck by splitting the leader's tasks (batching, sequencing, replication) across independent, scale-out proxy nodes.
+
+== Real-World Implementations for Study
+
+- *TigerBeetle (Zig)*: A production distributed financial accounting database built in Zig. It utilizes a Viewstamped Replication/Paxos variant designed around the TigerStyle coding system (zero-allocation, static bounds).
+- *OmniPaxos (Rust)*: A modern Rust library that implements a Multi-Paxos engine, including active leader lease management and built-in reconfiguration.
+- *LibPaxos3 (C)*: A clean, minimal C library implementing a Multi-Paxos core with event-driven transport, useful for understanding low-level message buffering.
+
+== Recommended Web Resources
+
+- #link("https://lamport.azurewebsites.net/pubs/paxos-simple.pdf")[Lamport's Paxos Made Simple (PDF)]
+- #link("https://arxiv.org/abs/1608.06696")[Flexible Paxos Paper (arXiv)]
+- #link("https://github.com/tigerbeetle/tigerbeetle")[TigerBeetle Codebase on GitHub]
+- #link("https://omnipaxos.com/")[OmniPaxos Documentation]
+- #link("https://bitbucket.org/sciascid/libpaxos")[LibPaxos3 Core Repository]
+- #link("https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md")[TigerStyle Guide]
 
 = Closing note
 

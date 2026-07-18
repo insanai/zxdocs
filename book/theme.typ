@@ -15,7 +15,7 @@
 #let book(body) = {
   set document(
     title: "Part Time Parliament",
-    author: "Paxos Zig contributors",
+    author: "Vikran Rathore, Ronak Rathore",
     keywords: ("Paxos", "consensus", "Zig", "distributed systems"),
   )
   set page(
@@ -59,7 +59,7 @@
 
 #let title_page() = {
   set page(
-    margin: (x: 30mm, top: 40mm, bottom: 40mm),
+    margin: (x: 30mm, top: 25mm, bottom: 25mm),
     header: none,
     background: rect(width: 100%, height: 100%, fill: rgb("fafbfc")),
   )
@@ -68,19 +68,30 @@
     #text(size: 28pt, weight: "bold", fill: rgb("172033"))[Part Time Parliament]
     #v(4mm)
     #text(size: 14pt, fill: rgb("2855a6"))[A Literate Guide to Paxos in Zig]
-    #v(20mm)
+    #v(10mm)
     #cetz.canvas(length: 1cm, {
       import cetz.draw: *
-      let r = 1.8
-      circle((-0.9, 0.6), radius: r, fill: rgb("eaf0fbc0"), stroke: 1.2pt + rgb("2855a6"))
-      circle((0.9, 0.6), radius: r, fill: rgb("eaf7f0c0"), stroke: 1.2pt + rgb("27734d"))
-      circle((0.0, -0.8), radius: r, fill: rgb("fff5dcc0"), stroke: 1.2pt + rgb("9a6200"))
-      content((-2.0, 1.8), text(size: 9pt, weight: "bold", fill: rgb("2855a6"))[Quorum A])
-      content((2.0, 1.8), text(size: 9pt, weight: "bold", fill: rgb("27734d"))[Quorum B])
-      content((0.0, -2.4), text(size: 9pt, weight: "bold", fill: rgb("9a6200"))[Quorum C])
-      content((0.0, 0.1), text(size: 8.5pt, weight: "bold", fill: rgb("172033"))[Witness])
+      let r = 1.6
+      circle((-0.8, 0.5), radius: r, fill: rgb("eaf0fbc0"), stroke: 1.2pt + rgb("2855a6"))
+      circle((0.9, 0.5), radius: r, fill: rgb("eaf7f0c0"), stroke: 1.2pt + rgb("27734d"))
+      circle((0.0, -0.7), radius: r, fill: rgb("fff5dcc0"), stroke: 1.2pt + rgb("9a6200"))
+      content((-1.8, 1.5), text(size: 8.5pt, weight: "bold", fill: rgb("2855a6"))[Quorum A])
+      content((1.8, 1.5), text(size: 8.5pt, weight: "bold", fill: rgb("27734d"))[Quorum B])
+      content((0.0, -2.1), text(size: 8.5pt, weight: "bold", fill: rgb("9a6200"))[Quorum C])
+      content((0.0, 0.1), text(size: 8pt, weight: "bold", fill: rgb("172033"))[Witness])
     })
-    #v(22mm)
+    #v(5mm)
+    #box(
+      inset: (x: 10pt, y: 6pt),
+      radius: 4pt,
+      fill: rgb("fafbfc"),
+      stroke: 0.5pt + rgb("d4d9e2"),
+    )[
+      $ cal(Q) = { Q ⊆ V : |Q| >= floor(|V| / 2) + 1 } $
+      #v(2pt)
+      $ forall Q_1, Q_2 in cal(Q) : Q_1 ∩ Q_2 != ∅ $
+    ]
+    #v(10mm)
     #box(
       inset: (x: 14pt, y: 10pt),
       radius: 4pt,
@@ -89,10 +100,12 @@
     )[
       #text(size: 10pt, fill: rgb("2855a6"))[Paxos protocol design, optimization, and implementation]
     ]
-    #v(16mm)
+    #v(10mm)
     #text(size: 9.5pt, fill: rgb("5c6980"))[Version 0.1.0]
     #v(2mm)
-    #text(size: 9.5pt, fill: rgb("5c6980"))[Paxos Zig contributors]
+    #text(size: 10.5pt, weight: "bold", fill: rgb("172033"))[Vikran Rathore]
+    #v(1mm)
+    #text(size: 8.5pt, fill: rgb("5c6980"))[With assistance from Ronak Rathore]
   ]
 }
 
