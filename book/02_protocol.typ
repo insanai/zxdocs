@@ -10,133 +10,111 @@
 
 == The four roles
 
-Paxos names proposers, acceptors, and learners. Applications add clients. One
-process may perform all four roles. The names describe duties, not machines.
+To build a consensus system, we divide the work into four distinct roles: *Proposers*, *Acceptors*, *Learners*, and *Clients*. Although a production server (like a node in our library) usually performs all of these roles at the same time to save resources, they are conceptually completely separate.
 
 #book_figure(
-  [A client supplies intent. Paxos orders that intent. The state machine gives
-  the intent application meaning.],
+  [A client supplies the intent (what we want to do). Paxos orders that intent.
+  The state machine executes the ordered commands, turning them into meaningful results.],
   role_map(),
 )
 
-The proposer owns one ballot number. The acceptor owns durable promises and
-votes. The learner owns knowledge of chosen values. A client owns the request
-identity that lets it retry safely.
+Let us break down what each role is thinking and what it must remember:
+
++ *Clients*: The clients want to get work done. A client submits a command (e.g., `set x = 10`) and expects a response. If the network drops a message, the client must retry. To prevent executing the same command twice, the client attaches a unique `client_id` and `request_id` to its request.
++ *Proposers (Candidates/Leaders)*: Proposers are the active orchestrators. They run campaigns to become the leader, choose values, and drive consensus. A proposer does not need stable storage to ensure safety after a crash; if it restarts, it can simply start a new campaign with a higher ballot.
++ *Acceptors (The Parliament)*: Acceptors are the passive voters. They act as the stable memory of the system. They receive queries, make promises, write votes to disk, and reply to proposers. *Acceptors must never forget what they have written to disk.*
++ *Learners*: Learners are the observers. They do not vote. They listen for chosen decisions and apply them to the local application state machine (such as a key-value store or database).
 
 #table(
-  columns: (auto, 1fr, 1fr),
-  table.header([*Role*], [*Question*], [*Durable fact*]),
-  [Proposer], [Which value may this ballot propose?], [No proposer state is
-    required for safety after a crash.],
-  [Acceptor], [May I vote, and what did I vote for?], [Highest promise and last
-    accepted vote.],
-  [Learner], [Which value was chosen?], [Known commits and applied index.],
-  [Client], [Did my logical request execute?], [Stable client and request IDs.],
+  columns: (auto, 1fr, 1.2fr),
+  table.header([*Role*], [*Key Question*], [*Durable State on Disk*]),
+  [Proposer], [Which value am I allowed to propose?], [None (volatile). Re-campaigning on reboot is safe.],
+  [Acceptor], [Am I allowed to vote, and what did I vote for?], [Highest promised ballot, and highest accepted vote.],
+  [Learner], [Which values have been chosen?], [Delivered slot prefix (applied index).],
+  [Client], [Did my request succeed?], [Stable transaction record.],
 )
 
-== Phase one
+== Phase one: The Election and Query
 
-=== Prepare
+Phase one is the leader election and recovery phase. A candidate cannot propose a value out of thin air. First, it must ask the acceptors what they have already done.
 
-The candidate chooses a ballot greater than every ballot it has attempted,
-promised, or observed in a rejection. It sends:
+=== Step 1: Prepare
+
+A candidate chooses a ballot number higher than any it has seen so far (say, `(round = 1, node = 1)`). It sends a `prepare` message to all acceptors:
 
 ```text
 prepare { ballot }
 ```
 
-The message contains no value. This is important. The candidate does not yet
-know whether it may use the client's value.
+Notice that this message contains no value! The candidate is not yet proposing `olive = 7`. It is simply querying the acceptors.
 
-=== Promise
+=== Step 2: Promise
 
-An acceptor compares the prepare ballot with its durable promise.
+When an acceptor receives a `prepare` message with ballot $B$, it compares $B$ with the highest ballot it has ever promised ($P_("max")$).
 
-#table(
-  columns: (1fr, 1fr, 1fr),
-  table.header([*Comparison*], [*Action*], [*Reason*]),
-  [New ballot is lower.], [Send `nack`.], [An earlier promise forbids the vote.],
-  [New ballot is equal.], [Repeat the reply.], [The message is a duplicate.],
-  [New ballot is greater.], [Persist the promise, then reply.], [A reply must
-    survive restart.],
-)
-
-For one slot, the reply contains either no accepted vote or one pair:
+*   *If $B < P_("max")$*: The acceptor ignores or rejects the prepare by sending a `nack` (negative acknowledgement).
+*   *If $B >= P_("max")$*: The acceptor makes a solemn promise. It writes $B$ to its durable storage as its new promise ($P_("max") = B$). Once this write is synced to disk, the acceptor replies with a `promise` message:
 
 ```text
 promise {
-    ballot,
-    accepted_ballot,
-    accepted_value,
+    ballot = B,
+    accepted_ballot = B_last,
+    accepted_value = V_last
 }
 ```
 
-The word "promise" has exact force. After promising ballot 11, the acceptor
-will not accept ballot 10. It may accept ballot 11 or 12.
+The promise has a powerful meaning: *"I promise never to accept any future proposal that has a ballot number lower than $B$. Also, here is the highest ballot I have accepted so far ($B_("last")$), along with the value I voted for ($V_("last")$)."*
 
-#warning([Never reply first], [
-  If the promise reply reaches the candidate before the disk write is durable,
-  a crash may erase the promise. Another proposer can then collect a vote that
-  should have been forbidden.
+#warning([Sync before you speak], [
+  An acceptor must never send a `promise` reply until the promise is written to durable disk. If it replies first, and then crashes before the disk write completes, it might reboot and vote for a lower ballot, breaking the quorum intersection guarantee!
 ])
 
-=== Complete quorum replies
+=== Step 3: Value Selection
 
-The candidate waits for a quorum. It does not wait for every member. Waiting for
-all would let one failed member stop progress.
+The candidate waits for a quorum of complete promise replies. Once it has a quorum, it examines the replies:
 
-For a single slot, each reply is one message. For the bounded Multi Paxos log,
-one reply may contain many accepted entries. The library sends one entry message
-per accepted slot and a final count. This count lets the receiver detect a final
-marker that arrived before an entry.
++   *If no acceptor has ever accepted a value*: The candidate is free to propose its own client value (e.g., `olive = 7`).
++   *If any acceptor has accepted a value*: The candidate is *forced* to select the value associated with the highest accepted ballot number reported in the replies.
 
-We shall return to that detail in Part III.
+The candidate is now the prepared leader. It can proceed to Phase Two.
 
-=== Choose a value
+== Phase two: Proposing and Voting
 
-The candidate examines the complete quorum.
+Now that the leader knows what was chosen in the past, it can safely write the future.
 
-```text
-if no accepted vote was reported:
-    choose the client value
-else:
-    choose the value from the greatest accepted ballot
-```
+=== Step 4: Accept
 
-The candidate is now a leader for this ballot. It may begin phase two.
-
-== Phase two
-
-=== Accept
-
-The leader sends:
+The leader broadcasts its proposal to all acceptors:
 
 ```text
-accept {
-    ballot,
-    slot,
-    value,
-}
+accept { ballot, slot, value }
 ```
 
-An acceptor again checks its promise. This second check is necessary. A higher
-prepare may have arrived after the phase one reply.
+=== Step 5: Accepted
 
-If the ballot is current or greater, the acceptor persists the ballot and value.
-Only then does it send:
+When an acceptor receives the `accept` message with ballot $B$ and value $V$, it checks its promise one more time. Why? Because another candidate might have campaigned in the split second between Phase One and Phase Two!
+
+*   *If $B < P_("max")$*: The acceptor rejects the vote and replies with a `nack`.
+*   *If $B >= P_("max")$*: The acceptor accepts the vote. It writes the accepted ballot and value to disk durably:
+    $ "accepted_ballot" = B, quad "accepted_value" = V $
+    Once the write is synced, it replies to the leader:
+    ```text
+    accepted { ballot, slot }
+    ```
+
+=== Step 6: Commit
+
+When the leader collects a quorum of `accepted` votes for its ballot and slot, the value is *chosen*. The leader writes the commit to its local ledger and broadcasts a `commit` message to all nodes (who act as learners):
 
 ```text
-accepted { ballot, slot }
+commit { slot, value }
 ```
 
-If the ballot is lower, it sends a rejection with the highest promise it knows.
+Upon receiving `commit`, the learners safely apply the value to their state machines.
 
-=== Local acceptance
+== Local acceptance optimization
 
-The leader is also an acceptor. It need not send a network message to itself.
-The Zig library writes the local acceptance directly into the effect batch. It
-then sends accept messages only to remote peers. This saves one outbound message
-and still makes the write before send order explicit.
+A leader node is also an acceptor. In our Zig library, we optimize this by writing the leader's own vote directly to its local disk without sending a network loopback packet to itself:
 
 ```zig
 self.durable.promised = self.ballot;
@@ -151,159 +129,66 @@ effects.addWrite(.{ .accept = .{
 } });
 ```
 
-The local acknowledgement is then marked in memory. A three node leader needs
-one remote acknowledgement to reach a quorum of two. It still sends to both
-peers so the other replica can catch up.
-
-=== Chosen and learned
-
-When a quorum has accepted the same ballot and value, the value is chosen. The
-leader records a commit and sends the value to peers.
-
-A commit message is evidence supplied by a correct Paxos participant. It does
-not carry a magic proof. In the crash fault model, nodes follow the algorithm,
-so a leader announces commit only after a quorum. A Byzantine design would need
-signed quorum evidence or another certificate.
+This local write count as the first vote in our quorum, meaning a three-node leader only needs one remote peer to respond to reach a majority of two!
 
 == A complete trace
 
-Let nodes 1, 2, and 3 begin empty. Node 1 proposes `tea` with ballot `(1, 1)`.
+Let us watch this dance in action. Nodes 1, 2, and 3 start empty. Node 1 tries to propose `tea` using ballot `(1, 1)`.
 
 #transcript((
-  [1], [N1], [Creates ballot `(1, 1)` and sends prepare to all three nodes.],
-  [2], [N1], [Persists promise `(1, 1)` before its local promise reply.],
-  [3], [N2], [Persists promise `(1, 1)` and reports no accepted value.],
-  [4], [N1], [Has a quorum of complete promises. No old value exists.],
-  [5], [N1], [Persists local acceptance of `tea` in slot 1.],
-  [6], [N1], [Sends accept for `tea` to N2 and N3.],
-  [7], [N2], [Persists the acceptance and replies accepted.],
-  [8], [N1], [Local N1 plus remote N2 form a quorum. `tea` is chosen.],
-  [9], [N1], [Persists commit and sends commit to N2 and N3.],
-  [10], [All], [Release slot 1 to their state machines when learned.],
+  [1], [N1], [Chooses ballot `(1, 1)` and sends `prepare` to all nodes.],
+  [2], [N1], [Writes promise `(1, 1)` to its own disk before replying locally.],
+  [3], [N2], [Receives `prepare`, writes promise `(1, 1)` to disk, and replies with no past votes.],
+  [4], [N1], [Collects promises from N1 and N2 (a quorum). No old value was reported.],
+  [5], [N1], [Proposes `tea`. Writes acceptance of `tea` locally to disk.],
+  [6], [N1], [Sends `accept` for `tea` to N2 and N3.],
+  [7], [N2], [Checks promise, writes acceptance of `tea` to disk, and replies `accepted`.],
+  [8], [N1], [Sees two acceptances (N1, N2). `tea` is officially chosen!],
+  [9], [N1], [Writes `commit` to disk and broadcasts `commit` to N2 and N3.],
+  [10], [All], [Learn the commit and feed `tea` to their state machines.],
 ))
 
-N3 may receive its accept after the value is already chosen. Its vote is useful
-for redundancy but is not needed for the fact of choice.
+== Rejection and competing campaigns
 
-=== Message cost
+What happens if Node 2 tries to campaign with ballot `(2, 2)` while Node 1 is leading?
 
-Election is excluded from the steady path. For one new value on three nodes:
+When Node 2 sends `prepare` with ballot `(2, 2)` to Node 1, Node 1 compares it with its own active ballot `(1, 1)`. Since `(2, 2) > (1, 1)`, Node 1 yields! It accepts the promise, updates its local `highest_observed_round` to round 2, and steps down to become a follower.
 
-#table(
-  columns: (1fr, auto, 1fr),
-  table.header([*Step*], [*Messages*], [*Comment*]),
-  [Accept to remote peers], [2], [The leader accepts locally.],
-  [Accepted replies], [2], [One reply completes a quorum.],
-  [Commit to remote peers], [2], [The leader learns locally.],
-  [Total], [6], [No serialization or transport framing included.],
-)
-
-== Duplicate and reordered messages
-
-The network is allowed to repeat every message. We therefore ask whether each
-handler is idempotent.
-
-=== Duplicate prepare
-
-If the ballot equals the durable promise, the acceptor repeats its report. It
-does not write a second promise. A reply that was lost can therefore be retried.
-
-=== Duplicate accept
-
-If the same ballot, slot, and value were already accepted, the acceptor repeats
-the acknowledgement without another write. If the same ballot and slot carry a
-different value, the library returns `error.ConflictingValue`. One unique ballot
-must not have two values.
-
-=== Duplicate acknowledgement
-
-Acknowledgements are stored by member index in a fixed Boolean array. Repeating
-one does not create a second voter.
-
-=== Duplicate commit
-
-The same value is harmless. A different value for an already committed slot is
-`error.ConflictingCommit`. The error marks a violated safety boundary.
-
-=== An old accept arrives late
-
-The acceptor compares it with the highest promise. A lower ballot receives a
-rejection. The old message cannot turn time backward.
-
-#exercise([8.1], [
-  List every durable write in the complete trace. For each write, name the first
-  outbound message that would be unsafe if it left before that write completed.
-])
-
-== Rejection and another campaign
-
-A rejection carries two ballots.
+If Node 1 later tries to propose a value, the acceptors will reply with `nack`:
 
 ```text
-nack {
-    rejected,
-    promised,
-}
+nack { rejected = (1, 1), promised = (2, 2) }
 ```
 
-The candidate acts only if `rejected` is its current ballot and `promised` is
-greater. It becomes a follower and remembers the observed round. Its next
-campaign chooses a round above that value.
+This tells Node 1: *"Your ballot was rejected because I have already promised a higher ballot."* Node 1 updates its round and waits for its election timeout before trying again.
 
-The rejection itself is not a promise made by the receiving node. The receiver
-must not copy another node's promise into its own durable promise. The library
-keeps `highest_observed_round` as volatile campaign guidance.
+== Liveness and the dueling leaders
 
-== Progress and the distinguished proposer
+What if two nodes campaign back and forth endlessly?
+- N1 prepares ballot `(1, 1)`. Acceptors promise `(1, 1)`.
+- N2 prepares ballot `(2, 2)`. Acceptors promise `(2, 2)`.
+- N1 tries to send `accept` for `(1, 1)` → Rejected (promised `(2, 2)`).
+- N1 prepares ballot `(3, 1)`. Acceptors promise `(3, 1)`.
+- N2 tries to send `accept` for `(2, 2)` → Rejected (promised `(3, 1)`).
 
-Safety does not require one leader. Two candidates may prepare higher and higher
-ballots forever. Each prevents the other's accept phase from finishing. No two
-values are chosen, but no value is chosen either.
+This is a *liveness hazard* (dueling leaders). To resolve this, our library contains no internal timers or randomized election protocols; instead, it exposes the control of campaigns to the host application via ticks. The host can use randomized timeouts (like Raft) or a distinguished leader election lease to ensure only one proposer campaigns at a time.
 
-Progress needs an eventual distinguished proposer. This is usually supplied by
-a failure detector and randomized timeouts. The detector may be wrong for a
-while. That affects speed, not safety.
+== Crash points and recovery
 
-The library contains no clock. The host decides when to call `campaign`. This
-keeps time out of the safety core and lets a simulator control elections exactly.
-
-#callout([The liveness assumption], [
-  A quorum can exchange messages, and after some time one candidate starts a
-  ballot that no higher candidate interrupts.
-], kind: "idea")
-
-== Crash points
-
-We now inspect the dangerous moments.
+Let us inspect what happens if a node crashes at any point in the trace.
 
 #table(
-  columns: (1.15fr, 1fr, 1.5fr),
-  table.header([*Crash point*], [*Durable state*], [*Recovery*]),
-  [Before promise sync], [Old promise.], [No promise reply was allowed to leave.],
-  [After promise sync, before reply], [New promise.], [A repeated prepare gets a
-    valid reply.],
-  [Before accept sync], [No new vote.], [No accepted reply was allowed to leave.],
-  [After accept sync, before reply], [New vote.], [Phase one of a later leader
-    discovers it.],
-  [After quorum, before commit], [Votes exist on a quorum.], [A later leader must
-    recover the chosen value.],
-  [After commit sync, before send], [Local commit.], [Catch up sends it later.],
+  columns: (1.2fr, 1.2fr, 1.6fr),
+  table.header([*Crash Point*], [*Disk State*], [*Recovery Behavior*]),
+  [Before promise write completes], [Old promise.], [The prepare request is lost. The leader will retry.],
+  [After promise write, before reply], [New promise.], [Leader prepares again. Acceptor replies with its saved promise.],
+  [Before accept write completes], [No vote.], [The proposal is lost. The leader will retry.],
+  [After accept write, before reply], [Vote is saved.], [A future leader's prepare phase will discover this vote.],
+  [After quorum, before commit], [Votes are saved on quorum.], [A future leader is forced to recover and commit this value.],
 )
 
-This table is the operational form of the proof. A system that cannot explain a
-crash at each row is not ready to run Paxos.
+This table shows the elegance of Paxos safety: *no matter where the power cord is pulled, the system recovers to a safe, consistent state.*
 
-== One decision as a library instance
-
-Classic Paxos is the bounded protocol with one slot.
-
-```zig
-const Synod = paxos.Protocol(Command, .{
-    .max_members = 3,
-    .max_slots = 1,
-});
-```
-
-Campaign once. Propose once. After slot 1, `propose` returns
-`error.SlotLimitReached`. The next part shows how independent decisions form a
-log and how one successful phase one can serve many of them.
+#exercise([8.1], [
+  Look at Step 8 in the complete trace. If Node 1 crashes right after writing `commit` locally but before sending `commit` to Node 2 and Node 3, has `tea` been chosen? Can a future leader change the value in slot 1 to `coffee`?
+])
