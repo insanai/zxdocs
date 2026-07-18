@@ -1,3 +1,5 @@
+#import "@preview/cetz:0.5.2" as cetz
+
 #let ink = rgb("172033")
 #let blue = rgb("2855a6")
 #let blue_light = rgb("eaf0fb")
@@ -57,11 +59,57 @@
 
 #let title_page() = {
   set page(
-    margin: 0pt,
+    margin: (x: 30mm, top: 35mm, bottom: 35mm),
     header: none,
-    background: image("cover.jpg", width: 100%, height: 100%, fit: "cover"),
+    background: rect(width: 100%, height: 100%, fill: rgb("0e1626")),
   )
-  []
+  align(center)[
+    #v(5mm)
+    #text(size: 28pt, weight: "bold", fill: white)[Part Time Parliament]
+    #v(4mm)
+    #text(size: 14pt, fill: rgb("4f8fff"))[A Literate Guide to Paxos in Zig]
+    #v(16mm)
+    #cetz.canvas(length: 1cm, {
+      import cetz.draw: *
+      let n_color = rgb("4f8fff")
+      let e_color = rgb("203a60")
+      circle((0, 0), radius: 3.5, stroke: 1pt + e_color)
+      circle((0, 0), radius: 2.2, stroke: 0.5pt + e_color)
+      let pts = (
+        (0.0, 3.5),
+        (3.328, 1.08),
+        (2.057, -2.83),
+        (-2.057, -2.83),
+        (-3.328, 1.08),
+      )
+      for p1 in pts {
+        for p2 in pts {
+          if p1 != p2 {
+            line(p1, p2, stroke: 0.6pt + e_color)
+          }
+        }
+      }
+      for p in pts {
+        circle(p, radius: 0.28, fill: rgb("0e1626"), stroke: 1.5pt + n_color)
+        circle(p, radius: 0.08, fill: n_color, stroke: none)
+      }
+      circle((0, 0), radius: 0.6, fill: rgb("173f2a"), stroke: 1.5pt + rgb("27734d"))
+      content((0, 0), text(size: 8pt, fill: rgb("43b87a"), weight: "bold")[Chosen])
+    })
+    #v(16mm)
+    #box(
+      inset: (x: 14pt, y: 10pt),
+      radius: 4pt,
+      fill: rgb("16243d"),
+      stroke: 0.7pt + rgb("233c66"),
+    )[
+      #text(size: 10pt, fill: rgb("a5c7f7"))[Paxos protocol design, optimization, and implementation]
+    ]
+    #v(12mm)
+    #text(size: 9.5pt, fill: rgb("8898b3"))[Version 0.1.0]
+    #v(2mm)
+    #text(size: 9.5pt, fill: rgb("8898b3"))[Paxos Zig contributors]
+  ]
 }
 
 #let part_page(number, title, summary) = {
