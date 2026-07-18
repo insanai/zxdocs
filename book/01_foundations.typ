@@ -10,101 +10,80 @@
 
 == The empty ledger
 
-Suppose that three librarians keep copies of one ledger. The next line is empty.
-A visitor asks them to write `olive = 7`. Another visitor asks them to write
-`olive = 9`. A librarian may leave the room. A messenger may lose a note. Notes
-that do arrive are exact.
+Imagine three librarians sitting in separate rooms, each holding a copy of the same ledger. The next line of this ledger is currently blank, waiting for a decision. Now, two visitors arrive at the library. The first visitor sends a messenger to the librarians asking them to write `olive = 7` on that blank line. At the same time, the second visitor sends another messenger asking them to write `olive = 9`.
 
-The required result is modest. We do not require a value to be chosen at every
-moment. We require that if a value is chosen, no other value can ever be chosen
-for that line.
+To make matters worse, the librarians cannot talk directly to each other; they can only send handwritten notes back and forth via messengers. These messengers are notorious for losing notes, falling asleep, or delivering them out of order. However, we assume that when a note does arrive, its content is exact—messengers may lose messages, but they do not alter the words on them.
 
-This distinction is our first useful tool.
+Our goal is deceptively simple: we want the librarians to agree on exactly one value for this blank line. We do not require them to reach a decision immediately (especially if all messengers are lost in a storm). What we *do* require is absolute safety: if any librarian concludes that a value has been chosen, no other librarian must ever conclude that a different value was chosen for that same line.
+
+This distinction between safety ("nothing bad ever happens") and liveness ("something good eventually happens") is our first and most important tool.
 
 #definition([Safety], [
   Nothing bad happens. For Paxos, two different values are never chosen for the
-  same decision.
+  same ledger slot. Once a value is chosen, it is locked forever.
 ])
 
-#definition([Progress], [
+#definition([Liveness], [
   Something good eventually happens. For Paxos, a proposed value is eventually
-  chosen when a quorum can communicate and one candidate remains active long
-  enough.
+  chosen when a quorum of nodes can communicate and one leader remains active long
+  enough to coordinate them.
 ])
 
-A stopped system can be safe. It is not useful, but it has not contradicted
-itself. This fact lets us design safety without guessing how long a message may
-take.
+A stopped system is perfectly safe. It does no work, but it never contradicts itself. This fact lets us design safety rules first, without guessing how long a message might take to cross the network.
 
 === Three tempting answers
 
-The first answer is "ask everybody." It works until one librarian leaves. One
-missing reply stops all work.
+If we try to solve this consensus problem, we quickly run into three intuitive but flawed approaches:
 
-The second answer is "ask any two." This is better. Any two of three form a
-majority. Yet we have not said what a librarian remembers. If the two librarians
-forget their earlier answer after a restart, a later pair can choose another
-value.
+1. *The Unanimous Vote ("Ask Everyone")*: We could require all three librarians to agree before writing a value. This works perfectly until one librarian leaves the room or falls ill. Now, the system is permanently stuck because we cannot obtain the final vote.
+2. *The Free Majority ("Ask Any Two")*: Since two out of three form a majority, we might allow any two librarians to write a value. But what happens if they vote, restart their machines, and forget their previous votes? A later pair of librarians could meet and write a different value, violating safety.
+3. *The Single Leader ("Designate a Dictator")*: We can appoint one librarian as the sole leader who decides all values. But what happens when the leader crashes? How does a newly elected leader safely discover what the old leader might have already decided and committed?
 
-The third answer is "let one leader decide." This moves the question. How does a
-new leader learn what the old leader may already have decided?
-
-All three answers contain a piece of Paxos. We need a quorum, durable memory,
-and a leader recovery rule. None is sufficient alone.
+Each of these attempts contains a piece of the final solution. We need a *quorum* of nodes to survive failures, *durable memory* to prevent nodes from forgetting their votes, and a *leader election rule* that respects past decisions.
 
 #exercise([1.1], [
-  In a cluster of five nodes, how many nodes form a majority? How many may be
-  unavailable while progress remains possible?
-], hint: [Compute `floor(N / 2) + 1`.])
+  In a cluster of five nodes, how many nodes form a majority? How many nodes may be
+  completely offline while the system remains capable of making new progress?
+], hint: [Compute `floor(N / 2) + 1` for the majority size.])
 
 === The failure model
 
-We assume crash faults.
+To build a consensus system that we can prove correct, we must define the rules of the universe in which it operates. We adopt the *Crash-Recovery* model:
 
-+ A node follows the algorithm while it runs.
-+ A node may stop at any instruction.
-+ A node may restart from data that reached stable storage.
-+ A message may be lost, delayed, duplicated, or reordered.
-+ A delivered message is not corrupted.
++ *Honesty*: A node follows the algorithm exactly while it is running. It does not act maliciously, invent messages, or lie.
++ *Halt*: A node may stop executing at any instruction (a crash).
++ *Recovery*: A node may restart at any time. It recover its state from data written to stable storage (such as a disk journal).
++ *Asynchronous Network*: The network can delay, duplicate, lose, or reorder messages. However, any delivered message is uncorrupted.
 
-We do not assume that clocks agree. We do not assume a maximum message delay.
-We do not defend against a node that invents votes or sends two lies. That is a
-Byzantine problem and needs a different protocol.
+If a node could lie or act maliciously, we would be in the *Byzantine* model, which requires more complex protocols and larger quorums. Paxos assumes nodes are correct but unreliable.
 
 #warning([The disk is part of the proof], [
-  A promise that was sent and then forgotten is not a promise. If an acceptor
-  replies before its state is durable, a restart can break quorum intersection.
+  A promise that was sent and then forgotten is a lie. If an acceptor replies to
+  a leader before its state is durably written to disk, a sudden power failure
+  can erase its memory, allowing it to violate its promise upon reboot.
 ])
 
 == Quorums
 
-A quorum is a set large enough that every two quorums share a member. For equal
-voters, a strict majority has this property.
+How do we make progress when some nodes are dead? We use quorums. A quorum is a subset of nodes large enough that any two quorums must share at least one node. If we use simple majorities, this property is guaranteed mathematically.
 
 #book_figure(
-  [Two majority quorums overlap. The shared node carries knowledge from one
-  ballot to the next.],
+  [Two majority quorums overlap. The shared node acts as a witness, carrying
+  knowledge of past decisions into the future.],
   quorum_picture(),
 )
 
-For three nodes, every quorum has two nodes. The possible quorums are
-`{A1, A2}`, `{A1, A3}`, and `{A2, A3}`. Pick any two of those sets. Their
-intersection is not empty.
+Consider three nodes: $A$, $B$, and $C$. The possible majority quorums of size two are:
+$$ \{A, B\}, \quad \{A, C\}, \quad \{B, C\} $$
+Pick any two of these sets. They *must* intersect. For example, $\{A, B\}$ and $\{B, C\}$ share node $B$. 
 
-For five nodes, every quorum has three nodes. Two sets of three drawn from five
-must share at least one node. The calculation is simple. If they did not meet,
-they would contain six distinct nodes, but only five exist.
+If a value is chosen by one quorum, and we later query another quorum, the overlapping node acts as a *witness*. It carries the memory of the chosen value to the next leader.
 
 === Why an odd count is common
 
-With four nodes, a majority is three. The cluster still tolerates only one
-unavailable node. With three nodes, a majority is two and the cluster also
-tolerates one. The fourth voter adds cost without adding failure tolerance.
+In a cluster of four nodes, a majority quorum requires three nodes. The system can tolerate only $4 - 3 = 1$ crash. In a cluster of three nodes, a majority is two, which also tolerates $3 - 2 = 1$ crash. Adding the fourth node increased our costs (hardware, network traffic) without increasing our fault tolerance.
 
-This does not mean that every cluster must have an odd count. Failure domains,
-weighted quorums, and geographic placement may justify another shape. The
-current library uses uniform majority quorums. Its simple rule is visible in
-`Membership.quorum`.
+For this reason, production consensus clusters almost always consist of an odd number of nodes (typically 3 or 5). The Zig library uses uniform majority quorums by default, computed via `Membership.quorum`:
 
 ```zig
 pub fn quorum(self: *const Membership) usize {
@@ -112,148 +91,107 @@ pub fn quorum(self: *const Membership) usize {
 }
 ```
 
-The division is integer division. For `count = 5`, it yields `2 + 1 = 3`.
+Since Zig uses integer division, `5 / 2 + 1` evaluates to `3`.
 
 === Intersection is not memory
 
-Let quorum `{A1, A2}` accept `x`. Later quorum `{A2, A3}` meets it at `A2`. If
-`A2` remembers its vote, the later quorum has a witness. If `A2` forgets, the
-sets still intersect on paper but no knowledge crosses the intersection.
+Imagine that quorum $\{A, B\}$ accepts a value $x$. Later, a candidate contacts quorum $\{B, C\}$. The candidate meets node $B$, which is the intersection. 
 
-Thus quorum intersection and stable storage form one idea. The set supplies a
-witness. The disk lets the witness speak after a restart.
+But what if node $B$ crashed and rebooted in the meantime, forgetting its vote? The intersection still exists on paper, but the *knowledge* of the decision is gone. Quorum intersection only works if nodes have stable memory.
 
 #exercise([2.1], [
-  Construct two sets of two nodes in a four node cluster that do not intersect.
-  Why can a quorum of two not be used there?
+  Construct two quorums of size two in a four-node cluster $\{A, B, C, D\}$ that do not intersect. Why is it impossible to guarantee safety if we define a quorum as any two nodes in a four-node system?
 ])
 
 == Ballots
 
-A single leader would make the choice easy. Failures create a sequence of
-possible leaders. Paxos gives each attempt a ballot. Ballots are unique and have
-a total order.
+If a leader never crashed, consensus would be trivial. Because leaders fail, we must support a sequence of attempts to make a decision. We call each attempt a *ballot*. Ballots must be unique and totally ordered.
 
-The library uses a pair.
+In the Zig library, a ballot is defined as:
 
 ```zig
-pub const Ballot = struct {
-    round: u64,
-    node: NodeId,
-};
+pub const Ballot = struct { round: u64, node: NodeId };
 ```
 
-Pairs are ordered from left to right. First compare the round. If rounds are
-equal, compare the node.
+We compare ballots lexicographically: first by their `round` number, and then by their `node` ID to break ties.
 
 #table(
   columns: (auto, auto, 1fr),
-  table.header([*Left*], [*Right*], [*Result*]),
-  [`(4, 2)`], [`(5, 1)`], [The right ballot is greater.],
-  [`(7, 1)`], [`(7, 3)`], [The right ballot is greater.],
-  [`(9, 4)`], [`(9, 4)`], [The ballots are equal.],
+  table.header([*Left Ballot*], [*Right Ballot*], [*Comparison Result*]),
+  [`(4, 2)`], [`(5, 1)`], [Right is greater (higher round dominates).],
+  [`(7, 1)`], [`(7, 3)`], [Right is greater (node ID breaks the tie).],
+  [`(9, 4)`], [`(9, 4)`], [Ballots are equal.],
 )
 
-The node component makes simultaneous ballots unique. Node 2 may use
-`(11, 2)`. Node 3 may use `(11, 3)`. They cannot own the same ballot.
-
-A node that sees a higher round remembers it. Its next campaign uses a still
-higher round. The `u64` space is finite, so the library reports
-`error.BallotExhausted` rather than wrapping.
+The node ID ensures that two candidates campaigning at the same time never issue the same ballot. If Node 2 uses `(11, 2)` and Node 3 uses `(11, 3)`, their ballots are distinct, and `(11, 3)` is greater.
 
 === Votes and success
 
-A ballot has four conceptual parts.
+A ballot represents an attempt to choose a value. It consists of:
+1. A unique ballot number.
+2. A proposed value.
+3. A quorum of acceptors.
 
-+ A ballot number.
-+ A proposed value.
-+ A quorum.
-+ The members of that quorum that accepted the value.
-
-A ballot succeeds when every member of its selected quorum accepts. An
-implementation often sends to every member and waits for any quorum. The proof
-is the same because the acknowledgements define the successful quorum.
-
-The word "chosen" means that such a quorum exists. The proposer need not know
-that it exists. Imagine that the final acknowledgement reaches the proposer,
-the value becomes chosen, and the proposer crashes before announcing it. The
-fact remains. A future leader must preserve it.
+A ballot *succeeds* (and its value is chosen) when every member of its selected quorum accepts the proposal. The word "chosen" means that a quorum of acceptances exists. The proposer does not need to know that the quorum succeeded for the fact of choice to be true. If the final vote is written to disk, the value is chosen, even if the leader dies immediately afterward.
 
 == Three invariants
 
-Lamport gives three conditions. We shall state them in code language.
+Leslie Lamport defined the safety of Paxos using three conditions. Let us translate them into clear programmatic invariants:
 
 #table(
   columns: (auto, 1fr, 1fr),
-  table.header([*Rule*], [*Statement*], [*Mechanism*]),
-  [`B1`], [Every ballot number is unique.], [The pair `(round, node)`.],
-  [`B2`], [Every two ballot quorums intersect.], [Majority membership.],
-  [`B3`], [A later ballot preserves the highest earlier vote seen in its
-    phase one quorum.], [Prepare, promise, and value selection.],
+  table.header([*Invariant*], [*Rule*], [*Zig Implementation*]),
+  [`B1`], [Every ballot number is unique.], [Lexicographical comparison of `(round, node)`.],
+  [`B2`], [Any two ballot quorums intersect.], [Enforced majority sizing in `Membership.quorum`.],
+  [`B3`], [A later ballot must choose the highest-numbered vote already accepted by any node in its phase one quorum.], [Phase one promise scanning and value selection logic.],
 )
 
-The first two rules are easy to enforce. The third is the heart of Paxos.
+Invariant `B3` is the crown jewel of Paxos. It prevents a new ballot from overwriting or changing a value that might have already been chosen by an earlier ballot.
 
-Suppose a candidate starts ballot 12. It asks a quorum what each member last
-accepted. The replies are:
+Suppose Candidate $C$ starts ballot 12. It queries a quorum of acceptors about what they last accepted. The replies are:
 
 #table(
   columns: (auto, auto, 1fr),
-  table.header([*Acceptor*], [*Accepted ballot*], [*Value*]),
+  table.header([*Acceptor*], [*Highest Accepted Ballot*], [*Accepted Value*]),
   [`A1`], [`8`], [`red`],
   [`A2`], [`10`], [`blue`],
   [`A3`], [`null`], [`null`],
 )
 
-The candidate must propose `blue` because ballot 10 is the highest reported
-ballot. It may not choose `green`, even if `green` was the client's request.
+Candidate $C$ *must* propose `blue` for ballot 12 because `blue` was accepted in ballot 10, which is the highest ballot reported in the quorum. It cannot choose a new client value like `green`.
 
-#callout([The recovery choice], [
-  If no reply contains an accepted value, use the new value. Otherwise use the
-  value attached to the greatest accepted ballot in the quorum replies.
+#callout([The Selection Rule], [
+  If the quorum replies contain no previously accepted values, the candidate is
+  free to propose its own client value. Otherwise, it *must* select the value
+  associated with the highest ballot number reported.
 ], kind: "idea")
 
 === Why the greatest vote matters
 
-Assume that ballot 6 chose `red`. A later successful ballot must also use `red`.
-Its quorum intersects the quorum for ballot 6. At least one reply has knowledge
-that begins with `red`. There may be intermediate ballots. The greatest prior
-vote reported by the new quorum carries the value that those intermediate
-ballots were themselves required to preserve.
+Why does selecting the highest ballot preserve safety?
 
-This is an induction. The base case is ballot 6. The induction step says that a
-later ballot takes the greatest earlier vote from an intersecting quorum. It
-therefore cannot be the first later ballot to change the value.
+Assume ballot 6 succeeded in choosing `red`. Any later ballot, say ballot 10, must intersect ballot 6's quorum. Therefore, at least one node in ballot 10's quorum will report that it accepted `red` in ballot 6. By following rule `B3`, the leader of ballot 10 is forced to propose `red`. 
 
-We can phrase the proof as a minimal counterexample. Suppose some later ballot
-is the first ballot after 6 to use another value. Its quorum meets ballot 6's
-quorum. Every reported vote between 6 and this first bad ballot still contains
-`red`, by the choice of "first." The greatest report therefore contains `red`.
-The ballot was required to choose `red`. This contradicts the assumption that it
-was bad.
+By induction, if ballot 6 chooses `red`, every ballot after 6 is forced to choose `red`. Safety is preserved through time.
 
 #exercise([4.1], [
-  A phase one quorum reports `(3, apple)`, `(9, apple)`, and `(7, pear)`. Which
-  value must the new ballot use? Does the answer change if ballot 3 is known to
-  have succeeded?
+  A phase one quorum reports three accepted values: `(3, apple)`, `(9, apple)`, and `(7, pear)`. Which value must the new candidate propose? Does the answer change if ballot 3 is known to have successfully reached a quorum?
 ])
 
 == From rules to messages
 
-We now have enough facts to predict the protocol.
+We have derived the protocol simply by thinking through the invariants. To safely propose a value:
+1. The candidate needs a ballot number higher than any seen so far.
+2. It must obtain a promise from a quorum of acceptors not to accept any lower ballots.
+3. It must collect the highest votes those acceptors have already cast.
+4. If a prior vote exists, it must use it; otherwise, it proposes its own value.
 
-The candidate needs a fresh ballot. It needs a quorum to promise not to vote in
-older ballots. It needs each promise to include the last accepted vote. Then it
-can choose the required value and ask the quorum to accept it.
-
-Those sentences give the message names.
+These four steps map directly to the classic Paxos messages:
 
 #book_figure(
-  [Phase one obtains promises and prior votes. Phase two obtains acceptances.
-  A quorum of votes makes the value chosen.],
+  [Phase one obtains promises and prior votes. Phase two broadcasts the proposal
+  and collects acceptances to reach consensus.],
   phase_flow(),
 )
 
-The next part follows every message, including its disk write and rejection
-case. Nothing will be added merely because a textbook says so. Each field will
-pay rent by protecting one invariant.
+In the next chapter, we will follow these messages through their handlers, disk writes, and failure states. We will see how every struct field in our Zig library pays rent by protecting one of these core safety invariants.
