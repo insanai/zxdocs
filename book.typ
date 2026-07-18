@@ -4,6 +4,7 @@
 #show: book
 
 #include "book/00_front.typ"
+#include "book/00_learning.typ"
 #include "book/01_foundations.typ"
 #include "book/02_protocol.typ"
 #include "book/03_multi_paxos.typ"

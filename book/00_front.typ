@@ -13,8 +13,9 @@ when we know the fact that requires it. A proof is easier to remember when we
 can point to the field that carries its meaning.
 
 The source is written in Typst. The diagrams use Fletcher and CeTZ. The code is
-Zig 0.16. The protocol is Paxos as presented by Leslie Lamport in "The Part Time
-Parliament" and "Paxos Made Simple".
+Zig 0.16. The protocol is grounded in Leslie Lamport's "The Part-Time
+Parliament" and "Paxos Made Simple"; the reconfiguration layer is closest to
+the stop-sign construction described in "Reconfiguring a State Machine".
 
 The text and original code in this repository use the MIT license. The paper by
 Lamport has its own copyright. A local copy is present for study.
@@ -26,9 +27,10 @@ Lamport has its own copyright. A local copy is present for study.
 
 #v(10mm)
 #callout([The main promise], [
-  A careful reader should be able to derive Paxos, implement the library
-  contract, run a three node example, and review a production design after
-  working through this book.
+  A careful reader should be able to derive the core Paxos safety rule, trace
+  it into this library's fields and effects, run a three-node example, design
+  the missing host services, and review a deployment without confusing a
+  protocol guarantee with an application guarantee.
 ], kind: "idea")
 
 #v(1fr)
@@ -55,8 +57,9 @@ When prepare and accept finally appear, they will have no mystery left. They are
 the shortest names for facts that we already need.
 
 The style of this book is mathematical, but it is not terse. We shall compute
-small examples. We shall stop for exercises. We shall make mistakes on purpose.
-We shall keep a ledger of the facts that survive every mistake.
+small examples. We shall predict before seeing answers, explain steps in plain
+language, and gradually remove hints. We shall make mistakes on purpose. We
+shall keep a ledger of the facts that survive every mistake.
 
 The implementation follows the same order. First come values and ballots. Next
 come promises and votes. Then come slots, leader recovery, stable storage, and a
@@ -65,13 +68,16 @@ replicated state machine. At each point we ask two questions.
 + What can go wrong?
 + Which fact prevents it?
 
-There are three complete examples.
+There is one complete runnable example and two progressively larger design
+studies.
 
-+ The small example is a counter on three nodes. Every message fits on one page.
-+ The middle example is a key value service. It includes client retry, reads,
-  recovery, and snapshots.
-+ The large example is a regional control plane. It includes five voters, many
-  clients, large values, batching, failure domains, metrics, and capacity work.
++ The counter on three nodes is `examples/counter.zig`; it exercises the real
+  public API end to end in memory.
++ The key-value service is an explicitly labeled host-design sketch. It adds
+  request deduplication, read semantics, recovery, and snapshot ownership.
++ The regional control plane is an architecture exercise. It adds five voters,
+  sharding, failure domains, metrics, and capacity calculations without
+  pretending that those systems already exist in this repository.
 
 The final parts discuss tests and measurement. The benchmark compares the Zig
 library with OmniPaxos 0.2.2 in Rust and a pinned LibPaxos3 core in C. The
@@ -86,18 +92,28 @@ differences instead of pretending that the libraries are identical.
 
 == How to read the book
 
-Parts I through III form a course in Paxos. Read them in order. Part IV is the
-library manual. Part V contains examples. Part VI covers engineering. Part VII
-is a reference for use beside an editor.
+The next chapter explains the learning design and offers a protocol route and a
+systems-builder route. Parts I through III derive Paxos. Part IV is the library
+and host-integration manual. Part V moves from the runnable counter to design
+studies. Part VI covers evidence and operations. Part VII is a desk reference.
 
 Short notes marked "Exercise" are part of the argument. A reader who answers
 them will remember the proof far longer than a reader who merely agrees with
 it. Hints appear when a calculation has a trick.
 
-Code fragments use the public API unless they are explicitly labeled as
-protocol internals. Complete source files remain in the repository. Small
-fragments in the book may omit routine error handling only when the omitted
-line has already been shown.
+Code fragments are labeled *repository excerpt*, *runnable fragment*, or
+*design sketch*. Repository excerpts and runnable fragments use the current
+public API. A sketch may introduce host-owned types such as `Journal` or
+`Transport`; those types are not library promises.
+
+== Audience and prerequisites
+
+The book assumes that you can read Zig structs, tagged unions, slices, errors,
+and comptime parameters. It does not assume prior study of Paxos or formal
+methods. Before building a real service, you should also be comfortable with
+write-ahead logging, checksums, process crash recovery, authenticated network
+protocols, and deterministic state machines. The book teaches how those pieces
+meet this library; it is not a substitute for testing the host implementation.
 
 == Notation
 
@@ -107,8 +123,8 @@ line has already been shown.
   [`A1`, `A2`, `A3`], [Three acceptors.],
   [`C`], [A candidate or proposer.],
   [`L`], [A learner.],
-  [`b = (r, n)`], [A ballot with round `r` and node `n`.],
-  [`Q`], [A quorum.],
+  [`b = (r, p, n)`], [A ballot with round `r`, priority `p`, and node `n`.],
+  [`Q1`, `Q2`], [Phase-one read quorum and phase-two write quorum.],
   [`s`], [A one based log slot.],
   [`v`], [An application value.],
   [`null`], [No prior accepted value.],
@@ -129,9 +145,10 @@ zig build benchmark
 zig build book
 ```
 
-The last command creates `docs/part-time-parliament.pdf`. The benchmark command
-builds the pinned Rust package and fetches the pinned C source. Its first run
-needs network access.
+The last command creates `docs/part-time-parliament.pdf`. The aggregate
+benchmark builds the pinned Rust package and fetches the pinned C source, so
+its first run needs network access. `zig build benchmark-zig` runs only the
+local Zig regression workload.
 
 #pagebreak()
 #outline(title: [Contents], depth: 3, indent: auto)

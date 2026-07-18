@@ -45,7 +45,7 @@
     corner-radius: 3pt, inset: 7pt),
   node((1, 0), [messages], fill: blue_light, stroke: 0.8pt + blue,
     corner-radius: 3pt, inset: 7pt),
-  node((1, 1), [commits], fill: rgb("fff5dc"), stroke: 0.8pt + amber,
+  node((1, 1), [released entries], fill: rgb("fff5dc"), stroke: 0.8pt + amber,
     corner-radius: 3pt, inset: 7pt),
   node((2, -1), [sync disk], ..node_style),
   node((2, 0), [send network], ..node_style),
@@ -55,6 +55,7 @@
   edge((0, 0), (1, 1), "-|>"),
   edge((1, -1), (2, -1), "-|>", [first]),
   edge((2, -1), (2, 0), "-|>", [then], bend: 25deg),
+  edge((2, -1), (2, 1), "-|>", [then], bend: 38deg),
   edge((1, 0), (2, 0), "-|>"),
   edge((1, 1), (2, 1), "-|>"),
 )
