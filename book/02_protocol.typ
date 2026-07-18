@@ -8,6 +8,18 @@
 
 = The Single-Decree Protocol
 
+#objectives([
+  By the end of this chapter you should be able to execute one ballot by hand,
+  distinguish accepted, chosen, committed, and applied, place every required
+  disk sync before its dependent message, and predict recovery at any crash
+  point.
+])
+
+#checkpoint([foundation], [
+  State the highest-vote rule without looking back. If you say "majority value"
+  or "latest message", revisit Part I before learning the message names.
+])
+
 == The four roles
 
 To build a consensus system, we divide the work into four distinct roles: *Proposers*, *Acceptors*, *Learners*, and *Clients*. Although a production server (like a node in our library) usually performs all of these roles at the same time to save resources, they are conceptually completely separate.
@@ -28,10 +40,13 @@ Let us break down what each role is thinking and what it must remember:
 #table(
   columns: (auto, 1fr, 1.2fr),
   table.header([*Role*], [*Key Question*], [*Durable State on Disk*]),
-  [Proposer], [Which value am I allowed to propose?], [None (volatile). Re-campaigning on reboot is safe.],
+  [Proposer], [Which value am I allowed to propose?], [Leadership bookkeeping
+    is volatile; the co-located acceptor still persists promises and votes.],
   [Acceptor], [Am I allowed to vote, and what did I vote for?], [Highest promised ballot, and highest accepted vote.],
-  [Learner], [Which values have been chosen?], [Delivered slot prefix (applied index).],
-  [Client], [Did my request succeed?], [Stable transaction record.],
+  [Learner], [Which values have been chosen?], [Committed values are durable;
+    this library's delivery cursor is volatile and may replay after restart.],
+  [Client], [Did my request succeed?], [A host-owned stable request identity and
+    result record when exactly-once application effects are required.],
 )
 
 == Phase one: The Election and Query
@@ -63,6 +78,12 @@ promise {
 }
 ```
 
+This is the abstract single-decree reply. The library uses Multi-Paxos framing:
+zero or more `promise { ballot, slot, accepted }` envelopes followed by
+`promise_done { ballot, accepted_count, decided_through }`. A candidate counts
+an acceptor only after the stated number of distinct entries has arrived. Part
+III explains why the separate completion marker is necessary.
+
 The promise has a powerful meaning: *"I promise never to accept any future proposal that has a ballot number lower than $B$. Also, here is the highest ballot I have accepted so far ($B_("last")$), along with the value I voted for ($V_("last")$)."*
 
 #warning([Sync before you speak], [
@@ -77,6 +98,13 @@ The candidate waits for a quorum of complete promise replies. Once it has a quor
 +   *If any acceptor has accepted a value*: The candidate is *forced* to select the value associated with the highest accepted ballot number reported in the replies.
 
 The candidate is now the prepared leader. It can proceed to Phase Two.
+
+#predict([
+  A candidate receives `promise_done` before the corresponding `promise`
+  entry because the transport reordered them. May it count that acceptor
+  toward its phase-one quorum? Write the safety fact that would be lost if it
+  did.
+])
 
 == Phase two: Proposing and Voting
 
@@ -110,7 +138,11 @@ When the leader collects a quorum of `accepted` votes for its ballot and slot, t
 commit { slot, value }
 ```
 
-Upon receiving `commit`, the learners safely apply the value to their state machines.
+Upon receiving `commit`, a node records a commit write and releases only a
+contiguous prefix through `Effects.committedSlice()`. The host must make the
+commit record durable before it treats the released application entry as
+recoverable. A `commit` message is evidence because the non-Byzantine sender is
+assumed to follow the protocol; `Node.step` is not an authentication layer.
 
 == Local acceptance optimization
 
@@ -129,16 +161,22 @@ effects.addWrite(.{ .accept = .{
 } });
 ```
 
-This local write count as the first vote in our quorum, meaning a three-node leader only needs one remote peer to respond to reach a majority of two!
+This local write counts as the first vote. With the default majority in a
+three-node configuration, one remote `accepted` reply then completes the
+phase-two quorum.
 
 == A complete trace
 
-Let us watch this dance in action. Nodes 1, 2, and 3 start empty. Node 1 tries to propose `tea` using ballot `(1, 1)`.
+Let us watch this dance in action. Nodes 1, 2, and 3 start empty. Node 1 tries
+to propose `tea` using ballot `(1, 0, 1)`.
 
 #transcript((
-  [1], [N1], [Chooses ballot `(1, 1)` and sends `prepare` to all nodes.],
-  [2], [N1], [Writes promise `(1, 1)` to its own disk before replying locally.],
-  [3], [N2], [Receives `prepare`, writes promise `(1, 1)` to disk, and replies with no past votes.],
+  [1], [N1], [Chooses ballot `(1, 0, 1)` and enqueues `prepare` to all nodes,
+    including itself.],
+  [2], [N1], [Consumes its loopback prepare, writes promise `(1, 0, 1)`, then
+    emits `promise_done`.],
+  [3], [N2], [Receives `prepare`, writes promise `(1, 0, 1)`, then replies with
+    no past votes.],
   [4], [N1], [Collects promises from N1 and N2 (a quorum). No old value was reported.],
   [5], [N1], [Proposes `tea`. Writes acceptance of `tea` locally to disk.],
   [6], [N1], [Sends `accept` for `tea` to N2 and N3.],
@@ -150,28 +188,39 @@ Let us watch this dance in action. Nodes 1, 2, and 3 start empty. Node 1 tries t
 
 == Rejection and competing campaigns
 
-What happens if Node 2 tries to campaign with ballot `(2, 2)` while Node 1 is leading?
+What happens if Node 2 tries to campaign with ballot `(2, 0, 2)` while Node 1 is leading?
 
-When Node 2 sends `prepare` with ballot `(2, 2)` to Node 1, Node 1 compares it with its own active ballot `(1, 1)`. Since `(2, 2) > (1, 1)`, Node 1 yields! It accepts the promise, updates its local `highest_observed_round` to round 2, and steps down to become a follower.
+When Node 2 sends `prepare` with ballot `(2, 0, 2)` to Node 1, Node 1 compares
+it with its own active ballot `(1, 0, 1)`. Since the new ballot is greater,
+Node 1 records the promise and becomes a follower.
 
 If Node 1 later tries to propose a value, the acceptors will reply with `nack`:
 
 ```text
-nack { rejected = (1, 1), promised = (2, 2) }
+nack { rejected = (1, 0, 1), promised = (2, 0, 2), decided_through = 0 }
 ```
 
-This tells Node 1: *"Your ballot was rejected because I have already promised a higher ballot."* Node 1 updates its round and waits for its election timeout before trying again.
+This tells Node 1 that its ballot is stale. The handler records the higher
+observed round and steps down. A later explicit `campaign` or timeout-driven
+`tick` chooses a round greater than the local ballot, durable promise, and
+highest observed round.
 
 == Liveness and the dueling leaders
 
 What if two nodes campaign back and forth endlessly?
-- N1 prepares ballot `(1, 1)`. Acceptors promise `(1, 1)`.
-- N2 prepares ballot `(2, 2)`. Acceptors promise `(2, 2)`.
-- N1 tries to send `accept` for `(1, 1)` → Rejected (promised `(2, 2)`).
-- N1 prepares ballot `(3, 1)`. Acceptors promise `(3, 1)`.
-- N2 tries to send `accept` for `(2, 2)` → Rejected (promised `(3, 1)`).
+- N1 prepares ballot `(1, 0, 1)`. Acceptors promise it.
+- N2 prepares ballot `(2, 0, 2)`. Acceptors promise it.
+- N1's old accept is rejected.
+- N1 prepares ballot `(3, 0, 1)`. Acceptors promise it.
+- N2's old accept is rejected.
 
-This is a *liveness hazard* (dueling leaders). To resolve this, our library contains no internal timers or randomized election protocols; instead, it exposes the control of campaigns to the host application via ticks. The host can use randomized timeouts (like Raft) or a distinguished leader election lease to ensure only one proposer campaigns at a time.
+This is a *liveness hazard*. The library implements deterministic logical
+timeouts, heartbeats, retransmission, and optional ballot priority, but it does
+not read a clock or randomize election deadlines. The host controls when each
+node receives `tick`. A deployment should avoid synchronized campaigns through
+tick scheduling, configured priority, or an external leadership policy. A
+lease may help progress or reads, but a lease is a host protocol and must not
+be treated as part of this library's safety proof.
 
 == Crash points and recovery
 
@@ -190,5 +239,14 @@ Let us inspect what happens if a node crashes at any point in the trace.
 This table shows the elegance of Paxos safety: *no matter where the power cord is pulled, the system recovers to a safe, consistent state.*
 
 #exercise([8.1], [
-  Look at Step 8 in the complete trace. If Node 1 crashes right after writing `commit` locally but before sending `commit` to Node 2 and Node 3, has `tea` been chosen? Can a future leader change the value in slot 1 to `coffee`?
+  Look at Step 8. If Node 1 crashes *before* recording or broadcasting
+  `commit`, has `tea` already been chosen? Can a future leader change slot 1 to
+  `coffee`? Name the durable records that force your answer.
+])
+
+#teach_back([
+  Explain one ballot from the acceptor's point of view. Use only the words
+  "number", "promise", "vote", and "disk" until the final sentence. Then map
+  those four ideas to `Ballot`, `Write.promise`, `Write.accept`, and
+  `DurableState.apply`.
 ])

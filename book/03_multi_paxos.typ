@@ -8,6 +8,13 @@
 
 = Multi-Paxos Log Replication
 
+#objectives([
+  By the end of this chapter you should be able to lift the single-decree rule
+  across slots, explain complete phase-one replies under packet reordering,
+  recover holes with a host-supplied no-op, and describe exactly what a stop
+  sign and checkpoint do—and do not do.
+])
+
 == Why Multi-Paxos?
 
 Classic Paxos chooses exactly one value for one slot. If we want to build a replicated log to run a database, we could run a completely separate instance of Classic Paxos for every single slot in the log. 
@@ -43,9 +50,11 @@ Because the network can reorder packets, the final `promise_done` marker might a
 To prevent this, the candidate tracks the expected entry count from `promise_done` and waits until it has received every single entry:
 
 ```zig
-// From the library's promise counting logic
-const complete = member_promise.done and 
-                 member_promise.received == member_promise.expected;
+// Equivalent to Protocol.Node.maybeBecomeLeader.
+if (!self.promise_done[member]) continue;
+if (self.promise_received[member] == self.promise_expected[member]) {
+    complete += 1;
+}
 ```
 
 A member's reply is counted toward the quorum only when it is complete. This count-based tracking makes the protocol transport-independent: we do not assume TCP FIFO ordering for correctness.
@@ -73,13 +82,24 @@ try node.campaign(.{
 
 This keeps the library clean and generic: the consensus core does not need to invent application-specific command values.
 
+#warning([A no-op is still a real value], [
+  It must be self-contained, serializable, deterministic when applied, and
+  safe to replay. `campaign` stores the supplied value for recovery; there is
+  no special no-op tag inside the generic protocol.
+])
+
 == The Stable Leader Pipeline
 
 A stable leader can have multiple proposals in flight at the same time. This is called *pipelining*. It hides network latency by allowing the leader to propose Slot 101 before Slot 100 has committed.
 
 However, pipelining introduces the risk of unbounded memory usage. If clients send writes faster than the disk can sync them, the queue of uncommitted proposals will grow forever.
 
-Our library solves this by using *static bounds*: the maximum number of slots (`max_slots`) is fixed at compile time, and the node state allocates no dynamic memory. If the pipeline reaches its limit, the library returns `error.SlotLimitReached`. The host application must handle this by applying backpressure to the clients.
+The library prevents unbounded protocol memory by giving the entire epoch a
+static `max_slots` bound. It does not implement a smaller in-flight window or
+client admission policy. A leader may fill the remaining epoch with
+uncommitted proposals; after the last slot it returns
+`error.SlotLimitReached`. The host should impose an earlier in-flight limit,
+apply backpressure, and reserve space for a stop sign or checkpoint.
 
 == Membership Changes: The Stop Sign
 
@@ -90,9 +110,10 @@ If we simply change the membership configuration on the fly, we risk splitting t
 Our library implements a safe, clean reconfiguration mechanism called a *Stop Sign*:
 
 #definition([Stop Sign], [
-  A special log entry that contains the new membership configuration. Once a Stop Sign
-  is accepted, the current log is sealed—no further proposals can be made in this epoch.
-  Once the Stop Sign is committed and applied, the next configuration can safely begin.
+  A special log entry that names the next configuration. The proposer seals
+  local appends as soon as `reconfigure` succeeds; another node seals after it
+  accepts or commits the stop. Once the stop is decided, the host may transfer
+  state and initialize the next configuration.
 ])
 
 ```zig
@@ -104,14 +125,41 @@ const slot = try node.reconfigure(
 );
 ```
 
-By placing the configuration change *inside* the log itself, we order it relative to all other decisions. Every node transitions to the new membership at exactly the same slot, preventing split-brain scenarios.
+By placing the stop inside the log, the old configuration agrees on the
+boundary relative to commands. The library does not automatically transfer a
+snapshot, start processes, or stop old network traffic. The host must wait for
+`isReconfigured()` to return the *decided* stop before calling `initFromStop`,
+and must prevent the sealed old instance from serving new writes.
 
 == Bounded Logs and Epochs
 
 Because the log size `max_slots` is bounded at compile time, what do we do when we run out of slots? We transition to a new epoch.
 
-1. *Checkpoint*: The application applies all committed slots up to slot $K$, writes a snapshot of its database state to disk, and calls `node.checkpoint` to seal the epoch.
-2. *Epoch Transition*: The host decides a Stop Sign that names the new configuration.
-3. *Clean Start*: The host initializes a fresh node for the next epoch starting at Slot 1, using the snapshot as its initial state.
+1. *Quiesce appends*: Reserve capacity, stop admitting new commands, and let
+   the application reach the decided prefix that the snapshot will represent.
+2. *Snapshot*: Durably write and verify host-owned application state.
+3. *Checkpoint*: Call `node.checkpoint(snapshot_metadata, &effects)`. This is a
+   convenience wrapper that proposes a stop sign with the same members and
+   `configuration_id + 1`; it does not write the snapshot.
+4. *Decide the boundary*: Consume effects until `isReconfigured()` returns the
+   stop sign. The snapshot metadata in that value must identify the durable
+   state through every command before the stop.
+5. *Start the next epoch*: Initialize a fresh `ReplicatedLog.Node` at Slot 1 and
+   restore the host state named by the metadata.
 
-This epoch-based design allows the library to achieve zero allocation at runtime, ensuring maximum speed and memory safety.
+This epoch design bounds protocol memory and performs no runtime allocation in
+the core. It does not by itself guarantee maximum speed, safe snapshot files,
+or bounded memory in the host.
+
+#exercise([11.1], [
+  A leader has decided through slot 80, has accepted but not decided commands
+  in slots 81 and 82, and has four free slots. May the host snapshot through
+  80 and immediately start a new epoch? Describe the steps needed to give
+  commands 81 and 82 an unambiguous fate.
+])
+
+#teach_back([
+  On blank paper draw three boxes labeled old epoch, stop sign, and new epoch.
+  Explain which box the library writes, which state the host writes, and the
+  exact observation that permits the new epoch to start.
+])
