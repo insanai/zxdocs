@@ -117,38 +117,46 @@ relation between the Zig code and the spec is still not established.
 commit modes (one value synchronously, pipelined windows of 8 and 64,
 batches of 16 and 256), payload sizes (8 B, 64 B, 1 KiB), cluster sizes
 (3 and 5), and a run with twice the needed log slots so the cost of
-exactly-sized arrays is measured instead of assumed. Every run reports the
-median of seven samples with min and max, a latency distribution from a
-separate instrumented pass, a measured message count, and a checksum, and
-exits nonzero if the count or checksum is wrong. `zig build benchmark`
-adds the pinned OmniPaxos 0.2.2 and LibPaxos3 workloads and the durable
-benchmark below. `sh benchmarks/run-all.sh` runs everything and writes a
-machine-readable file under `benchmarks/results/`; the tables below are
-rendered from `latest.json` at book build time, so the book cannot cite a
-number that was not measured and committed.
+exactly-sized arrays is measured instead of assumed. A timing sample aggregates
+16--64 independently initialized stable-leader iterations, making even the
+fastest sample last well beyond the clock's sub-millisecond noise floor. Seven
+samples produce the median and min/max span; a separate instrumented pass
+reports window-average time per value, not request latency. The Zig and
+OmniPaxos fixtures check every replica; Zig additionally checks its separate
+durable-state mirrors. The LibPaxos3 fixture validates every accept response and
+the learner. All three validate the checksum and logical envelope count.
+`zig build benchmark` adds the pinned OmniPaxos 0.2.2 and LibPaxos3 workloads
+and the durable benchmark below.
+
+`sh benchmarks/run-all.sh` runs everything and writes a machine-readable file
+under `benchmarks/results/`; the dashboard below is rendered from `latest.json`
+at book build time. Its environment stamp marks a modified working tree, so a
+development measurement cannot masquerade as an archival result from the named
+revision.
 
 #benchmark_results_table()
 
-Three findings from the committed results deserve emphasis. First, elapsed
-time on an uncontrolled desktop varies by around two times between quiet
-and loaded runs; message counts and checksums are deterministic, timings
-are not, which is why every committed result carries its environment.
-Second, the comparison inverts with the harness shape: proposing one value
-at a time measures per-append overhead, where this library is roughly an
-order of magnitude ahead, but once the harness pipelines, OmniPaxos
-coalesces log entries into far fewer messages and its per-value time
-approaches or beats this library's, whose message count stays fixed at six
-per value. That is a design difference the numbers must not launder into a
-language claim. Third, LibPaxos3 runs a heavier measured twelve-message
-path that includes phase-one preexecution, so its column is labeled, not
-equated.
+Three findings from the recorded results deserve emphasis. First, longer
+samples make the min/max span visible and usually small, but elapsed time is
+still machine state, while envelope counts and checksums are deterministic.
+Second, the harness shape changes the comparison dramatically. One value at a
+time measures per-append core overhead. With a window of 64, OmniPaxos
+coalesces entries into about 0.09 logical envelopes per value and narrows the
+gap substantially; this Zig core continues to emit six one-value envelopes.
+`proposeBatch` amortizes API/effect handling but is not a wire-batching
+primitive, which is why its envelope count does not fall. These are design and
+harness effects, not evidence of language superiority. Third, LibPaxos3 runs a
+heavier measured twelve-envelope path that advances phase-one preexecution, so
+it is labeled rather than equated with the stable-leader paths.
 
-`zig build benchmark-durable` measures the safety contract itself: each
-node serializes its writes to an append-only file and syncs before any
-message moves. Durability costs several hundred times the in-memory path
-per value with an fsync per transition, and group commit over windows of
-eight recovers roughly a five-fold improvement. Read the in-memory numbers
-with those magnitudes in mind.
+`zig build benchmark-durable` measures the safety contract itself: each node
+serializes its writes to an append-only file and syncs before any dependent
+message moves. Only write-bearing transitions sync, setup fsyncs are excluded
+from the timed count, and every journal is reopened and replayed after timing.
+The ungrouped path performs six fsyncs per value in this three-node message
+schedule; grouping windows of eight reduces that to 0.75 and improves elapsed
+time by roughly four to five times. Read the in-memory numbers with the much
+larger durable scale in mind.
 
 The in-memory benchmarks still exclude real serialization, network delay,
 contention, snapshots, retries, client admission, and application work.

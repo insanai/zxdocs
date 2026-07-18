@@ -96,27 +96,165 @@
 #let benchmark_results_table() = {
   let data = json("../../benchmarks/results/latest.json")
   let meta = data.meta
-  [
-    Recorded #meta.date on #meta.host (#meta.cpu, #meta.os), revision
-    #raw(meta.git), Zig #meta.zig, rustc #meta.rustc.
+  let find(impl, workload, mode) = data.runs.find(run =>
+    run.impl == impl and run.workload == workload and run.mode == mode)
+  let ns(run) = calc.round(run.ns_per_value, digits: 1)
+  let us(run) = calc.round(run.ns_per_value / 1000, digits: 1)
+  let envelopes(run) = if "messages" in run {
+    calc.round(run.messages / run.values, digits: 2)
+  } else { [-] }
+  let span(run) = if "ns_total_min" in run and "ns_total_max" in run {
+    calc.round(
+      (run.ns_total_max - run.ns_total_min) * 100 / run.ns_total_median,
+      digits: 1,
+    )
+  } else { [-] }
+  let matrix_cell(run) = [#ns(run) #text(size: 7.2pt, fill: gray)[ns · #envelopes(run) env]]
+  let panel(title, subtitle, body, tint: blue_light, breakable: true) = block(
+    width: 100%,
+    inset: 9pt,
+    radius: 5pt,
+    fill: tint,
+    stroke: 0.5pt + rule,
+    breakable: breakable,
+  )[
+    #text(size: 11pt, weight: "bold")[#title]
+    #linebreak()
+    #text(size: 8pt, fill: gray)[#subtitle]
+    #v(5pt)
+    #body
   ]
-  table(
-    columns: (auto, auto, auto, auto, auto),
-    table.header(
-      [*Implementation*], [*Workload*], [*Mode*], [*ns / value*],
-      [*Messages*],
-    ),
-    ..data
-      .runs
-      .map(run => (
-        [#run.impl],
-        [#run.workload],
-        [#run.mode],
-        [#calc.round(run.ns_per_value, digits: 1)],
-        [#if "messages" in run { str(run.messages) } else { "-" }],
-      ))
-      .flatten(),
-  )
+
+  let zig_sync = find("paxos-zig", "u64-3n", "sync")
+  let zig_p8 = find("paxos-zig", "u64-3n", "pipeline8")
+  let zig_p64 = find("paxos-zig", "u64-3n", "pipeline64")
+  let zig_b16 = find("paxos-zig", "u64-3n", "batch16")
+  let zig_b256 = find("paxos-zig", "u64-3n", "batch256")
+  let omni_sync = find("omnipaxos", "u64-3n", "sync")
+  let omni_p8 = find("omnipaxos", "u64-3n", "pipeline8")
+  let omni_p64 = find("omnipaxos", "u64-3n", "pipeline64")
+  let lib_sync = find("libpaxos3", "u64-3n", "sync-preexec")
+  let durable_each = find("paxos-zig", "durable-u64-3n", "fsync-each")
+  let durable_group = find("paxos-zig", "durable-u64-3n", "group8")
+  let dirty = if "dirty" in meta and meta.dirty { [ · modified tree] } else { [] }
+
+  [
+    #text(size: 8pt, fill: gray)[
+      Recorded #meta.date · #meta.host · #meta.cpu · #meta.os · revision
+      #raw(meta.git)#dirty · Zig #meta.zig · rustc #meta.rustc
+    ]
+    #v(6pt)
+    #grid(
+      columns: (1fr, 1fr, 1fr),
+      gutter: 6pt,
+      box(inset: 7pt, radius: 4pt, fill: blue_light)[
+        #text(size: 7pt, weight: "bold", fill: blue)[TIMED]
+        #linebreak()
+        #text(size: 8pt)[Stable leader through in-process decision]
+      ],
+      box(inset: 7pt, radius: 4pt, fill: green_light)[
+        #text(size: 7pt, weight: "bold", fill: green)[CHECKED]
+        #linebreak()
+        #text(size: 8pt)[Replica decisions, checksums, envelope counts, journal replay]
+      ],
+      box(inset: 7pt, radius: 4pt, fill: amber_light)[
+        #text(size: 7pt, weight: "bold", fill: amber)[EXCLUDED]
+        #linebreak()
+        #text(size: 8pt)[Network, codec, contention, application, client queueing]
+      ],
+    )
+    #v(8pt)
+
+    #panel(
+      [The comparison at a glance],
+      [8-byte values · 3 voters · in-memory · median of 7; lower time is better],
+      table(
+        columns: (1.05fr, 1.45fr, auto, auto, auto),
+        table.header(
+          [*Core*], [*Submission shape*], [*env / value*],
+          [*ns / value*], [*sample span*],
+        ),
+        [Zig], [one at a time], [#envelopes(zig_sync)], [#ns(zig_sync)], [#span(zig_sync)%],
+        [OmniPaxos], [one at a time], [#envelopes(omni_sync)], [#ns(omni_sync)], [#span(omni_sync)%],
+        [LibPaxos3], [one + phase-one preexecution], [#envelopes(lib_sync)], [#ns(lib_sync)], [#span(lib_sync)%],
+        [Zig], [window of 64], [#envelopes(zig_p64)], [#ns(zig_p64)], [#span(zig_p64)%],
+        [OmniPaxos], [window of 64; coalesced], [#envelopes(omni_p64)], [#ns(omni_p64)], [#span(omni_p64)%],
+        [Zig], [`proposeBatch` of 256], [#envelopes(zig_b256)], [#ns(zig_b256)], [#span(zig_b256)%],
+      ),
+    )
+    #v(8pt)
+
+    #panel(
+      [Sensitivity matrix],
+      [Each cell is median ns/value · logical envelopes/value. Rows change one workload dimension.],
+      table(
+        columns: (1.15fr, 1fr, 1fr, 1fr, 1fr),
+        table.header([*Workload*], [*Zig sync*], [*Zig win 8*], [*Omni sync*], [*Omni win 8*]),
+        [8 B · 3 voters], [#matrix_cell(zig_sync)], [#matrix_cell(zig_p8)],
+          [#matrix_cell(omni_sync)], [#matrix_cell(omni_p8)],
+        [64 B · 3 voters],
+          [#matrix_cell(find("paxos-zig", "blob64-3n", "sync"))],
+          [#matrix_cell(find("paxos-zig", "blob64-3n", "pipeline8"))],
+          [#matrix_cell(find("omnipaxos", "blob64-3n", "sync"))],
+          [#matrix_cell(find("omnipaxos", "blob64-3n", "pipeline8"))],
+        [1 KiB · 3 voters],
+          [#matrix_cell(find("paxos-zig", "blob1k-3n", "sync"))],
+          [#matrix_cell(find("paxos-zig", "blob1k-3n", "pipeline8"))],
+          [#matrix_cell(find("omnipaxos", "blob1k-3n", "sync"))],
+          [#matrix_cell(find("omnipaxos", "blob1k-3n", "pipeline8"))],
+        [8 B · 5 voters],
+          [#matrix_cell(find("paxos-zig", "u64-5n", "sync"))],
+          [#matrix_cell(find("paxos-zig", "u64-5n", "pipeline8"))],
+          [#matrix_cell(find("omnipaxos", "u64-5n", "sync"))],
+          [#matrix_cell(find("omnipaxos", "u64-5n", "pipeline8"))],
+      ),
+      tint: green_light,
+    )
+    #v(8pt)
+
+    #panel(
+      [What the Zig API amortizes],
+      [All rows still emit one-value protocol envelopes; batching combines host/API work, not wire values.],
+      table(
+        columns: (1.35fr, auto, auto, 1fr),
+        table.header([*Mode*], [*Values / drain*], [*ns / value*], [*env / value*]),
+        [individual], [1], [#ns(zig_sync)], [#envelopes(zig_sync)],
+        [pipeline], [8], [#ns(zig_p8)], [#envelopes(zig_p8)],
+        [pipeline], [64], [#ns(zig_p64)], [#envelopes(zig_p64)],
+        [`proposeBatch`], [16], [#ns(zig_b16)], [#envelopes(zig_b16)],
+        [`proposeBatch`], [256], [#ns(zig_b256)], [#envelopes(zig_b256)],
+      ),
+    )
+    #v(8pt)
+
+    #panel(
+      [Durability changes the scale],
+      [512 values · 3 file journals · writes replay-verified after timing · median of 3],
+      table(
+        columns: (1.3fr, auto, auto, 1fr),
+        table.header([*Host policy*], [*fsync / value*], [*µs / value*], [*vs in-memory Zig sync*]),
+        [sync every write-bearing transition],
+          [#calc.round(durable_each.fsyncs / durable_each.values, digits: 2)],
+          [#us(durable_each)],
+          [#calc.round(durable_each.ns_per_value / zig_sync.ns_per_value, digits: 0)×],
+        [group commit, window 8],
+          [#calc.round(durable_group.fsyncs / durable_group.values, digits: 2)],
+          [#us(durable_group)],
+          [#calc.round(durable_group.ns_per_value / zig_sync.ns_per_value, digits: 0)×],
+      ),
+      tint: amber_light,
+      breakable: false,
+    )
+    #v(4pt)
+    #text(size: 7.8pt, fill: gray)[
+      “env” counts logical in-process envelopes, not bytes. OmniPaxos may carry
+      many values in one envelope; Zig and this LibPaxos3 fixture carry one.
+      “sample span” is (maximum − minimum) / median across the seven totals;
+      lower is steadier.
+      The doubled-log-slack control is #ns(find("paxos-zig", "u64-3n-slack", "sync")) ns/value;
+      compare it with Zig sync above before attributing small differences.
+    ]
+  ]
 }
 
 #let tick_flow() = diagram(
