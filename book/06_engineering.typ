@@ -61,6 +61,38 @@ Why did the Zig implementation achieve such low CPU overhead? It is not due to c
 
 In contrast, the profiler showed that OmniPaxos and LibPaxos3 spent substantial CPU time in heap allocation, object serialization, and memory clear operations (`bzero`/`memset`) during hot message loops.
 
+== Feature Comparison and Design Map
+
+Consensus implementations are shaped by their target host environment. While Rust OmniPaxos provides features wrapped in macro annotations and abstract traits, our Zig library focuses on explicit integration boundaries, zero runtime allocations, and static memory bounds.
+
+#table(
+  columns: (1.1fr, auto, 1.6fr),
+  table.header([*Capability*], [*Zig Core*], [*Design Notes*]),
+  [Multi-Paxos replicated log], [Yes], [Stable leader phase skips repeated Phase One.],
+  [Automatic leader election], [Yes], [`tick` starts ballot elections after bounded logical timeouts.],
+  [Leader priority], [Yes], [Priority is ordered inside ballots before node ID.],
+  [Heartbeats], [Yes], [Leaders emit bounded heartbeat traffic from `tick`.],
+  [Message retransmission], [Yes], [`tick` resends outstanding accepts and commits.],
+  [Reconnect repair], [Yes], [`reconnected` repairs one peer without allocation.],
+  [Flexible quorums], [Yes], [Read and write quorums are validated to intersect.],
+  [Batched append], [Yes], [One call returns one write and message effect batch.],
+  [Reads], [Yes], [Point reads, decided prefix, and caller-buffer suffix reads.],
+  [Catch-up], [Yes], [A lagging member requests decided entries from a slot.],
+  [Reconfiguration], [Yes], [An accepted stop seals local appends; a decided stop starts the next epoch.],
+  [Snapshot compaction], [Yes], [`checkpoint` seals an epoch with snapshot metadata.],
+  [Fixed memory], [Yes], [All protocol buffers have compile-time bounds.],
+  [Reusable effects], [Yes], [`Effects.init` avoids clearing large inactive backing arrays.],
+)
+
+=== Reconciling Rust and Zig Native Boundaries
+
+Some consensus libraries solve runtime constraints via framework macros or abstractions. Our Zig library keeps these concerns at the host boundary:
+
+- *Storage & Journaling*: Rather than defining a complex trait, the host application is handed an `Effects` block listing dirty writes. The host handles disk writes and calls `DurableState.apply`.
+- *Network Transport*: There are no socket wrappers in the core. The host sends network envelopes after writes are synced.
+- *Serialization & Codecs*: The host selects its own wire serialization format for its compile-time `Command` type, avoiding derive macro overhead.
+- *Dashboard & Metrics*: Diagnostic properties (role, ballot, leader, decided prefix) are exposed via public read-only accessors.
+
 == Operating Drills: Rehearsing Failure
 
 Before deploying a consensus system to production, the operations team must rehearse common failure scenarios. If you do not know how the system will react, you are not ready to operate it.
