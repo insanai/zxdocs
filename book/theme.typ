@@ -57,7 +57,7 @@
   body
 }
 
-#let title_page() = {
+#let title_page_editorial_draft() = {
   let cover_ink = rgb("34405a")
   let cover_muted = rgb("748097")
   let cover_blue = rgb("dfeaf6")
@@ -182,6 +182,138 @@
       #text(size: 7.8pt, fill: cover_muted)[Part-Time Parliament]
     ],
   )
+}
+
+#let title_page() = {
+  let cover_ink = rgb("233149")
+  let cover_muted = rgb("626b77")
+  let cover_gold = rgb("a98337")
+  let cover_blue = rgb("275d98")
+  let cover_green = rgb("356b52")
+  let cover_rule = rgb("d8d3c9")
+  let cover_paper = rgb("fdfcf9")
+
+  set page(
+    margin: (x: 23mm, top: 15mm, bottom: 18mm),
+    header: none,
+    numbering: none,
+    background: rect(width: 100%, height: 100%, fill: cover_paper),
+  )
+
+  align(center)[
+    #v(8mm)
+    #text(size: 45pt, weight: "light", tracking: 7pt, fill: cover_ink)[PAXOS]
+    #v(7mm)
+    #grid(
+      columns: (1fr, auto, 1fr),
+      column-gutter: 7pt,
+      align: horizon,
+      line(length: 100%, stroke: 0.65pt + cover_gold),
+      circle(radius: 2.3pt, fill: cover_gold),
+      line(length: 100%, stroke: 0.65pt + cover_gold),
+    )
+    #v(7mm)
+    #text(size: 12pt, weight: "medium", tracking: 2.2pt, fill: cover_gold)[
+      THE PART-TIME PARLIAMENT
+    ]
+    #v(7mm)
+    #text(size: 9pt, weight: "medium", tracking: 2pt, fill: cover_ink)[
+      A LITERATE GUIDE TO CONSENSUS
+    ]
+    #v(2mm)
+    #text(size: 9pt, weight: "medium", tracking: 2pt, fill: cover_ink)[
+      FOR UNRELIABLE TIMES
+    ]
+    #v(8mm)
+
+    #cetz.canvas(length: 1cm, {
+      import cetz.draw: *
+
+      // A restrained parliament icon.
+      circle((0, 3.15), radius: 0.72, fill: cover_paper,
+        stroke: 0.85pt + cover_muted)
+      rect((-0.82, 2.28), (0.82, 3.15), fill: cover_paper, stroke: none)
+      line((-0.78, 2.74), (0.78, 2.74), stroke: 0.85pt + cover_muted)
+      line((0, 3.88), (0, 4.58), stroke: 0.75pt + cover_muted)
+      line((0, 4.53), (0.48, 4.4), (0, 4.25), stroke: 0.8pt + cover_gold)
+      rect((-0.95, 2.45), (0.95, 2.68), fill: cover_paper,
+        stroke: 0.85pt + cover_muted)
+      rect((-1.1, 2.27), (1.1, 2.47), fill: cover_paper,
+        stroke: 0.85pt + cover_muted)
+      rect((-1.25, 2.08), (1.25, 2.28), fill: cover_paper,
+        stroke: 0.85pt + cover_muted)
+      for x in (-0.8, -0.4, 0, 0.4, 0.8) {
+        line((x, 2.08), (x, 2.45), stroke: 0.7pt + cover_muted)
+      }
+      rect((-1.35, 1.9), (1.35, 2.08), fill: cover_paper,
+        stroke: 0.85pt + cover_muted)
+      content((0, 1.48), text(size: 8pt, weight: "medium",
+        tracking: 1.5pt, fill: cover_ink)[LEARNERS])
+
+      // Learners observe a quorum through several independently arriving votes.
+      for p in ((-1.8, 1.22), (-1.5, 0.88), (-1.0, 0.65),
+        (-0.5, 0.53), (0, 0.49), (0.5, 0.53), (1.0, 0.65),
+        (1.5, 0.88), (1.8, 1.22)) {
+        circle(p, radius: 0.055, fill: rgb("aeb2b6"), stroke: none)
+      }
+      circle((-1.12, 0.65), radius: 0.11, fill: rgb("8e9295"), stroke: none)
+      circle((0, 0.49), radius: 0.11, fill: rgb("8e9295"), stroke: none)
+      circle((1.12, 0.65), radius: 0.11, fill: rgb("8e9295"), stroke: none)
+      line((0, 0.38), (0, -0.42), stroke: 0.7pt + rgb("b7b9bb"))
+
+      // Proposer and acceptor remain visually distinct but symmetric.
+      circle((-3.55, -1.35), radius: 1.45, fill: cover_paper,
+        stroke: 0.9pt + cover_blue)
+      circle((3.55, -1.35), radius: 1.45, fill: cover_paper,
+        stroke: 0.9pt + cover_green)
+      content((-3.55, -0.72), text(size: 8.5pt, weight: "medium",
+        tracking: 1pt, fill: cover_blue)[PROPOSERS])
+      content((3.55, -0.72), text(size: 8.5pt, weight: "medium",
+        tracking: 1pt, fill: cover_green)[ACCEPTORS])
+
+      // Person glyph.
+      circle((-3.55, -1.45), radius: 0.22, fill: cover_paper,
+        stroke: 1pt + cover_blue)
+      line((-3.92, -2.08), (-3.88, -1.85), (-3.72, -1.68),
+        (-3.55, -1.62), (-3.38, -1.68), (-3.22, -1.85),
+        (-3.18, -2.08), stroke: 1pt + cover_blue)
+
+      // Shield and check glyph.
+      line((3.55, -1.28), (3.98, -1.42), (3.92, -1.91),
+        (3.75, -2.12), (3.55, -2.25), (3.35, -2.12),
+        (3.18, -1.91), (3.12, -1.42), (3.55, -1.28),
+        stroke: 1pt + cover_green)
+      line((3.32, -1.78), (3.49, -1.96), (3.8, -1.61),
+        stroke: 1pt + cover_green)
+
+      // Both roles converge on the same chosen fact.
+      line((-2.1, -1.35), (-0.38, -1.35), mark: (end: ">"),
+        stroke: 0.9pt + cover_blue)
+      line((2.1, -1.35), (0.38, -1.35), mark: (end: ">"),
+        stroke: 0.9pt + cover_green)
+      circle((0, -1.35), radius: 0.2, fill: cover_gold,
+        stroke: 0.6pt + rgb("8d6e30"))
+    })
+
+    #v(4mm)
+    #text(size: 15pt, fill: cover_ink)[
+      $ |Q| > frac(N, 2) quad => quad Q ∩ Q' != ∅ $
+    ]
+    #v(6mm)
+    #line(length: 49mm, stroke: 0.55pt + cover_gold)
+    #v(5mm)
+    #text(size: 10.5pt, style: "italic", fill: cover_muted)[
+      Agreement, even when members come and go.
+    ]
+    #v(40mm)
+    #text(size: 10pt, weight: "medium", tracking: 2pt, fill: cover_ink)[
+      VIKRANT RATHORE
+    ]
+    #v(2mm)
+    #text(size: 7.5pt, tracking: 0.6pt, fill: cover_muted)[
+      WITH ASSISTANCE FROM RONAK RATHORE
+    ]
+  ]
 }
 
 #let part_page(number, title, summary) = {
