@@ -14,3 +14,4 @@
 #include "book/05_examples.typ"
 #include "book/06_engineering.typ"
 #include "book/07_reference.typ"
+#include "book/08_conformance.typ"

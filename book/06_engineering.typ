@@ -49,9 +49,10 @@ name the failure schedule and the invariant it protects.
 + contiguous learner delivery and same-epoch catch-up;
 + stop-sign sealing, checkpoint metadata, and restore behavior.
 
-These are deterministic hand-written schedules. The repository does *not* yet
-contain the general seeded simulator previously described in earlier drafts of
-this book. It also lacks end-to-end tests against a real crash-safe journal,
+These are deterministic hand-written schedules. `zig build test` additionally
+runs the seeded simulator in `sim/simulation.zig` (below) across three-node
+majority, five-node flexible-quorum, and prioritized configurations. The
+repository still lacks end-to-end tests against a real crash-safe journal,
 corrupted/truncated records, codec version skew, authenticated transport,
 snapshot transfer, client retry recovery, and multi-epoch process restart.
 
@@ -62,35 +63,46 @@ snapshot transfer, client retry recovery, and multi-epoch process restart.
   atomic application-state updates. Those are required host tests.
 ])
 
-== Build the missing deterministic fault harness
+== The deterministic fault harness
 
-A useful simulator owns nodes, durable images, application images, logical
-ticks, and an explicit envelope queue. One seeded action chooses among:
+`sim/simulation.zig` implements the simulator this section previously only
+sketched. Each seeded run owns the nodes, one append-only write journal per
+node standing in for the disk, a message bag delivered in random order, and a
+link-cut matrix. One seeded action chooses among delivering (or dropping or
+duplicating) an envelope, ticking a node, proposing a uniquely identified
+command at the leader, cutting or healing a link, reconnecting, and crashing a
+node at one of three host commit points: before any write is persisted, after
+a durable *prefix* of the writes with no message sent, or after all writes
+with only a prefix of the messages sent. Restart replays the journal through
+`DurableState.apply` and any replay error is itself a failure.
 
-1. deliver, drop, duplicate, or reorder one envelope;
-2. tick one node;
-3. crash a node, discarding volatile `Node` and undurable effects;
-4. restore from the selected durable prefix;
-5. reconnect a link or request catch-up;
-6. propose a uniquely identified client command.
+After every observed transition the harness checks: all non-null committed
+values for a slot agree with a golden first-commit table, committed values
+were proposed or are the no-op, `promised` never regresses within an
+incarnation, and the decided prefix never shrinks. Every run ends with a
+fault-free quiescence phase that must converge on one leader and one decided
+prefix, which catches liveness regressions, not only safety ones.
 
-After every action, run at least these oracles:
+Failures print the seed, the step, and a trailing action trace;
+`zig build sim -- --seed=N --steps=M --verbose` replays a run exactly, and
+the runner halves the step budget to report a minimal reproduction. CI runs
+64 seeds per configuration inside `zig build test`; a nightly pipeline runs
+`--seeds=10000 --steps=4096`.
 
-```text
-for every slot:
-    all non-null committed values are equal
-for every node:
-    promised never decreases in its durable history
-    applied slots form a prefix and each command is applied at most once
-for every client request:
-    all recorded results are equal
-```
+This harness found three real defects on its first sweeps: `recordCommit`
+treated a commit that disagreed with a stale local vote as corruption (legal
+Paxos whenever the choosing quorum excluded that node), a restarted node
+whose replayed log was committed-but-undelivered could never re-release its
+prefix, and phase one did not return decrees a node had learned without
+voting, so a leader behind on the log could stall forever. Each fix landed
+with the seed that exposed it.
 
-Record the seed and the minimized action trace. Start with one slot and three
-members; increase slots, restarts, and epochs only after the smaller state space
-is trustworthy. A TLA+ specification would complement this harness, especially
-if the project states how message types and durable writes refine specification
-actions. No such refinement is currently shipped.
+`specs/Paxos.tla` now complements the harness: a TLC-checked model of the
+durable state and messages, with the promise-carries-learned-decrees rule
+included, checking agreement, commit uniqueness, promise dominance, and
+validity on a finite configuration. The spec's action-to-code mapping is in
+the conformance appendix and `specs/README.md`; a mechanical refinement
+relation between the Zig code and the spec is still not established.
 
 #exercise([19.1], [
   Design the smallest schedule that crashes an acceptor after it emits a reply
@@ -101,32 +113,48 @@ actions. No such refinement is currently shipped.
 
 == The local CPU benchmark
 
-`zig build benchmark-zig` runs 4,096 sequential `u64` values through three
-in-memory nodes, drains every message, reports the median of seven samples, and
-checks a sum. Two invocations during the 18 July 2026 book review reported:
+`zig build benchmark-zig` runs a workload matrix through in-memory nodes:
+commit modes (one value synchronously, pipelined windows of 8 and 64,
+batches of 16 and 256), payload sizes (8 B, 64 B, 1 KiB), cluster sizes
+(3 and 5), and a run with twice the needed log slots so the cost of
+exactly-sized arrays is measured instead of assumed. Every run reports the
+median of seven samples with min and max, a latency distribution from a
+separate instrumented pass, a measured message count, and a checksum, and
+exits nonzero if the count or checksum is wrong. `zig build benchmark`
+adds the pinned OmniPaxos 0.2.2 and LibPaxos3 workloads and the durable
+benchmark below. `sh benchmarks/run-all.sh` runs everything and writes a
+machine-readable file under `benchmarks/results/`; the tables below are
+rendered from `latest.json` at book build time, so the book cannot cite a
+number that was not measured and committed.
 
-#table(
-  columns: (1.4fr, auto),
-  table.header([*Measure*], [*Observed value*]),
-  [Median CPU time per value], [116.46 ns and 216.30 ns],
-  [Logical messages], [24,576],
-  [Logical messages per value], [6.00],
-  [Checksum on both runs], [8,390,656],
-)
+#benchmark_results_table()
 
-The timing spread under an uncontrolled desktop scheduler is itself evidence:
-one local number is not a stable product claim. The message count and checksum
-are deterministic for this workload; elapsed time is not.
+Three findings from the committed results deserve emphasis. First, elapsed
+time on an uncontrolled desktop varies by around two times between quiet
+and loaded runs; message counts and checksums are deterministic, timings
+are not, which is why every committed result carries its environment.
+Second, the comparison inverts with the harness shape: proposing one value
+at a time measures per-append overhead, where this library is roughly an
+order of magnitude ahead, but once the harness pipelines, OmniPaxos
+coalesces log entries into far fewer messages and its per-value time
+approaches or beats this library's, whose message count stays fixed at six
+per value. That is a design difference the numbers must not launder into a
+language claim. Third, LibPaxos3 runs a heavier measured twelve-message
+path that includes phase-one preexecution, so its column is labeled, not
+equated.
 
-The aggregate `zig build benchmark` also runs pinned OmniPaxos and LibPaxos3
-workloads. They are useful comparative regression fixtures, not an experiment
-that isolates language, allocator, algorithm, or implementation quality. The
-paths differ in protocol details and message counts. Report machine, build
-mode, versions, sample distribution, and workload whenever publishing results.
+`zig build benchmark-durable` measures the safety contract itself: each
+node serializes its writes to an append-only file and syncs before any
+message moves. Durability costs several hundred times the in-memory path
+per value with an fsync per transition, and group commit over windows of
+eight recovers roughly a five-fold improvement. Read the in-memory numbers
+with those magnitudes in mind.
 
-The benchmark excludes real serialization, system calls, fsync, network delay,
-contention, snapshots, retries, client admission, and application work. Its
-numbers must never be presented as service latency or throughput.
+The in-memory benchmarks still exclude real serialization, network delay,
+contention, snapshots, retries, client admission, and application work.
+Their numbers must never be presented as service latency or throughput,
+and none of these workloads isolates language, allocator, algorithm, or
+implementation quality.
 
 == Capability map: exact boundaries
 

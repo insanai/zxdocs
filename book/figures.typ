@@ -89,21 +89,35 @@
   line((6.5, 1.0), (6.5, 0.82), mark: (end: ">"), stroke: blue)
 })
 
-#let benchmark_plot() = cetz.canvas(length: 1cm, {
-  import cetz.draw: *
-  line((0, 0), (8, 0), stroke: 0.8pt + gray)
-  line((0, 0), (0, 4.8), stroke: 0.8pt + gray)
-  rect((0.7, 0), (1.9, 0.21), fill: blue_light, stroke: blue)
-  rect((3.1, 0), (4.3, 1.68), fill: amber_light, stroke: amber)
-  rect((5.5, 0), (6.7, 4.52), fill: green_light, stroke: green)
-  content((1.3, 0.48), [Zig])
-  content((3.7, 2.05), [LibPaxos3])
-  content((6.1, 4.82), [OmniPaxos])
-  content((1.3, -0.45), [0.21 us])
-  content((3.7, -0.45), [1.68 us])
-  content((6.1, -0.45), [4.52 us])
-  content((-0.6, 2.1), [time])
-})
+// Renders the committed benchmark results. The book can only cite numbers
+// that were actually measured: this table is generated from
+// benchmarks/results/latest.json (written by benchmarks/run-all.sh) at
+// build time, environment stamp included.
+#let benchmark_results_table() = {
+  let data = json("../../benchmarks/results/latest.json")
+  let meta = data.meta
+  [
+    Recorded #meta.date on #meta.host (#meta.cpu, #meta.os), revision
+    #raw(meta.git), Zig #meta.zig, rustc #meta.rustc.
+  ]
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    table.header(
+      [*Implementation*], [*Workload*], [*Mode*], [*ns / value*],
+      [*Messages*],
+    ),
+    ..data
+      .runs
+      .map(run => (
+        [#run.impl],
+        [#run.workload],
+        [#run.mode],
+        [#calc.round(run.ns_per_value, digits: 1)],
+        [#if "messages" in run { str(run.messages) } else { "-" }],
+      ))
+      .flatten(),
+  )
+}
 
 #let tick_flow() = diagram(
   spacing: (27mm, 15mm),
