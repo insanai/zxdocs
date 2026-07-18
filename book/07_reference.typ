@@ -1,133 +1,221 @@
-#import "theme.typ" : *
+#import "theme.typ": *
 
 #part_page("VII", [Desk reference], [
-  This part collects messages, state, errors, formulas, and answers in one place.
+  Messages, effects, APIs, errors, invariants, exercise answers, and research
+  sources collected beside one another.
 ])
 
 = Consensus Desk Reference
 
 == Message reference
 
-This table summarizes all core protocol messages exchanged between nodes in our Multi-Paxos implementation:
-
 #table(
-  columns: (auto, 1.2fr, 1.5fr),
+  columns: (auto, 1.2fr, 1.55fr),
   table.header([*Message*], [*Fields*], [*Meaning*]),
-  [`prepare`], [`ballot, decided_through`], [Ask an acceptor to promise this ballot and report
-    accepted state above `decided_through`.],
-  [`promise`], [`ballot, slot, accepted`], [Report one accepted slot for phase
-    one recovery.],
-  [`promise_done`], [`ballot, accepted_count, decided_through`], [State how many distinct promise
-    entries complete this reply and report peer's decided through index.],
+  [`prepare`], [`ballot, decided_through`], [Ask an acceptor to promise this
+    ballot and report accepted state above the candidate's prefix.],
+  [`promise`], [`ballot, slot, accepted`], [Report one accepted slot for
+    phase-one recovery.],
+  [`promise_done`], [`ballot, accepted_count, decided_through`], [State the
+    number of distinct entries that completes this acceptor's reply.],
   [`accept`], [`ballot, slot, value`], [Ask an acceptor to vote.],
-  [`accepted`], [`ballot, slot, decided_through`], [Acknowledge a durable vote and report peer's decided through index.],
-  [`commit`], [`slot, value`], [Teach a chosen value to a learner.],
-  [`learn`], [`from_slot`], [Ask a peer for known commits.],
-  [`nack`], [`rejected, promised, decided_through`], [Reject work below a durable promise and report peer's decided through index.],
-  [`heartbeat`], [`ballot, decided_through`], [Leader heartbeat reporting its decided through index.],
+  [`accepted`], [`ballot, slot, decided_through`], [Acknowledge a durable vote
+    and report the local released prefix.],
+  [`commit`], [`slot, value`], [Teach a value that a correct sender knows was
+    chosen.],
+  [`learn`], [`from_slot`], [Request known commits from a nonzero slot.],
+  [`nack`], [`rejected, promised, decided_through`], [Reject a stale ballot and
+    report the higher promise and local prefix.],
+  [`heartbeat`], [`ballot, decided_through`], [Leader traffic for a matching
+    durable promise.],
 )
 
-== Durable writes
-
-These are the three critical records that acceptors must write to stable disk storage before sending any replies over the network:
+== Effect ordering
 
 #table(
-  columns: (auto, 1fr, 1.5fr),
-  table.header([*Write*], [*Fields*], [*Required before sending...*]),
-  [`promise`], [`ballot`], [Promise replies for that ballot.],
-  [`accept`], [`ballot, slot, value`], [Accepted acknowledgement.],
-  [`commit`], [`slot, value`], [Application delivery and catch up claim.],
+  columns: (auto, 1.1fr, 1.65fr),
+  table.header([*Write*], [*Fields*], [*Must be durable before*]),
+  [`promise`], [`ballot`], [`promise`, `promise_done`, or other evidence that
+    depends on the promise.],
+  [`accept`], [`ballot, slot, value`], [`accepted` and any later claim based on
+    that vote.],
+  [`commit`], [`slot, value`], [Commit broadcast from the leader, application
+    delivery, and catch-up claims based on that record.],
 )
 
-== Node state
+Consume one batch as: append writes in order; sync the batch; send messages;
+apply released entries in order. Do not call another transition before draining
+the batch. On append or sync failure, discard the already-mutated live node and
+restore from verified durable state.
 
-This table maps the internal fields of a consensus node (`Consensus.Node`) to their persistence lifecycle:
+== Core API
+
+#table(
+  columns: (1.3fr, 1.7fr),
+  table.header([*Symbol*], [*Contract*]),
+  [`Protocol(Value, Options)`], [Creates fixed-membership bounded Paxos types;
+    `Value` must contain no pointer, slice, or reference recursively.],
+  [`Membership.init(ids)`], [Validates nonzero unique IDs and quorum sizes.],
+  [`Node.init`, `initWithPriority`], [Bootstrap an empty member.],
+  [`Node.restore`, `restoreWithPriority`], [Restore protocol durable state;
+    application state remains host-owned.],
+  [`campaign(noop)`, `tick(noop)`], [Start phase one explicitly or advance
+    deterministic liveness counters.],
+  [`step(envelope)`], [Process one authenticated, decoded member envelope for
+    this recipient.],
+  [`propose`, `proposeBatch`], [Assign slots after phase one; return
+    `NotLeader` otherwise.],
+  [`reconnected`, `requestCatchUp`], [Repair one peer path or emit a same-epoch
+    `learn` request.],
+  [`committedAt`, `readDecided`], [Inspect the local decided log; not an
+    application read protocol.],
+  [`currentLeader`, `decidedThrough`], [Diagnostic leader hint and contiguous
+    released prefix.],
+  [`Effects.init/reset`], [Initialize or clear active counts without clearing
+    backing storage. Public transitions reset automatically.],
+  [`DurableState.apply`], [Reference replay semantics for ordered `Write`
+    records; not a disk format.],
+)
+
+== Replicated-log API
+
+`ReplicatedLog(Value, Options)` wraps `Protocol` with an `Entry` union of
+`command` and `stop`. Its bound is named `max_entries`, not `max_slots`.
+
+#table(
+  columns: (1.35fr, 1.65fr),
+  table.header([*Symbol*], [*Contract*]),
+  [`init(id, configuration_id, membership)`], [Start a nonzero configuration.],
+  [`campaign`, `tick`, `step`], [Core operations with application `Value`
+    no-ops wrapped as commands.],
+  [`append`, `appendBatch`], [Propose commands unless a stop is pending or
+    decided.],
+  [`reconfigure(id, members, metadata)`], [Propose a strictly newer stop sign
+    and seal local appends.],
+  [`checkpoint(metadata)`], [Propose same-membership stop with ID plus one; does
+    not create or verify a snapshot.],
+  [`isReconfigured()`], [Return the *decided* stop, which permits host
+    handover.],
+  [`initFromStop`], [Validate the stop's member slice and start its
+    configuration.],
+  [`read`, `decidedThrough`, `currentLeader`], [Inspect this bounded
+    configuration.],
+  [`configurationId`], [Return the host-supplied durable epoch identity.],
+)
+
+== State lifetime
 
 #table(
   columns: (auto, 1fr, auto),
   table.header([*Field*], [*Meaning*], [*Lifetime*]),
   [`durable.promised`], [Highest ballot this acceptor permits.], [Durable],
-  [`durable.accepted`], [Last accepted ballot and value per slot.], [Durable],
+  [`durable.accepted`], [Highest stored ballot/value per slot.], [Durable],
   [`durable.committed`], [Known chosen value per slot.], [Durable],
-  [`role`], [Follower, preparing, or leader.], [Volatile],
-  [`ballot`], [Current local attempt.], [Volatile],
-  [`highest_observed_round`], [Round learned from higher traffic.], [Volatile],
-  [`next_slot`], [Next free proposal slot or zero.], [Rebuilt],
-  [`delivered_through`], [Prefix emitted in this process.], [Volatile],
-  [`promise_*`], [Phase one receipt accounting.], [Volatile],
-  [`recovered`], [Greatest accepted report per slot.], [Volatile],
-  [`proposals`], [Leader value per active slot.], [Volatile],
-  [`acknowledgements`], [Member votes per slot.], [Volatile],
+  [`role`, `ballot`, `leader_hint`], [Local leadership state.], [Volatile],
+  [`highest_observed_round`], [Largest round seen in higher traffic.], [Volatile],
+  [`next_slot`], [Next proposal slot or zero.], [Rebuilt],
+  [`delivered_through`], [Prefix released in this process.], [Volatile],
+  [`promise_*`, `recovered`], [Phase-one completion and recovery state.], [Volatile],
+  [`proposals`, `acknowledgements`], [Leader state per active slot.], [Volatile],
+  [`configuration_id`], [Replicated-log epoch identity.], [Host must persist],
+  [`stop_pending`, `stop_sign`], [Seal state derived from core state/effects.], [Rebuilt],
 )
 
 == Error reference
 
-This list describes the operational errors returned by the public library methods:
-
 #table(
   columns: (auto, 1fr),
   table.header([*Error*], [*Meaning*]),
-  [`EmptyMembership`], [No voter was supplied.],
-  [`TooManyMembers`], [Membership exceeds `max_members`.],
-  [`InvalidNodeId`], [Node zero was supplied.],
-  [`DuplicateNodeId`], [One identity occurs twice.],
-  [`NotMember`], [A local or source identity is outside membership.],
-  [`WrongRecipient`], [The envelope target is not this node.],
-  [`NotLeader`], [Proposal was attempted before completed phase one.],
+  [`EmptyMembership`, `TooManyMembers`], [Membership length violates bounds.],
+  [`InvalidNodeId`, `DuplicateNodeId`], [ID zero or duplicate ID.],
+  [`InvalidReadQuorum`, `InvalidWriteQuorum`], [Configured size is zero or
+    exceeds actual membership.],
+  [`NonIntersectingQuorums`], [`read + write <= member_count`.],
+  [`NotMember`, `WrongRecipient`, `InvalidPeer`], [Invalid envelope or peer
+    identity for this operation.],
+  [`NotLeader`], [Proposal attempted before completed phase one.],
   [`BallotExhausted`], [No greater `u64` round exists.],
-  [`InvalidSlot`], [Slot zero was supplied where a real slot is required.],
-  [`SlotLimitReached`], [The bounded log has no free slot.],
-  [`InvalidPromise`], [A reply count exceeds the slot bound.],
-  [`MissingNoop`], [Recovery needs a no op but none was supplied.],
-  [`ConflictingValue`], [One ballot and slot carried two values.],
-  [`ConflictingCommit`], [One slot was taught two committed values.],
-  [`PromiseRegression`], [Journal replay tried to move a promise backward.],
+  [`InvalidSlot`, `SlotLimitReached`], [Slot zero or no remaining bounded slot.],
+  [`EmptyBatch`, `SlotBufferTooSmall`, `BatchTooLarge`], [Invalid batch input or
+    output capacity.],
+  [`ReadBufferTooSmall`], [Caller output cannot hold the available prefix.],
+  [`InvalidPromise`, `MissingNoop`, `MissingProposedValue`], [Incomplete or
+    inconsistent leader recovery state.],
+  [`PromiseRegression`, `ConflictingValue`, `ConflictingCommit`], [Replay or
+    transition contradicts durable monotonicity.],
+  [`InvalidConfigurationId`, `ConfigurationIdRegression`], [Zero or non-newer
+    configuration ID.],
+  [`ConfigurationIdExhausted`], [No next `u64` configuration ID.],
+  [`MetadataTooLarge`, `LogSealed`], [Stop metadata exceeds its bound or the
+    current configuration no longer accepts commands.],
 )
+
+`paxos.explainError(err)` supplies operator-oriented prose. Errors from host
+I/O have no protocol-specific explanation and must retain their original
+storage or transport context.
 
 == Formula sheet
 
-Quick mathematical references for cluster design:
-
 #table(
-  columns: (1.3fr, auto, 1.2fr),
+  columns: (1.4fr, auto, 1.2fr),
   table.header([*Quantity*], [*Formula*], [*Example*]),
-  [Uniform majority quorum], [`floor(N / 2) + 1`], [`N=5` gives `3`.],
-  [Crash tolerance], [`N - quorum`], [`5 - 3` gives `2`.],
-  [Stable messages, this three node path], [`2(N - 1) + (N - 1)`],
-    [`2 + 2 + 2 = 6`.],
-  [Epoch duration], [`slots / slots_per_second`], [`10M / 200 = 50,000 s`.],
-  [Accept payload egress], [`payload * peers * rate`],
-    [`8 KiB * 4 * 200`.],
+  [Majority], [`floor(N / 2) + 1`], [`N=5` gives 3.],
+  [Majority crash tolerance], [`N - majority`], [`5 - 3` gives 2.],
+  [Uniform flexible safety], [`Q1 + Q2 > N`], [`4 + 2 > 5`.],
+  [Stable-path logical messages], [`3(N - 1)`], [`N=3` gives 6: accepts,
+    accepted replies, commits.],
+  [Approximate epoch duration], [`remaining_slots / peak_slot_rate`], [Reserve
+    capacity for recovery and the stop sign.],
+  [Accept payload egress], [`payload_bytes * peers * proposals_per_second`],
+    [Excludes headers, retransmits, and commit payloads.],
 )
 
 == Invariants for review
 
-Review these ten rules to double-check any change to the protocol:
-
-- *Ballot Uniqueness*: Ballot numbers must be globally unique and totally ordered.
-- *Quorum Intersection*: Any two quorums in the same epoch must share a node.
-- *Promise Invariant*: An acceptor must never accept a proposal with a ballot lower than its promise.
-- *Single Value per Ballot*: One ballot and slot can have at most one proposed value.
-- *Highest Vote Recovery*: A new leader must propose the value from the highest ballot number reported in its complete Phase One quorum.
-- *Consensus Boundary*: A value is chosen only when a quorum has accepted it.
-- *Commit Consistency*: A slot has at most one committed value.
-- *Contiguous Application*: Committed entries must be applied to the state machine sequentially in slot order.
-- *Write-Before-Send*: Acceptors must sync votes to disk before sending messages.
-- *Epoch Limits*: Slots must never be reused within the same epoch.
+1. Complete ballots are unique and totally ordered.
+2. Every allowed phase-one quorum intersects every allowed phase-two quorum.
+3. An acceptor never accepts below its durable promise.
+4. One ballot and slot never carry two different values.
+5. A new leader selects the value with the greatest accepted ballot in each
+   slot across a complete phase-one quorum, or uses a no-op for a required hole.
+6. A value is chosen when a phase-two quorum has accepted it; knowledge and
+   commit dissemination may occur later.
+7. A committed slot never changes value.
+8. Application release is a contiguous slot prefix.
+9. Every effect-dependent message waits for all writes in its batch to sync.
+10. Slots are not reused within an epoch, and a new epoch begins only after a
+    decided stop sign and correct host state transfer.
 
 == Answers to selected exercises
 
 === Exercise 1.1
-A majority of five is three. Two nodes may be offline while three remain active to form a quorum and make progress.
+A majority of five is three. Two nodes may be unavailable while three remain.
 
 === Exercise 2.1
-`{A1, A2}` and `{A3, A4}` do not intersect. If both were quorums, they could choose conflicting values independently, violating safety.
+`{A1, A2}` and `{A3, A4}` do not intersect. They could choose conflicting
+values independently if both were legal quorums.
 
 === Exercise 4.1
-The new candidate must propose `apple` because it is associated with ballot 9, which is the highest accepted ballot number reported. The fact that ballot 3 succeeded does not change this; ballot 9 was already forced to carry `apple` by induction.
+Choose `apple` from ballot 9. Do not count values. Knowledge that ballot 3 was
+chosen does not alter the mechanical rule; safety implies the ballot-9 vote is
+also `apple` if the history is legal.
+
+=== Exercise 4.2
+The shared acceptor may have any name; both value blanks are `x`.
 
 === Exercise 8.1
-The promise write must precede the promise reply. The accept write must precede the accepted reply. The commit write must precede application delivery and catch-up.
+`tea` is already chosen when the quorum accepts, before the commit record or
+broadcast. Durable accepted records in every future intersecting recovery
+quorum force later leaders to preserve `tea`; `coffee` cannot be chosen.
+
+=== Exercise 11.1
+Do not start a new epoch at prefix 80. Stop new appends, recover and decide the
+accepted slots (or have a higher ballot lawfully select their values), apply
+the complete prefix, snapshot it, decide the stop sign, and only then hand over.
+
+=== Exercise 14.1
+With `N=7` and `Q2=3`, phase one must satisfy `Q1+3>7`, so `Q1=5` is the
+minimum. Leader replacement can tolerate two unavailable members.
 
 == Glossary
 
@@ -135,62 +223,84 @@ The promise write must precede the promise reply. The accept write must precede 
   columns: (auto, 1fr),
   table.header([*Term*], [*Meaning*]),
   [Accepted], [One acceptor durably voted for a ballot, slot, and value.],
-  [Applied], [The application state machine executed a committed entry.],
-  [Ballot], [A unique ordered proposal attempt.],
-  [Chosen], [A quorum accepted one value in one slot.],
-  [Commit], [A learner's record of a chosen value.],
-  [Epoch], [One period with fixed membership and nonreused slots.],
+  [Chosen], [A phase-two quorum accepted one value in one slot.],
+  [Committed], [A learner durably recorded a value known to be chosen.],
+  [Applied], [The host state machine executed a committed entry.],
+  [Ballot], [A unique ordered proposal attempt `(round, priority, node)`.],
+  [Epoch], [One bounded configuration with fixed membership and fresh slots.],
   [Leader], [A candidate that completed phase one for its ballot.],
-  [Learner], [A role that discovers chosen values.],
-  [No op], [A valid application value that changes no state.],
-  [Promise], [An acceptor's durable refusal to accept lower ballots.],
-  [Quorum], [A voter set that intersects every other legal quorum.],
-  [Slot], [A one based position in the replicated log.],
+  [No-op], [A host-defined value that consumes a slot without application work.],
+  [Promise], [A durable refusal to accept lower ballots.],
+  [Quorum], [A voter subset participating in a phase.],
+  [Slot], [A one-based position in the bounded log.],
+  [Stop sign], [A decided entry that names the next configuration and seals the old one.],
 )
 
-== Further study
+== Research and design sources
 
-For readers who wish to dive deeper into the theoretical and engineering aspects of consensus, we recommend the following literature and implementations:
+=== Paxos, state machines, and proof structure
 
-=== Core Theoretical Papers
++ #link("https://lamport.azurewebsites.net/pubs/lamport-paxos.pdf")[Leslie
+  Lamport, "The Part-Time Parliament"] develops the replicated state-machine
+  setting and the ballot invariants.
++ #link("https://lamport.azurewebsites.net/pubs/paxos-simple.pdf")["Paxos Made
+  Simple"] derives the proposal rules from consensus safety requirements.
++ #link("https://lamport.azurewebsites.net/tla/paxos-algorithm.html")["The
+  Paxos Algorithm"] teaches three levels: goal, high-level state algorithm,
+  and message algorithm.
++ #link("https://lamport.azurewebsites.net/pubs/teaching-concurrency.pdf")["Teaching
+  Concurrency"] argues that state, next-state relations, and invariants are the
+  foundation for understanding concurrent systems.
++ #link("https://lamport.azurewebsites.net/proofs/proofs.html")["How to Write a
+  Proof"] motivates hierarchical structure for long reasoning.
++ #link("https://lamport.azurewebsites.net/pubs/reconfiguration-tutorial.pdf")["Reconfiguring
+  a State Machine"] describes stop signs, padding, and configuration handover.
++ #link("https://lamport.azurewebsites.net/pubs/stoppable.pdf")["Stoppable
+  Paxos"] supplies a more formal stop construction.
++ #link("https://arxiv.org/abs/1608.06696")[Howard, Malkhi, and Spiegelman,
+  "Flexible Paxos"] states the cross-phase quorum intersection trade-off.
 
-- *Leslie Lamport, "The Part-Time Parliament" (1998)*: The original Paxos paper, presenting the algorithm through the metaphor of a Greek island's legislature. Safe but notoriously difficult to read.
-- *Leslie Lamport, "Paxos Made Simple" (2001)*: A classic, much more direct explanation of Paxos derived from first principles.
-- *Heidi Howard et al., "Flexible Paxos: Quorum Intersection Revisited" (2016)*: A major breakthrough showing that Paxos does not require majorities for both phases—only that every Phase 1 (prepare) quorum intersects with every Phase 2 (accept) quorum. This allows cheap, small write quorums at the cost of larger recovery quorums.
+=== Learning design
 
-=== Reconfiguration and Snapshots
++ #link("https://doi.org/10.1023/A:1022193728205")[Sweller, van Merrienboer,
+  and Paas, "Cognitive Architecture and Instructional Design"] reviews limited
+  working memory, schemas, worked examples, split attention, and redundancy.
++ #link("https://doi.org/10.1207/S1532690XCI0701_1")[Ward and Sweller,
+  "Structuring Effective Worked Examples"] studies attention and cognitive
+  load in worked-example design.
++ #link("https://doi.org/10.1023/B:TRUC.0000021815.74806.F6")[Renkl, Atkinson,
+  and Große, "How Fading Worked Solution Steps Works"] motivates transition
+  from examples to completion and independent problems.
++ #link("https://doi.org/10.1207/s15516709cog1302_1")[Chi et al.,
+  "Self-Explanations"] supplies the empirical basis for explaining why each
+  worked step follows.
++ #link("https://doi.org/10.1111/j.1467-9280.2006.01693.x")[Roediger and
+  Karpicke, "Test-Enhanced Learning"] motivates retrieval after a delay rather
+  than relying on rereading familiarity.
 
-- *Leslie Lamport et al., "Reconfiguring a Replicated State Machine" (Vertical Paxos) (2009)*: Explains how to change configuration on the fly using auxiliary consensus instances to choose the configuration sequence.
-- *Diego Ongaro and John Ousterhout, "In Search of an Understandable Consensus Algorithm" (Raft) (2014)*: While presenting a different protocol, it provides an excellent discussion on joint consensus reconfiguration and log compaction via snapshots.
+=== Feynman and Knuth as design influences
 
-=== Alternative Protocols and Scaling
-
-- *M. Moraru et al., "There Is More Consensus in an Egalitarian Parliament" (EPaxos) (2013)*: An egalitarian Paxos variant where any replica can act as a leader for any command, resolving conflicts dynamically to achieve lower latency.
-- *Michael Whittaker et al., "Compartmentalized Paxos" (2020)*: Deconstructs the single-leader bottleneck by splitting the leader's tasks (batching, sequencing, replication) across independent, scale-out proxy nodes.
-
-=== Real-World Implementations for Study
-
-- *TigerBeetle (Zig)*: A production distributed financial accounting database built in Zig. It utilizes a Viewstamped Replication/Paxos variant designed around the TigerStyle coding system (zero-allocation, static bounds).
-- *OmniPaxos (Rust)*: A modern Rust library that implements a Multi-Paxos engine, including active leader lease management and built-in reconfiguration.
-- *LibPaxos3 (C)*: A clean, minimal C library implementing a Multi-Paxos core with event-driven transport, useful for understanding low-level message buffering.
-
-=== Recommended Web Resources
-
-- #link("https://lamport.azurewebsites.net/pubs/paxos-simple.pdf")[Lamport's Paxos Made Simple (PDF)]
-- #link("https://arxiv.org/abs/1608.06696")[Flexible Paxos Paper (arXiv)]
-- #link("https://github.com/tigerbeetle/tigerbeetle")[TigerBeetle Codebase on GitHub]
-- #link("https://omnipaxos.com/")[OmniPaxos Documentation]
-- #link("https://bitbucket.org/sciascid/libpaxos")[LibPaxos3 Core Repository]
-- #link("https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md")[TigerStyle Guide]
++ #link("https://feynman.com/science/what-is-science/")[Richard Feynman, "What
+  Is Science?"] models concrete explanation, observation, doubt, and admitting
+  when an explanation fails. It is a lecture, not an instructional trial.
++ #link("https://ctlo.caltech.edu/aboutctlo/whoweserve/undergraduates/learning-resources/learning/power-of-teaching")[Caltech,
+  "The Power of Teaching"] presents a modern Feynman-inspired teach-to-learn
+  routine and explicitly links vagueness to a study gap.
++ #link("https://cs.stanford.edu/~knuth/lp.html")[Donald Knuth, "Literate
+  Programming"] treats programs as literature addressed to people. This book
+  adopts its human-first exposition without claiming an empirical learning
+  effect or generating Zig from prose.
 
 == Closing note
 
-Paxos is not a bag of messages. It is one rule carried through time. A later
-ballot must respect what an earlier quorum may have chosen. Quorum intersection
-finds a witness. Stable storage lets the witness remember. Phase one asks the
-witness. Phase two records the next fact. Slots put facts in order.
+Paxos is not a bag of messages. It is one preservation rule carried through
+time. Quorum intersection finds a witness. Stable storage lets the witness
+remember. Phase one asks. Phase two records. Slots order decisions. The host
+makes those abstract facts physical with sync, codecs, identity, deterministic
+application, snapshots, and recovery.
 
-The rest is engineering. That phrase does not mean the rest is easy. It means
-the proof has given the engineering a fixed point. Every queue, disk write,
-retry, snapshot, and benchmark can now be judged by whether it preserves that
-point.
+#teach_back([
+  Close the book and explain the entire protocol in six sentences. Reopen this
+  invariant list, mark the first omitted fact, and revise only that sentence.
+  The gap—not the first draft—is the learning result.
+])

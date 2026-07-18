@@ -2,18 +2,24 @@
 #import "figures.typ": *
 
 #part_page("V", [Three worked systems], [
-  We now build a small counter, a useful key value service, and a large regional
-  control plane. Each example keeps the same protocol and adds one engineering
-  layer at a time.
+  We run the repository's counter, complete a key-value host design, and review
+  a regional control-plane architecture. Guidance fades as the systems grow.
 ])
 
 = Three Worked Systems
 
+#objectives([
+  By the end of this part you should be able to trace the runnable counter's
+  effect loop, add durable request deduplication and explicit read semantics,
+  and decompose a larger service into independently recoverable shards without
+  inventing guarantees the library does not provide.
+])
+
 == Small Example: The Replicated Counter
 
-The simplest useful state machine is a replicated counter. We run it on three nodes, and the application state is a single integer.
+*Status: complete runnable repository example.* Run it with `zig build run`.
 
-Our command structure is small:
+The command in `examples/counter.zig` is self-contained:
 
 ```zig
 const Command = struct {
@@ -23,39 +29,57 @@ const Command = struct {
     amount: i64,
 };
 
-const Consensus = paxos.Protocol(Command, .{
+const P = paxos.Protocol(Command, .{
     .max_members = 3,
     .max_slots = 32,
 });
 ```
 
-To run the counter:
-1. *Initialize*: Set up three nodes with a shared membership configuration.
-2. *Campaign*: Propose a No-Op to establish leadership for Node 1.
-3. *Propose*: Submit `add 10` requests to the leader.
-4. *Apply*: When commits are reported, update the local counter:
+The example initializes three nodes, campaigns node 1 with a no-op, proposes
+three `add 10` commands, and drains every generated envelope. The central
+function is not `propose`; it is the effect consumer:
 
 ```zig
+// Repository excerpt: examples/counter.zig
+for (effects.writesSlice()) |write|
+    try disks[node_index].apply(write);
+
+for (effects.messagesSlice()) |message| {
+    queue[queue_count.*] = message;
+    queue_count.* += 1;
+}
+
 for (effects.committedSlice()) |entry| {
-    if (entry.value.operation == .add) {
-        counter += entry.value.amount;
-    }
+    if (entry.value.operation == .add)
+        counters[node_index] += entry.value.amount;
 }
 ```
 
-If we propose `add 10` three times, every node applies the entries in order, and all three counters reach exactly `30`.
+All three counters reach 30. `DurableState` and the queue are memory in this
+demonstration. The ordering is real; durability and transport are simulated.
+The `client` and `request` fields are unique in the workload, but the demo does
+not deduplicate them.
 
-== Middle Example: The Key-Value Store
+#exercise([16.1], [
+  Change only the in-memory delivery schedule so the final queued envelope is
+  delivered first. Predict the counters before running. Next deliver one
+  envelope twice. Which library test gives confidence about protocol
+  idempotence, and what application behavior is still untested?
+])
 
-In a key-value service, we map string keys to hashes referencing separate blob storage. This system introduces the challenge of *client retry ambiguity*.
+== Middle Example: A Key-Value Host
 
-Imagine a client sends `put("key1", hashA)`. The write commits successfully, but the network drops the leader's reply. The client does not know if the write succeeded. It must retry. 
+*Status: design sketch.* `BoundedMap`, `Result`, journal, codec, snapshot store,
+and client service are not supplied by this repository.
 
-If we simply write the retry to the log in a new slot, the state machine will execute the request twice. If the operation is a simple write, it might be harmless, but for increment or append operations, duplicate execution violates application semantics.
+A key-value service may order hashes that reference separate immutable blob
+storage. It also has to resolve client retry ambiguity: a write may commit even
+when its reply is lost.
 
-=== Making Operations Idempotent
+=== A bounded request discipline
 
-To solve this, our state machine keeps a *Client Deduplication Table*. It maps each `client_id` to its last completed `request_id` and the result of that operation:
+One compact design permits at most one outstanding request per client and
+persists the most recent ID and result with the application state:
 
 ```zig
 const ClientRecord = struct {
@@ -70,29 +94,27 @@ const State = struct {
 };
 ```
 
-When applying a committed command:
+The application transition must advance through duplicate log slots even when
+it suppresses a duplicate mutation:
 
 ```zig
+// Design sketch, not repository code.
 fn apply(state: *State, slot: paxos.Slot, command: Command) !Result {
     std.debug.assert(slot == state.applied_slot + 1);
 
-    // 1. Check for duplicates
     if (state.clients.get(command.client_id)) |record| {
         if (command.request_id <= record.request_id) {
-            // Already applied! Return the cached result.
+            state.applied_slot = slot;
             return record.result;
         }
     }
 
-    // 2. Apply mutation
     const result = switch (command.operation) {
         .noop => Result.noop,
         .put => try state.values.put(command.key, command.value_hash),
         .remove => state.values.remove(command.key),
         .read_barrier => Result.barrier,
     };
-
-    // 3. Update client record
     try state.clients.put(command.client_id, .{
         .request_id = command.request_id,
         .result = result,
@@ -102,33 +124,71 @@ fn apply(state: *State, slot: paxos.Slot, command: Command) !Result {
 }
 ```
 
-Now, if a client retries request 42, the command is written to two slots (say, Slot 14 and Slot 15). The state machine executes it in Slot 14, caches the result, and ignores Slot 15, returning the cached result. Consensus orders the log slots; the application table makes those slots idempotent.
+Persist `values`, `clients`, and `applied_slot` atomically and include all three
+in snapshots. The one-record scheme is correct only with monotonically
+increasing IDs and at most one outstanding request per client. Concurrent or
+out-of-order requests need a bounded per-request result table and an explicit
+garbage-collection rule.
+
+=== Reads are an application protocol
+
+`committedAt` and `readDecided` inspect local protocol state; they do not prove
+that a node is still leader or caught up at the instant of a read. A simple
+linearizable design proposes a `read_barrier` through the leader, waits until
+its slot is applied locally, then reads the database. This costs consensus. A
+lease or read-index optimization requires reasoning outside the current API.
+A follower may serve stale reads only when the service contract permits them
+and should return a version such as configuration ID and applied slot.
+
+#exercise([17.1], [
+  Complete the crash-recovery design: order snapshot verification, journal
+  replay, `Node.restore`, application replay, transport activation, and opening
+  the client listener. Mark the point before which a response would be unsafe.
+])
 
 == Large Example: Regional Control Plane
 
-For a global workload placement service, we must manage routing updates for 50,000 edge routers. We choose five voting nodes placed across three geographic zones: Dublin, London, and Frankfurt.
+*Status: architecture review exercise, not runnable code.*
 
-=== Scaling with Shards
-
-A single Multi-Paxos log cannot scale to handle tens of thousands of writes per second because a single leader becomes a CPU and disk bottleneck.
-
-We solve this by *Sharding*. We partition our routing table updates into 10 separate zones. Each zone runs its own independent `ReplicatedLog` instance on the same physical nodes:
+Assume five voters across three failure zones and many independent routing
+partitions. One leader and one journal can become a bottleneck, so partition
+commands by a stable routing key and run one sealed log per shard:
 
 ```zig
-const Shard = paxos.Protocol(Command, .{
+const Shard = paxos.ReplicatedLog(Command, .{
     .max_members = 5,
-    .max_slots = 32_768,
+    .max_entries = 32_768,
+    .max_batch = 64,
+    .max_metadata_bytes = 96,
 });
 ```
 
-- *Isolation*: A disk failure or queue backlog in Zone 1 does not block consensus in Zone 2.
-- *Parallelism*: Nodes can write to different shard journals concurrently, maximizing disk throughput.
-- *Independence*: Epoch transitions and slot limits are managed separately for each shard.
++ *Protocol independence*: Each shard has its own ballot, slots, stop sign, and
+  bounds.
++ *Resource isolation*: This exists only if the host also bounds per-shard
+  queues and schedules journal, CPU, and network work fairly.
++ *Parallelism*: Different shard journals may progress concurrently when the
+  storage system supports it.
 
-=== Handling Regional Partitions
+A command containing only a blob hash creates another ordering obligation:
+replicate and verify the immutable blob before proposing the command that makes
+the hash visible, or define deterministic missing-blob recovery before apply.
+Paxos orders the hash; it does not store the blob.
 
-Suppose a fiber cut completely isolates the Dublin datacenter (N1, N2). 
+=== Regional partition drill
 
-The London datacenters (N3, N4) and Frankfurt datacenter (N5) still have three active nodes. Since three out of five form a majority, they can campaign, elect N3 as leader, and continue proposing updates for all shards.
+If one zone containing two voters is isolated, the remaining three can form a
+default majority and campaign. The isolated two cannot make progress and must
+not accept service writes. They may serve versioned stale reads only if that is
+an explicit control-plane policy.
 
-Dublin edge routers will detect the partition. They can still serve local stale reads from their database snapshots, but they will reject writes until the fiber is repaired. Once the network heals, N1 and N2 catch up by requesting missing commits, restoring the cluster to full health.
+After healing, `reconnected` and same-epoch `requestCatchUp` can repair missing
+commits. If the active side moved to a new epoch, the host must install the
+verified snapshot and configuration chain before a returning node votes.
+
+#teach_back([
+  Explain the regional design to an operator using three columns: guaranteed by
+  `ReplicatedLog`, required from the host, and merely a proposed service policy.
+  Place write ordering, blob availability, stale reads, authentication, and
+  snapshot transfer in the correct column.
+])

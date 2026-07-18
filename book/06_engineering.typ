@@ -2,106 +2,176 @@
 #import "figures.typ": *
 
 #part_page("VI", [Evidence], [
-  We inspect the proof with tests, inspect the implementation with measurements,
-  and inspect a deployment with failure drills.
+  We separate proof obligations, repository tests, local measurements, and
+  deployment evidence. Each answers a different question.
 ])
 
-= Validation, Testing, and Benchmarks
+= Validation, Testing, and Operations
 
-== Testing Consensus: Safety Oracles
+#objectives([
+  By the end of this part you should be able to describe what the current test
+  suite establishes, design the missing fault harness, interpret the benchmark
+  without causal overclaiming, and plan recovery drills with observable exit
+  criteria.
+])
 
-Testing a consensus library is completely different from testing ordinary software. We cannot prove correctness simply by asserting that a value was written under happy network conditions. We must verify that safety holds under the most chaotic schedules.
+== Four kinds of confidence
 
-Our primary testing tool is the *Safety Oracle*. During a test or simulation, we run a background checker:
+#table(
+  columns: (auto, 1.25fr, 1.35fr),
+  table.header([*Evidence*], [*Question answered*], [*What it cannot answer*]),
+  [Invariant argument], [Why every allowed transition preserves agreement.],
+    [Whether the Zig code and host exactly implement the argument.],
+  [Deterministic tests], [Whether selected executions and edge cases behave as
+    asserted and remain reproducible.], [Whether untested schedules are safe.],
+  [Model checking or refinement], [Whether all states within a finite model
+    satisfy a specification.], [Whether codecs, disks, and production code
+    refine that model unless the relation is established.],
+  [Fault drills and telemetry], [Whether the deployed host recovers under
+    realistic failures and within its objectives.], [A general proof of
+    safety.],
+)
+
+Lamport's invariant discipline tells us what to check. Knuth's literate
+discipline tells us to record why each case exists. A regression test should
+name the failure schedule and the invariant it protects.
+
+== What the repository tests today
+
+`zig build test` currently covers:
+
++ ballot ordering, membership rejection, and flexible quorum validation;
++ leader election and consecutive stable-leader proposals;
++ duplicate prepare and accept messages;
++ reordered phase-one entry/completion messages and highest-vote recovery;
++ bounded exhaustion, one-node quorums, batches, ticks, and heartbeats;
++ replay rejection of conflicting values and commits;
++ contiguous learner delivery and same-epoch catch-up;
++ stop-sign sealing, checkpoint metadata, and restore behavior.
+
+These are deterministic hand-written schedules. The repository does *not* yet
+contain the general seeded simulator previously described in earlier drafts of
+this book. It also lacks end-to-end tests against a real crash-safe journal,
+corrupted/truncated records, codec version skew, authenticated transport,
+snapshot transfer, client retry recovery, and multi-epoch process restart.
+
+#warning([A useful critique], [
+  The core protocol tests often update in-memory `Node` state and a separate
+  `DurableState`, but they cannot demonstrate that a future production journal
+  has correct framing, checksums, sync semantics, truncation recovery, or
+  atomic application-state updates. Those are required host tests.
+])
+
+== Build the missing deterministic fault harness
+
+A useful simulator owns nodes, durable images, application images, logical
+ticks, and an explicit envelope queue. One seeded action chooses among:
+
+1. deliver, drop, duplicate, or reorder one envelope;
+2. tick one node;
+3. crash a node, discarding volatile `Node` and undurable effects;
+4. restore from the selected durable prefix;
+5. reconnect a link or request catch-up;
+6. propose a uniquely identified client command.
+
+After every action, run at least these oracles:
 
 ```text
-for every slot S:
-    collect all committed values reported by all nodes for slot S
-    assert that the set of committed values contains at most one unique value
+for every slot:
+    all non-null committed values are equal
+for every node:
+    promised never decreases in its durable history
+    applied slots form a prefix and each command is applied at most once
+for every client request:
+    all recorded results are equal
 ```
 
-This oracle is simple and absolute. If N1 commits `tea` in Slot 5, and N2 commits `coffee` in Slot 5, the assert fails immediately, indicating a safety violation.
+Record the seed and the minimized action trace. Start with one slot and three
+members; increase slots, restarts, and epochs only after the smaller state space
+is trustworthy. A TLA+ specification would complement this harness, especially
+if the project states how message types and durable writes refine specification
+actions. No such refinement is currently shipped.
 
-=== The Deterministic Simulator
-To find hidden race conditions, we run tests inside a *Deterministic Simulator*. The simulator controls time, network delivery, and node crashes. It enqueues packets and chooses the next action based on a seeded random number generator:
-1. Deliver a message.
-2. Drop a message to simulate packet loss.
-3. Duplicate a message.
-4. Reorder messages to deliver them out of order.
-5. Crash a node and reboot it.
+#exercise([19.1], [
+  Design the smallest schedule that crashes an acceptor after it emits a reply
+  but before a hypothetical host sync. Which oracle might still pass for a
+  while? Which later campaign exposes the broken promise? Turn the schedule
+  into a regression requirement for the host journal test.
+])
 
-Because the simulator is deterministic, if a seed fails, we can replay the exact same sequence of events to debug and fix the issue.
+== The local CPU benchmark
 
-== The Cross-Language Benchmark
-
-To verify that our library is fast and lightweight, we wrote a benchmark comparing it against:
-- *OmniPaxos (Rust)*: A modern consensus log library.
-- *LibPaxos3 (C)*: A classic C library from the University of Lugano.
-
-The workload runs a stable leader replicating 4,096 sequential values on a three-node cluster. The network and storage are simulated in memory to isolate pure CPU execution cost.
-
-=== Performance Measurements
-
-On our arm64 macOS system, running `zig build benchmark` yielded these median latency metrics:
+`zig build benchmark-zig` runs 4,096 sequential `u64` values through three
+in-memory nodes, drains every message, reports the median of seven samples, and
+checks a sum. Two invocations during the 18 July 2026 book review reported:
 
 #table(
-  columns: (1.2fr, auto, auto, 1fr),
-  table.header([*Library*], [*Median ns/value*], [*Messages/value*], [*CPU Speed Ratio*]),
-  [Zig Multi-Paxos (Ours)], [*116.58 ns*], [*6.00*], [*1.0x (Baseline)*],
-  [C LibPaxos3], [1,711.91 ns], [12.00], [14.6x slower],
-  [Rust OmniPaxos], [4,396.36 ns], [6.00], [37.7x slower],
+  columns: (1.4fr, auto),
+  table.header([*Measure*], [*Observed value*]),
+  [Median CPU time per value], [116.46 ns and 216.30 ns],
+  [Logical messages], [24,576],
+  [Logical messages per value], [6.00],
+  [Checksum on both runs], [8,390,656],
 )
 
-=== Why the Zig Core is Fast
-Why did the Zig implementation achieve such low CPU overhead? It is not due to compiler magic; it is the result of explicit memory design:
+The timing spread under an uncontrolled desktop scheduler is itself evidence:
+one local number is not a stable product claim. The message count and checksum
+are deterministic for this workload; elapsed time is not.
 
-+ *Effects Buffer Reuse*: The benchmark uses a caller-owned `Effects` buffer. The allocator is never called.
-+ *Compact Bitsets*: Voter bitmaps fit in a single CPU register (`u64`), allowing the compiler to emit direct bit shifts.
-+ *In-Place Construction*: Large node structs are initialized directly in stable application storage, avoiding heap copies.
+The aggregate `zig build benchmark` also runs pinned OmniPaxos and LibPaxos3
+workloads. They are useful comparative regression fixtures, not an experiment
+that isolates language, allocator, algorithm, or implementation quality. The
+paths differ in protocol details and message counts. Report machine, build
+mode, versions, sample distribution, and workload whenever publishing results.
 
-In contrast, the profiler showed that OmniPaxos and LibPaxos3 spent substantial CPU time in heap allocation, object serialization, and memory clear operations (`bzero`/`memset`) during hot message loops.
+The benchmark excludes real serialization, system calls, fsync, network delay,
+contention, snapshots, retries, client admission, and application work. Its
+numbers must never be presented as service latency or throughput.
 
-== Feature Comparison and Design Map
-
-Consensus implementations are shaped by their target host environment. While Rust OmniPaxos provides features wrapped in macro annotations and abstract traits, our Zig library focuses on explicit integration boundaries, zero runtime allocations, and static memory bounds.
+== Capability map: exact boundaries
 
 #table(
-  columns: (1.1fr, auto, 1.6fr),
-  table.header([*Capability*], [*Zig Core*], [*Design Notes*]),
-  [Multi-Paxos replicated log], [Yes], [Stable leader phase skips repeated Phase One.],
-  [Automatic leader election], [Yes], [`tick` starts ballot elections after bounded logical timeouts.],
-  [Leader priority], [Yes], [Priority is ordered inside ballots before node ID.],
-  [Heartbeats], [Yes], [Leaders emit bounded heartbeat traffic from `tick`.],
-  [Message retransmission], [Yes], [`tick` resends outstanding accepts and commits.],
-  [Reconnect repair], [Yes], [`reconnected` repairs one peer without allocation.],
-  [Flexible quorums], [Yes], [Read and write quorums are validated to intersect.],
-  [Batched append], [Yes], [One call returns one write and message effect batch.],
-  [Reads], [Yes], [Point reads, decided prefix, and caller-buffer suffix reads.],
-  [Catch-up], [Yes], [A lagging member requests decided entries from a slot.],
-  [Reconfiguration], [Yes], [An accepted stop seals local appends; a decided stop starts the next epoch.],
-  [Snapshot compaction], [Yes], [`checkpoint` seals an epoch with snapshot metadata.],
-  [Fixed memory], [Yes], [All protocol buffers have compile-time bounds.],
-  [Reusable effects], [Yes], [`Effects.init` avoids clearing large inactive backing arrays.],
+  columns: (1.2fr, auto, 1.65fr),
+  table.header([*Capability*], [*Core*], [*Boundary*]),
+  [Multi-Paxos log], [Yes], [Stable leader skips repeated phase one.],
+  [Logical elections], [Yes], [`tick`; no clock reads or randomized deadlines.],
+  [Priority, heartbeat, resend], [Yes], [Bounded deterministic mechanisms.],
+  [Flexible quorum sizes], [Yes], [Validated by `Membership.init`.],
+  [Batch proposal], [Yes], [Bounded caller input and effect storage.],
+  [Log inspection], [Yes], [Not an application linearizable-read protocol.],
+  [Same-epoch catch-up], [Yes], [`learn` and `commit` messages.],
+  [Reconfiguration boundary], [`ReplicatedLog`], [Decides a stop sign; host
+    transfers state and starts processes.],
+  [Snapshot files and compaction], [No], [`checkpoint` orders only metadata and
+    the next configuration ID.],
+  [Storage, codec, transport, auth], [No], [Required from the host.],
+  [Client sessions], [No], [Required for retry semantics.],
 )
 
-=== Reconciling Rust and Zig Native Boundaries
-
-Some consensus libraries solve runtime constraints via framework macros or abstractions. Our Zig library keeps these concerns at the host boundary:
-
-- *Storage & Journaling*: Rather than defining a complex trait, the host application is handed an `Effects` block listing dirty writes. The host handles disk writes and calls `DurableState.apply`.
-- *Network Transport*: There are no socket wrappers in the core. The host sends network envelopes after writes are synced.
-- *Serialization & Codecs*: The host selects its own wire serialization format for its compile-time `Command` type, avoiding derive macro overhead.
-- *Dashboard & Metrics*: Diagnostic properties (role, ballot, leader, decided prefix) are exposed via public read-only accessors.
-
-== Operating Drills: Rehearsing Failure
-
-Before deploying a consensus system to production, the operations team must rehearse common failure scenarios. If you do not know how the system will react, you are not ready to operate it.
+== Operating drills with exit criteria
 
 #table(
-  columns: (1.2fr, 1.8fr),
-  table.header([*Drill*], [*Expected Recovery Behavior*]),
-  [Single Follower Crash], [The follower reboots, replays its journal, catches up from the leader, and resumes voting within milliseconds.],
-  [Leader Crash (Mid-Vote)], [Followers detect leader silence, campaign, elect a new leader, and recover any partially accepted slot values before accepting new writes.],
-  [Split-Brain Partition], [The minority partition pauses progress safely. The majority partition continues serving client writes. When healed, the minority catches up.],
-  [Disk Full during Sync], [The affected node crashes immediately to prevent writing a torn record. It resumes once disk space is cleared.],
+  columns: (1.05fr, 1.8fr),
+  table.header([*Drill*], [*Observe before declaring recovery*]),
+  [Follower crash], [Verified journal replay; restored configuration ID;
+    monotonic decided/applied prefix; caught-up peer; no duplicate effect.],
+  [Leader crash during vote], [New higher ballot; recovery of the greatest
+    accepted value; no conflicting commit; client ambiguity resolved by ID.],
+  [Minority partition], [No minority writes acknowledged; majority progress if
+    its required quorums remain; returning nodes repair before voting.],
+  [Disk full or sync failure], [Node stops before sends from the failed batch;
+    no reuse of mutated memory; restart from last verified record.],
+  [Corrupt snapshot], [Hash/version rejection; no epoch activation; recovery
+    from another verified source.],
 )
+
+Track ballot changes, role, current leader hint, decided and applied prefixes,
+journal sync latency, queue depth, retransmissions, catch-up distance, epoch ID,
+and client retry counts. `currentLeader()` is a hint for routing and metrics,
+not a lease certificate.
+
+#teach_back([
+  Pick one production claim such as "survives a leader crash." State the
+  invariant argument, repository test, missing integration test, telemetry,
+  and drill exit criterion needed to support that sentence honestly.
+])
