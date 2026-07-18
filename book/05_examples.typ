@@ -7,7 +7,9 @@
   layer at a time.
 ])
 
-= Small example: one counter
+= Three Worked Systems
+
+== Small example: one counter
 
 The smallest useful state machine holds one integer. A command either does
 nothing or adds an amount.
@@ -62,7 +64,7 @@ proposed request 3 in slot 3
 replicated counters: 30, 30, 30
 ```
 
-== Trace the first addition
+=== Trace the first addition
 
 #transcript((
   [1], [Client], [Creates request `(7, 1, add 10)`.],
@@ -76,7 +78,7 @@ replicated counters: 30, 30, 30
 If N3 is stopped, steps through N2 still form a quorum. When N3 returns, it asks
 for commits from slot 1 and applies the same prefix.
 
-== What this example omits
+=== What this example omits
 
 The in memory disk cannot survive a process exit. The queue has no checksum or
 authentication. The client does not retry. Election is chosen by the program.
@@ -87,14 +89,14 @@ The example teaches the library boundary, not a deployment.
   call `requestCatchUp(1, 1, &effects)` on N3. Predict the commit order.
 ])
 
-= Middle example: a key value service
+== Middle example: a key value service
 
 We now store named byte values. The important new problem is client ambiguity.
 A client may send `put`, lose the reply, and retry. Consensus can place both
 copies in different slots. The state machine must make the logical request
 idempotent.
 
-== Command and state
+=== Command and state
 
 ```zig
 const Command = struct {
@@ -122,7 +124,7 @@ Large value bytes live in a content addressed blob store. Consensus orders a
 32 byte hash. Before proposing, the leader makes sure the blob is durable on
 enough storage nodes. Applying the command only updates the small hash map.
 
-== Deterministic apply
+=== Deterministic apply
 
 ```zig
 fn apply(state: *State, slot: paxos.Slot, command: Command) !Result {
@@ -152,7 +154,7 @@ Real code must define what happens when a client sends request 9 after request
 9 as superseding 8. Another stores a bounded window. The policy is application
 semantics, not Paxos.
 
-== Write request
+=== Write request
 
 The server path is:
 
@@ -168,7 +170,7 @@ The server path is:
 A connection close at any point after proposal is ambiguous. The client retries
 the same `(client_id, request_id)`.
 
-== Linearizable read
+=== Linearizable read
 
 The simple method proposes `read_barrier`. When that command is applied, every
 earlier chosen command has been applied. The server then reads its local map.
@@ -187,7 +189,7 @@ const barrier_slot = try node.propose(.{
 This method is not the fastest. It is easy to prove. Optimize reads only after
 the required consistency is written down.
 
-== Durable journal owner
+=== Durable journal owner
 
 One task owns the Paxos node. It receives network and client events through
 bounded queues. For each event it calls one node method and obtains effects.
@@ -203,7 +205,7 @@ event owner -> state machine applies contiguous commits
 No other task sends Paxos messages. This single owner makes the ordering rule
 easy to inspect.
 
-== Snapshot
+=== Snapshot
 
 Assume the log bound is 100,000 slots. At slot 80,000 the leader proposes a
 checkpoint command. Once applied, each node writes:
@@ -221,7 +223,7 @@ The snapshot is complete only after its checksum and final marker are durable.
 A new epoch can then begin under an application barrier. The old journal remains
 available until the new epoch has a verified quorum.
 
-== Failure story
+=== Failure story
 
 N1 commits a put in slot 401 but crashes before replying. N2 becomes leader. Its
 phase one recovery sees the accepted value and reproposes it. The client retries
@@ -232,7 +234,7 @@ blob twice.
 Paxos prevents two values in slot 401. The client table prevents one logical
 request in two slots from running twice. Both layers are necessary.
 
-= Large example: a regional control plane
+== Large example: a regional control plane
 
 Consider a service that assigns workloads to regions. It manages 50,000 workers
 and receives 20,000 commands per second at peak. A wrong order can assign one
@@ -254,7 +256,7 @@ A quorum is three. The layout tolerates any two node failures, but it does not
 survive loss of east plus one west node if only central and one west remain. The
 failure domain calculation must use actual placement, not just `N = 5`.
 
-== Command design
+=== Command design
 
 ```zig
 const Command = struct {
@@ -278,7 +280,7 @@ The timestamp is data chosen before proposal. Apply never reads a local clock.
 The payload contains worker sets and constraints in external durable storage.
 Its hash enters consensus.
 
-== Sharding
+=== Sharding
 
 One Paxos group cannot order an unlimited world. We partition tenants among 64
 groups. Each group has its own membership, node state, log, applied state, and
@@ -289,7 +291,7 @@ map version used by the client gateway. A stale version is rejected or routed
 through a controlled migration. Moving a tenant between groups is a distributed
 transaction and is not made atomic by either group alone.
 
-== Capacity sketch
+=== Capacity sketch
 
 At 20,000 commands per second, an epoch with 10 million slots lasts:
 
@@ -312,7 +314,7 @@ The batch value contains a fixed maximum number of command hashes. The leader
 flushes when the batch is full or a short latency timer expires. The timer decides
 when to propose. It is not read during deterministic apply.
 
-== Network sketch
+=== Network sketch
 
 If one batch is 8 KiB and the leader sends it to four peers at 200 batches per
 second, leader egress for accept payloads is roughly:
@@ -324,7 +326,7 @@ second, leader egress for accept payloads is roughly:
 Commit messages are small. A leader change may send recovery metadata for many
 slots, so snapshots and epoch length must also bound recovery time.
 
-== Disk sketch
+=== Disk sketch
 
 One fsync per batch means 200 syncs per second. A device with 2 ms median sync
 latency can keep up in the average case, but tail latency matters. Grouping local
@@ -333,7 +335,7 @@ accept records and journal metadata into one atomic write avoids extra syncs.
 The benchmark in this repository uses memory storage. It says nothing about
 these disk numbers. A deployment benchmark must include the actual journal.
 
-== Read classes
+=== Read classes
 
 #table(
   columns: (auto, 1fr, 1fr),
@@ -345,7 +347,7 @@ these disk numbers. A deployment benchmark must include the actual journal.
     proposal path.],
 )
 
-== Observability
+=== Observability
 
 Every group exports:
 
@@ -362,7 +364,7 @@ Every group exports:
 An alert on remaining slots is a safety feature. An alert after exhaustion is a
 postmortem note.
 
-== Regional failure
+=== Regional failure
 
 Suppose the east region loses N1 and N2. N3, N4, and N5 can form a quorum. The
 failure detector eventually chooses one candidate. Its phase one reads a complete
@@ -375,7 +377,7 @@ When east returns, its old leader messages carry lower ballots and are rejected.
 The nodes catch up before serving strong reads. Merely reconnecting a process
 does not make its state current.
 
-== Security boundary
+=== Security boundary
 
 The large system authenticates peers with mutually authenticated channels. The
 transport binds the certificate identity to the Paxos node ID and cluster epoch.
@@ -385,7 +387,7 @@ Payload hashes are verified before apply. Frame length is checked before memory
 is reserved. Rate limits apply before expensive signature or blob work when
 possible. Paxos is not a substitute for peer authentication.
 
-== What remains outside this library
+=== What remains outside this library
 
 The example needs automated epoch transition, snapshot transfer, batch values,
 read index optimization, durable journal framing, and a failure detector. Those

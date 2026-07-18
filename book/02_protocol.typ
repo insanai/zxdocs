@@ -6,7 +6,9 @@
   At the end we can recover after a crash without guessing.
 ])
 
-= The four roles
+= The Single-Decree Protocol
+
+== The four roles
 
 Paxos names proposers, acceptors, and learners. Applications add clients. One
 process may perform all four roles. The names describe duties, not machines.
@@ -32,9 +34,9 @@ identity that lets it retry safely.
   [Client], [Did my logical request execute?], [Stable client and request IDs.],
 )
 
-= Phase one
+== Phase one
 
-== Prepare
+=== Prepare
 
 The candidate chooses a ballot greater than every ballot it has attempted,
 promised, or observed in a rejection. It sends:
@@ -46,7 +48,7 @@ prepare { ballot }
 The message contains no value. This is important. The candidate does not yet
 know whether it may use the client's value.
 
-== Promise
+=== Promise
 
 An acceptor compares the prepare ballot with its durable promise.
 
@@ -78,7 +80,7 @@ will not accept ballot 10. It may accept ballot 11 or 12.
   should have been forbidden.
 ])
 
-== Complete quorum replies
+=== Complete quorum replies
 
 The candidate waits for a quorum. It does not wait for every member. Waiting for
 all would let one failed member stop progress.
@@ -90,7 +92,7 @@ marker that arrived before an entry.
 
 We shall return to that detail in Part III.
 
-== Choose a value
+=== Choose a value
 
 The candidate examines the complete quorum.
 
@@ -103,9 +105,9 @@ else:
 
 The candidate is now a leader for this ballot. It may begin phase two.
 
-= Phase two
+== Phase two
 
-== Accept
+=== Accept
 
 The leader sends:
 
@@ -129,7 +131,7 @@ accepted { ballot, slot }
 
 If the ballot is lower, it sends a rejection with the highest promise it knows.
 
-== Local acceptance
+=== Local acceptance
 
 The leader is also an acceptor. It need not send a network message to itself.
 The Zig library writes the local acceptance directly into the effect batch. It
@@ -153,7 +155,7 @@ The local acknowledgement is then marked in memory. A three node leader needs
 one remote acknowledgement to reach a quorum of two. It still sends to both
 peers so the other replica can catch up.
 
-== Chosen and learned
+=== Chosen and learned
 
 When a quorum has accepted the same ballot and value, the value is chosen. The
 leader records a commit and sends the value to peers.
@@ -163,7 +165,7 @@ not carry a magic proof. In the crash fault model, nodes follow the algorithm,
 so a leader announces commit only after a quorum. A Byzantine design would need
 signed quorum evidence or another certificate.
 
-= A complete trace
+== A complete trace
 
 Let nodes 1, 2, and 3 begin empty. Node 1 proposes `tea` with ballot `(1, 1)`.
 
@@ -183,7 +185,7 @@ Let nodes 1, 2, and 3 begin empty. Node 1 proposes `tea` with ballot `(1, 1)`.
 N3 may receive its accept after the value is already chosen. Its vote is useful
 for redundancy but is not needed for the fact of choice.
 
-== Message cost
+=== Message cost
 
 Election is excluded from the steady path. For one new value on three nodes:
 
@@ -196,34 +198,34 @@ Election is excluded from the steady path. For one new value on three nodes:
   [Total], [6], [No serialization or transport framing included.],
 )
 
-= Duplicate and reordered messages
+== Duplicate and reordered messages
 
 The network is allowed to repeat every message. We therefore ask whether each
 handler is idempotent.
 
-== Duplicate prepare
+=== Duplicate prepare
 
 If the ballot equals the durable promise, the acceptor repeats its report. It
 does not write a second promise. A reply that was lost can therefore be retried.
 
-== Duplicate accept
+=== Duplicate accept
 
 If the same ballot, slot, and value were already accepted, the acceptor repeats
 the acknowledgement without another write. If the same ballot and slot carry a
 different value, the library returns `error.ConflictingValue`. One unique ballot
 must not have two values.
 
-== Duplicate acknowledgement
+=== Duplicate acknowledgement
 
 Acknowledgements are stored by member index in a fixed Boolean array. Repeating
 one does not create a second voter.
 
-== Duplicate commit
+=== Duplicate commit
 
 The same value is harmless. A different value for an already committed slot is
 `error.ConflictingCommit`. The error marks a violated safety boundary.
 
-== An old accept arrives late
+=== An old accept arrives late
 
 The acceptor compares it with the highest promise. A lower ballot receives a
 rejection. The old message cannot turn time backward.
@@ -233,7 +235,7 @@ rejection. The old message cannot turn time backward.
   outbound message that would be unsafe if it left before that write completed.
 ])
 
-= Rejection and another campaign
+== Rejection and another campaign
 
 A rejection carries two ballots.
 
@@ -252,7 +254,7 @@ The rejection itself is not a promise made by the receiving node. The receiver
 must not copy another node's promise into its own durable promise. The library
 keeps `highest_observed_round` as volatile campaign guidance.
 
-= Progress and the distinguished proposer
+== Progress and the distinguished proposer
 
 Safety does not require one leader. Two candidates may prepare higher and higher
 ballots forever. Each prevents the other's accept phase from finishing. No two
@@ -270,7 +272,7 @@ keeps time out of the safety core and lets a simulator control elections exactly
   ballot that no higher candidate interrupts.
 ], kind: "idea")
 
-= Crash points
+== Crash points
 
 We now inspect the dangerous moments.
 
@@ -291,7 +293,7 @@ We now inspect the dangerous moments.
 This table is the operational form of the proof. A system that cannot explain a
 crash at each row is not ready to run Paxos.
 
-= One decision as a library instance
+== One decision as a library instance
 
 Classic Paxos is the bounded protocol with one slot.
 

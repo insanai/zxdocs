@@ -6,7 +6,9 @@
   and application state. The boundary between them is the main API.
 ])
 
-= Design before syntax
+= Bounded Core State Machine
+
+== Design before syntax
 
 The library performs no input or output. It starts no thread. It reads no clock.
 It allocates no memory after initialization. A node consumes one input and fills
@@ -27,7 +29,7 @@ library is a consensus component. It is not a server process.
   effects_flow(),
 )
 
-= Package use
+== Package use
 
 For a tagged Codeberg release, ask Zig to compute the archive hash.
 
@@ -61,7 +63,7 @@ const application = b.addExecutable(.{
 For local work, use `.paxos = .{ .path = "../paxos" }` in `build.zig.zon`.
 The fixture under `integration/consumer` compiles this exact arrangement.
 
-= Choose the value and bounds
+== Choose the value and bounds
 
 ```zig
 const paxos = @import("paxos");
@@ -98,7 +100,7 @@ This hybrid design ensures maximum CPU shifting speed and prevents compiler
 exhaustion. Long-lived nodes should normally live in stable application storage
 rather than in a deeply nested call.
 
-== Capacity calculation
+=== Capacity calculation
 
 Let `M` be members and `S` be slots. The important arrays are proportional to:
 
@@ -114,7 +116,7 @@ Let `M` be members and `S` be slots. The important arrays are proportional to:
 Compile a representative configuration and inspect `@sizeOf(Consensus.Node)`.
 Do not select one million slots merely because the type accepts the number.
 
-= In place construction
+== In place construction
 
 The node is large. TigerStyle recommends construction in place so that an
 accidental stack copy cannot hide in a return value.
@@ -134,20 +136,20 @@ The membership is copied intentionally into the node. The source is passed by
 pointer because it may exceed 16 bytes and because the call site should not make
 an accidental temporary copy.
 
-= The public types
+== The public types
 
-== Ballot
+=== Ballot
 
 `Ballot` provides `order`, `lessThan`, and `eql`. Ballot zero is the initial
 sentinel. Real node IDs are nonzero.
 
-== Message and Envelope
+=== Message and Envelope
 
 `Message` is a tagged union. `Envelope` adds source and target node IDs. The
 transport encodes the tag and payload. It must reject frames that exceed a bound
 before allocating or decoding their value.
 
-== DurableState
+=== DurableState
 
 `DurableState` contains:
 
@@ -159,7 +161,7 @@ before allocating or decoding their value.
 a promise that moves backward and a commit that conflicts with an earlier
 commit. It asserts that no accepted ballot exceeds the highest promise.
 
-== Effects
+=== Effects
 
 `Effects` contains fixed arrays and active counts. Initialize it in place once.
 
@@ -177,7 +179,7 @@ The arrays remain uninitialized beyond their active counts. Serialization must
 use the slices, never the entire backing arrays. This avoids reading padding or
 unused memory.
 
-= The effect contract
+== The effect contract
 
 Every call follows one order.
 
@@ -211,7 +213,7 @@ Do not continue with the advanced in memory state.
   after the durable completion arrives.
 ])
 
-= Campaign
+== Campaign
 
 ```zig
 try node.campaign(noop, &effects);
@@ -228,7 +230,7 @@ complete quorum of promise replies.
 Multiple calls are safe. They create higher ballots and may harm progress. The
 usual host calls `tick` and lets the configured logical timeout start a campaign.
 
-= Propose
+== Propose
 
 ```zig
 const slot = try node.propose(command, &effects);
@@ -242,7 +244,7 @@ When the last bounded slot is used, `next_slot` becomes zero. The next proposal
 returns `error.SlotLimitReached`. Saturating arithmetic is not used because it
 could reuse the final slot.
 
-= Step
+== Step
 
 `step` accepts one envelope. It rejects a wrong recipient and a source outside
 membership. The message tag selects a small handler.
@@ -264,7 +266,7 @@ membership. The message tag selects a small handler.
 The parent `step` owns the branch. Leaf handlers perform one protocol duty. This
 keeps control flow flat and each function below the TigerStyle 70 line limit.
 
-= Request catch up
+== Request catch up
 
 ```zig
 try node.requestCatchUp(peer, first_missing_slot, &effects);
@@ -273,7 +275,7 @@ try node.requestCatchUp(peer, first_missing_slot, &effects);
 The peer must be in membership and the slot must be nonzero. The method emits a
 single learn request. The caller can retry another peer after its own timeout.
 
-= Restart
+== Restart
 
 Journal replay builds a `DurableState`. Restore writes into an existing node.
 
@@ -289,7 +291,7 @@ Volatile leadership, acknowledgements, proposals, and partial promise replies
 are discarded. The node restarts as a follower. This is safe because a later
 campaign recovers accepted state from a quorum.
 
-= Serialization
+== Serialization
 
 The generic library does not prescribe bytes. A production frame should include:
 
@@ -308,7 +310,7 @@ Integer byte order must be fixed. Unknown versions and tags must be rejected.
 Do not cast a network byte slice directly to a Zig struct. Padding and host byte
 order are not a wire format.
 
-= Storage format
+== Storage format
 
 Journal records should be framed separately from network records. One practical
 layout is:
@@ -325,7 +327,7 @@ The applied state machine index belongs in the application snapshot. Persist the
 snapshot and index atomically. Protocol commit delivery after restart is at least
 once, so the index prevents a second application.
 
-= Errors and assertions
+== Errors and assertions
 
 Operating errors are returned. Examples are invalid membership, wrong recipient,
 not leader, and slot exhaustion. Programmer and invariant errors are assertions.
@@ -341,7 +343,7 @@ The core asserts that:
 Assertions turn silent state corruption into a stopped node. In consensus, a
 stopped node is usually safer than a node that continues with impossible state.
 
-= TigerStyle audit
+== TigerStyle audit
 
 The implementation applies the relevant rules as design constraints.
 

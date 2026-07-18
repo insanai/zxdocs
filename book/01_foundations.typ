@@ -6,7 +6,9 @@
   determines every legal Paxos message.
 ])
 
-= The empty ledger
+= Foundations of Consensus
+
+== The empty ledger
 
 Suppose that three librarians keep copies of one ledger. The next line is empty.
 A visitor asks them to write `olive = 7`. Another visitor asks them to write
@@ -34,7 +36,7 @@ A stopped system can be safe. It is not useful, but it has not contradicted
 itself. This fact lets us design safety without guessing how long a message may
 take.
 
-== Three tempting answers
+=== Three tempting answers
 
 The first answer is "ask everybody." It works until one librarian leaves. One
 missing reply stops all work.
@@ -55,7 +57,7 @@ and a leader recovery rule. None is sufficient alone.
   unavailable while progress remains possible?
 ], hint: [Compute `floor(N / 2) + 1`.])
 
-== The failure model
+=== The failure model
 
 We assume crash faults.
 
@@ -74,7 +76,7 @@ Byzantine problem and needs a different protocol.
   replies before its state is durable, a restart can break quorum intersection.
 ])
 
-= Quorums
+== Quorums
 
 A quorum is a set large enough that every two quorums share a member. For equal
 voters, a strict majority has this property.
@@ -93,7 +95,7 @@ For five nodes, every quorum has three nodes. Two sets of three drawn from five
 must share at least one node. The calculation is simple. If they did not meet,
 they would contain six distinct nodes, but only five exist.
 
-== Why an odd count is common
+=== Why an odd count is common
 
 With four nodes, a majority is three. The cluster still tolerates only one
 unavailable node. With three nodes, a majority is two and the cluster also
@@ -112,7 +114,7 @@ pub fn quorum(self: *const Membership) usize {
 
 The division is integer division. For `count = 5`, it yields `2 + 1 = 3`.
 
-== Intersection is not memory
+=== Intersection is not memory
 
 Let quorum `{A1, A2}` accept `x`. Later quorum `{A2, A3}` meets it at `A2`. If
 `A2` remembers its vote, the later quorum has a witness. If `A2` forgets, the
@@ -126,7 +128,7 @@ witness. The disk lets the witness speak after a restart.
   Why can a quorum of two not be used there?
 ])
 
-= Ballots
+== Ballots
 
 A single leader would make the choice easy. Failures create a sequence of
 possible leaders. Paxos gives each attempt a ballot. Ballots are unique and have
@@ -159,7 +161,7 @@ A node that sees a higher round remembers it. Its next campaign uses a still
 higher round. The `u64` space is finite, so the library reports
 `error.BallotExhausted` rather than wrapping.
 
-== Votes and success
+=== Votes and success
 
 A ballot has four conceptual parts.
 
@@ -177,7 +179,7 @@ that it exists. Imagine that the final acknowledgement reaches the proposer,
 the value becomes chosen, and the proposer crashes before announcing it. The
 fact remains. A future leader must preserve it.
 
-= Three invariants
+== Three invariants
 
 Lamport gives three conditions. We shall state them in code language.
 
@@ -211,7 +213,7 @@ ballot. It may not choose `green`, even if `green` was the client's request.
   value attached to the greatest accepted ballot in the quorum replies.
 ], kind: "idea")
 
-== Why the greatest vote matters
+=== Why the greatest vote matters
 
 Assume that ballot 6 chose `red`. A later successful ballot must also use `red`.
 Its quorum intersects the quorum for ballot 6. At least one reply has knowledge
@@ -236,7 +238,7 @@ was bad.
   have succeeded?
 ])
 
-= From rules to messages
+== From rules to messages
 
 We now have enough facts to predict the protocol.
 

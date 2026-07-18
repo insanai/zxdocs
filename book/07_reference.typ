@@ -4,7 +4,9 @@
   This part collects messages, state, errors, formulas, and answers in one place.
 ])
 
-= Message reference
+= Consensus Desk Reference
+
+== Message reference
 
 #table(
   columns: (auto, 1.2fr, 1.5fr),
@@ -23,7 +25,7 @@
   [`heartbeat`], [`ballot, decided_through`], [Leader heartbeat reporting its decided through index.],
 )
 
-= Durable writes
+== Durable writes
 
 #table(
   columns: (auto, 1fr, 1.5fr),
@@ -33,7 +35,7 @@
   [`commit`], [`slot, value`], [Application delivery and catch up claim.],
 )
 
-= Node state
+== Node state
 
 #table(
   columns: (auto, 1fr, auto),
@@ -52,7 +54,7 @@
   [`acknowledgements`], [Member votes per slot.], [Volatile],
 )
 
-= Error reference
+== Error reference
 
 #table(
   columns: (auto, 1fr),
@@ -74,7 +76,7 @@
   [`PromiseRegression`], [Journal replay tried to move a promise backward.],
 )
 
-= Formula sheet
+== Formula sheet
 
 #table(
   columns: (1.3fr, auto, 1.2fr),
@@ -88,7 +90,7 @@
     [`8 KiB * 4 * 200`.],
 )
 
-= Invariants for review
+== Invariants for review
 
 + Ballot pairs are unique and totally ordered.
 + Every quorum intersects every quorum in the same membership epoch.
@@ -102,29 +104,29 @@
 + Durable writes precede every message that depends on them.
 + Slots are never reused within an epoch.
 
-= Answers to selected exercises
+== Answers to selected exercises
 
-== Exercise 1.1
+=== Exercise 1.1
 
 A majority of five is three. Two nodes may be unavailable while three remain.
 
-== Exercise 2.1
+=== Exercise 2.1
 
 `{A1, A2}` and `{A3, A4}` do not intersect. If both were quorums, they could
 choose different values without sharing a witness.
 
-== Exercise 4.1
+=== Exercise 4.1
 
 Choose `apple` from ballot 9. Knowledge that ballot 3 succeeded does not change
 the procedure. The induction says the later legal vote at ballot 9 must already
 preserve any earlier chosen value.
 
-== Exercise 8.1
+=== Exercise 8.1
 
 The promise write precedes the promise reply. Each accept write precedes its
 accepted reply. The commit write precedes local application and later catch up.
 
-= Glossary
+== Glossary
 
 #table(
   columns: (auto, 1fr),
@@ -143,33 +145,33 @@ accepted reply. The commit write precedes local application and later catch up.
   [Slot], [A one based position in the replicated log.],
 )
 
-= Further study
+== Further study
 
 For readers who wish to dive deeper into the theoretical and engineering aspects of consensus, we recommend the following literature and implementations:
 
-== Core Theoretical Papers
+=== Core Theoretical Papers
 
 - *Leslie Lamport, "The Part-Time Parliament" (1998)*: The original Paxos paper, presenting the algorithm through the metaphor of a Greek island's legislature. Safe but notoriously difficult to read.
 - *Leslie Lamport, "Paxos Made Simple" (2001)*: A classic, much more direct explanation of Paxos derived from first principles.
 - *Heidi Howard et al., "Flexible Paxos: Quorum Intersection Revisited" (2016)*: A major breakthrough showing that Paxos does not require majorities for both phases—only that every Phase 1 (prepare) quorum intersects with every Phase 2 (accept) quorum. This allows cheap, small write quorums at the cost of larger recovery quorums.
 
-== Reconfiguration and Snapshots
+=== Reconfiguration and Snapshots
 
 - *Leslie Lamport et al., "Reconfiguring a Replicated State Machine" (Vertical Paxos) (2009)*: Explains how to change configuration on the fly using auxiliary consensus instances to choose the configuration sequence.
 - *Diego Ongaro and John Ousterhout, "In Search of an Understandable Consensus Algorithm" (Raft) (2014)*: While presenting a different protocol, it provides an excellent discussion on joint consensus reconfiguration and log compaction via snapshots.
 
-== Alternative Protocols and Scaling
+=== Alternative Protocols and Scaling
 
 - *M. Moraru et al., "There Is More Consensus in an Egalitarian Parliament" (EPaxos) (2013)*: An egalitarian Paxos variant where any replica can act as a leader for any command, resolving conflicts dynamically to achieve lower latency.
 - *Michael Whittaker et al., "Compartmentalized Paxos" (2020)*: Deconstructs the single-leader bottleneck by splitting the leader's tasks (batching, sequencing, replication) across independent, scale-out proxy nodes.
 
-== Real-World Implementations for Study
+=== Real-World Implementations for Study
 
 - *TigerBeetle (Zig)*: A production distributed financial accounting database built in Zig. It utilizes a Viewstamped Replication/Paxos variant designed around the TigerStyle coding system (zero-allocation, static bounds).
 - *OmniPaxos (Rust)*: A modern Rust library that implements a Multi-Paxos engine, including active leader lease management and built-in reconfiguration.
 - *LibPaxos3 (C)*: A clean, minimal C library implementing a Multi-Paxos core with event-driven transport, useful for understanding low-level message buffering.
 
-== Recommended Web Resources
+=== Recommended Web Resources
 
 - #link("https://lamport.azurewebsites.net/pubs/paxos-simple.pdf")[Lamport's Paxos Made Simple (PDF)]
 - #link("https://arxiv.org/abs/1608.06696")[Flexible Paxos Paper (arXiv)]
@@ -178,7 +180,7 @@ For readers who wish to dive deeper into the theoretical and engineering aspects
 - #link("https://bitbucket.org/sciascid/libpaxos")[LibPaxos3 Core Repository]
 - #link("https://github.com/tigerbeetle/tigerbeetle/blob/main/docs/TIGER_STYLE.md")[TigerStyle Guide]
 
-= Closing note
+== Closing note
 
 Paxos is not a bag of messages. It is one rule carried through time. A later
 ballot must respect what an earlier quorum may have chosen. Quorum intersection

@@ -6,7 +6,9 @@
   recover an old leader's work, fill holes, and apply one ordered prefix.
 ])
 
-= One Paxos instance per slot
+= Multi-Paxos Log Replication
+
+== One Paxos instance per slot
 
 Let slot 1 choose `open`. Let slot 2 choose `write A`. Let slot 3 choose `close`.
 Each slot is a separate consensus problem. Safety for slot 2 says nothing about
@@ -20,7 +22,7 @@ This is Multi Paxos.
 The proof has not changed. Each slot still follows B1, B2, and B3. We have only
 combined the phase one questions into fewer messages.
 
-== Slot numbers
+=== Slot numbers
 
 The library uses one based `u32` slots. Slot zero means "no slot." The conversion
 to an array index occurs in one helper.
@@ -36,7 +38,7 @@ fn slotIndex(slot: Slot) !usize {
 Centralizing the conversion is more than tidiness. It gives one place to check
 the two boundaries. An index is not a count. A slot is not an index.
 
-= A batched prepare reply
+== A batched prepare reply
 
 An acceptor may have accepted values in many slots. Its response to prepare is a
 series of messages:
@@ -61,13 +63,15 @@ The candidate therefore tracks, for each member:
 A member's response is complete only when the marker exists and both counts are
 equal. A quorum means a quorum of complete responses.
 
+=== Why a count instead of FIFO
+
 #callout([Why a count instead of FIFO], [
   TCP preserves sender order on one connection, but the Paxos safety core need
   not assume TCP. A count makes the requirement explicit and lets other
   transports reorder messages safely.
 ], kind: "idea")
 
-== Selecting recovered values
+=== Selecting recovered values
 
 For each slot, compare every accepted ballot reported by the complete quorum.
 Keep the greatest one and its value.
@@ -90,7 +94,7 @@ value" constructs this schedule. It sends completion markers before entries and
 gives two minority acceptors different old values. The leader waits and chooses
 the value from the greater ballot.
 
-= Holes and the no op value
+== Holes and the no op value
 
 Suppose recovery finds a value in slot 5 but no accepted value in slot 4. The
 leader must not put an important new command into slot 4 if clients may already
@@ -112,7 +116,7 @@ try node.campaign(.{
 The protocol cannot invent a valid generic `Value`. Only the application knows
 which value means no work.
 
-= Learning in order
+== Learning in order
 
 A network can deliver commit for slot 7 before commit for slot 6. The learner
 records slot 7 but does not apply it. State machines must see one common prefix.
@@ -129,7 +133,7 @@ lifetime.
 Across process restart, delivery is at least once. The application must persist
 its applied slot with its state. If it sees an old slot again, it ignores it.
 
-== Catch up
+=== Catch up
 
 A lagging node sends:
 
@@ -145,7 +149,7 @@ The catch up request may go to any member. A leader is a good choice because it
 is likely to know the newest prefix. A stale peer can return only what it knows;
 the learner may ask another peer later.
 
-= Stable leader pipeline
+== Stable leader pipeline
 
 After phase one, several slots may be in phase two at the same time. The API lets
 the host call `propose` again before an earlier proposal commits. It can also use
@@ -162,7 +166,7 @@ With `W` values in flight, a rough upper bound for protocol envelopes in the
 transport is `6W`, before retries and catch up. The right `W` follows from disk
 latency, network bandwidth, and the largest acceptable response time.
 
-= Leader replacement trace
+== Leader replacement trace
 
 We now follow the case that makes Paxos worth learning.
 
@@ -182,7 +186,7 @@ The client may have timed out at step 4. It cannot conclude that `red` failed.
 It must retry with the same request identity. The state machine will recognize
 the duplicate if a second slot later contains that request.
 
-== A value accepted by only one node
+=== A value accepted by only one node
 
 Now suppose N1 crashes before its local vote gains any remote vote. The value is
 not chosen. A later leader may still recover it if N1 belongs to the new phase
@@ -192,7 +196,7 @@ Preserving the value is conservative. It is not evidence that the old client
 succeeded. It is the uniform rule that also protects values which did succeed
 without an announcement.
 
-= Reads
+== Reads
 
 Consensus orders writes. Reads need a stated consistency level.
 
@@ -212,7 +216,7 @@ Version 0.1 supplies local decided reads and the log barrier through ordinary
 proposals. It does not implement read index or leases. The application must not
 call a local read linearizable merely because it came from the leader.
 
-= Membership
+== Membership
 
 Membership changes are consensus decisions about future quorums. A careless
 switch from old members to new members can create two nonintersecting quorums.
@@ -228,7 +232,7 @@ matchmaker protocols. They differ in proof and operation. This library selects
 one explicit stop sign design rather than hiding several proofs behind a Boolean
 option.
 
-= Bounded logs and epochs
+== Bounded logs and epochs
 
 `max_slots` is a hard limit. A slot is never reused within an epoch. After the
 last slot, `propose` returns `error.SlotLimitReached`.

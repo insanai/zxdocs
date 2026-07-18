@@ -6,7 +6,9 @@
   and inspect a deployment with failure drills.
 ])
 
-= Testing a consensus core
+= Validation, Testing, and Benchmarks
+
+== Testing a consensus core
 
 A normal test proves that one schedule works. A consensus test should search for
 schedules that almost break the invariant.
@@ -29,7 +31,7 @@ after the network becomes stable and one leader remains:
 Do not assert liveness while messages are dropped forever. The protocol cannot
 manufacture a quorum.
 
-== Deterministic schedule tests
+=== Deterministic schedule tests
 
 The repository tests these cases:
 
@@ -48,7 +50,7 @@ The repository tests these cases:
   [Slot exhaustion], [The final slot is not reused.],
 )
 
-== A simulator
+=== A simulator
 
 A stronger simulator keeps a bounded queue of envelopes. At each step it chooses
 one action from a seeded generator:
@@ -71,7 +73,7 @@ Seeds must be printed on failure. A failing schedule should be reduced to the
 smallest sequence that still fails. Random testing without reproducibility is a
 demonstration, not a debugging tool.
 
-== Crash injection
+=== Crash injection
 
 The effect boundary gives exact crash points.
 
@@ -87,7 +89,7 @@ The effect boundary gives exact crash points.
     delivery after restore.],
 )
 
-== Model checking
+=== Model checking
 
 The code is not a formal specification. A small model can still mirror its core
 state: promises, accepted ballots, accepted values, and chosen values for two
@@ -97,7 +99,7 @@ two chosen values.
 The model and implementation must be compared field by field. A proof of the
 wrong model is no proof of the program.
 
-= The cross language benchmark
+== The cross language benchmark
 
 The benchmark uses two independent implementations. OmniPaxos 0.2.2 is a Rust
 replicated log library from crates.io. LibPaxos3 is a C implementation from the
@@ -115,7 +117,7 @@ Finally it compiles the unmodified LibPaxos3 core with `zig cc -O3 -DNDEBUG`.
 `Cargo.lock` pins all Rust dependencies. The C script verifies its complete Git
 revision before compilation.
 
-== Workload
+=== Workload
 
 #table(
   columns: (auto, 1fr),
@@ -135,7 +137,7 @@ values into one consensus message. It does not serialize, call a kernel network,
 or sync a disk. Zig and Rust use a stable leader and send six messages per value.
 LibPaxos3 maintains its 128 slot phase one preexecution window and sends twelve.
 
-== One observed run
+=== One observed run
 
 On July 18, 2026, one arm64 macOS 26.5.1 run with Zig 0.16.0 and Rust 1.95.0
 reported:
@@ -175,7 +177,7 @@ a different phase one design. The libraries also have different features and
 data structures. The numbers must not be presented as a universal language
 ranking.
 
-== What the benchmark does not prove
+=== What the benchmark does not prove
 
 It does not prove which library is faster on another CPU. It does not measure
 durable latency. It does not compare recovery, batching, reconfiguration,
@@ -192,7 +194,7 @@ For a publishable performance claim, record:
 + storage and network configuration,
 + median and tail latency as well as throughput.
 
-= Performance lessons from C and the profiler
+== Performance lessons from C and the profiler
 
 LibPaxos2 uses a fixed circular instance table, a compact promise bit vector,
 phase one preexecution, and buffered UDP messages. LibPaxos3 separates its core
@@ -216,7 +218,7 @@ Further work should be measured.
 Any optimization must retain the durable write order and deterministic tests.
 A faster unsafe acknowledgement is not an optimization.
 
-= Operating drills
+== Operating drills
 
 Before production, rehearse:
 
@@ -235,7 +237,7 @@ For each drill, record the expected role, ballot, commit prefix, applied prefix,
 client response, and recovery time. If the expected result cannot be written
 before the drill, the design is not yet understood.
 
-= Review checklist
+== Review checklist
 
 #table(
   columns: (auto, 1fr),

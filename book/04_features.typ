@@ -1,7 +1,9 @@
 #import "theme.typ": *
 #import "figures.typ": *
 
-= The complete log interface
+= Advanced Replicated Log Features
+
+== The complete log interface
 
 The small `Protocol` type exposes the proof. The `ReplicatedLog` type exposes the
 shape most applications need. It orders commands, seals configurations, carries
@@ -10,7 +12,7 @@ snapshot references, and keeps every storage decision bounded.
 This chapter is a tour of the complete interface. We shall begin with time. We
 shall end with a new parliament.
 
-== One owner and one reusable buffer
+=== One owner and one reusable buffer
 
 A node should have one owner. The owner may be an actor, an event loop task, or
 a thread. It supplies one effect buffer and reuses it for every call.
@@ -40,7 +42,7 @@ changes only the counts.
 The owner consumes the effects before the next call. It never keeps a slice from
 an old effect batch. The next operation is allowed to overwrite those entries.
 
-== Logical time
+=== Logical time
 
 The library reads no wall clock. The host calls `tick` at a stable interval.
 The interval might be ten milliseconds. It might be one simulator step. Paxos
@@ -78,7 +80,7 @@ preferred nodes a greater priority. Stagger process starts. A simulator should
 also test repeated ties. Safety does not depend on a lucky schedule. Prompt
 election does.
 
-== Ballot priority
+=== Ballot priority
 
 A ballot contains a round, a priority, and a node ID. Comparison uses that order.
 
@@ -98,7 +100,7 @@ Choose priority from a stable operational fact, such as a preferred region or a
 machine class. Do not change it on every tick. An unstable preference creates
 work and explains nothing.
 
-== Heartbeats
+=== Heartbeats
 
 A heartbeat names the active ballot. It contains no command. A follower rejects
 an older heartbeat and observes a current one as leader contact. Accept and
@@ -110,7 +112,7 @@ quorum at the moment an application read begins. A linearizable read must use a
 protocol that confirms leadership with a quorum, or it must be represented by a
 log entry. The local read methods in this library report decided local state.
 
-== Retransmission
+=== Retransmission
 
 At the resend interval, a leader walks the bounded slot array. For each peer it
 sends known commits and active accepts. This is deliberately simple. It has a
@@ -129,7 +131,7 @@ A leader resends that peer's known state. A follower that reconnects to its
 leader asks for commits after its delivered prefix. The transport owns backoff,
 connection state, packet size, and congestion control.
 
-== Flexible quorums
+=== Flexible quorums
 
 Classic Paxos usually uses a majority in both phases. This library also accepts
 different read and write quorum sizes.
@@ -170,7 +172,7 @@ The membership constructor rejects zero sizes, sizes above membership, and a
 pair that does not intersect. This turns a proof obligation into a checked
 configuration.
 
-== Batch proposal
+=== Batch proposal
 
 `proposeBatch` assigns consecutive slots and returns one combined effect batch.
 
@@ -200,7 +202,7 @@ Batching has three different meanings. Keep them separate.
 The library supplies the first. Its effect boundary makes the second and third
 possible. The host chooses their byte format and latency limit.
 
-== Compact vote sets
+=== Compact vote sets
 
 Duplicate votes must not count twice. The direct representation is one Boolean
 per member and slot. The C implementations studied for this library suggested a
@@ -221,7 +223,7 @@ The abstraction is small because readability counts. An optimization that
 forces every protocol handler to repeat a bit mask expression is too expensive
 to maintain.
 
-= Reconfiguration by stop sign
+== Reconfiguration by stop sign
 
 A fixed membership is easy to reason about. A changing membership is not. The
 safe method used here gives each membership its own configuration and puts one
@@ -260,7 +262,7 @@ The metadata is protocol data. Keep it small. It may name a snapshot, schema,
 encryption key, or deployment record. Large snapshot bytes belong in an object
 store or a transfer protocol.
 
-== Why the log seals on acceptance
+=== Why the log seals on acceptance
 
 Suppose a leader accepts a stop sign locally and then loses leadership. The stop
 sign may or may not already be chosen. If the old node later appends commands
@@ -277,7 +279,7 @@ one process sealed until the deployment resolves the configuration transition.
 The gain is a clear invariant: no local command is proposed beyond a stop that
 the same durable state remembers.
 
-== Starting the next configuration
+=== Starting the next configuration
 
 After the stop sign is decided and its preceding prefix is applied, construct a
 fresh node.
@@ -306,7 +308,7 @@ version, and authenticated sender. The decoder must route a message to the node
 for exactly that configuration. A delayed packet from configuration 41 must not
 enter configuration 42.
 
-== Checkpoint epochs
+=== Checkpoint epochs
 
 The protocol log is bounded. Before its final slot, create an application
 snapshot and seal the epoch with `checkpoint`.
@@ -332,7 +334,7 @@ The safe order is:
 The snapshot reference must identify immutable bytes. A path whose contents can
 change is not an identity.
 
-= Reads and catch up
+== Reads and catch up
 
 The core offers three local views.
 
@@ -361,7 +363,7 @@ The peer returns each known commit from that slot. The requester releases values
 only when the prefix is contiguous. If the gap is large, transfer a checkpoint
 instead of replaying the complete retained log.
 
-= What remains with the host
+== What remains with the host
 
 The library is complete as a bounded consensus state machine. A production
 system is larger. The following duties remain explicit.
@@ -386,7 +388,7 @@ the effect boundary, uses checkpoint epochs for compaction, and does not claim
 the same partial connectivity guarantee. `docs/features.md` records each
 difference. A feature table is more useful than a broad claim of equivalence.
 
-= A compact operating recipe
+== A compact operating recipe
 
 The complete loop can now be stated in ten short sentences.
 

@@ -1,6 +1,8 @@
 #import "theme.typ": *
 
-= The coding standard
+= TigerStyle Coding Standard
+
+== The coding standard
 
 A consensus library is read under pressure. A reviewer may be tracing a safety
 failure at three in the morning. A future maintainer may know Zig but not Paxos.
@@ -29,7 +31,7 @@ A fast loop without a bound fails the first item as well. A safe and bounded
 function with poor names fails the third item and will eventually threaten the
 first two.
 
-== Readability is a safety property
+=== Readability is a safety property
 
 Consider a promise check written as one dense expression.
 
@@ -57,7 +59,7 @@ reordering is now visible in the shape of the code.
   expanding a hidden abstraction or evaluating a compound expression.
 ], kind: "idea")
 
-= Control flow
+== Control flow
 
 Protocol control flow is deliberately ordinary.
 
@@ -80,7 +82,7 @@ if (message.ballot.lessThan(self.durable.promised)) {
 The rejection is a complete branch. The normal path remains flat. A nested
 version would make the common transition harder to see.
 
-== Function size
+=== Function size
 
 Functions are limited to 70 lines. Source lines are limited to 100 columns.
 These are not aesthetic guesses. A short function can usually be held in one
@@ -96,7 +98,7 @@ arbitrary line count. `sendAccept`, `recordCommit`, and `emitContiguous` are
 separate because acceptance, durable choice, and application delivery are
 different facts.
 
-= Bounds and memory
+== Bounds and memory
 
 The consensus path allocates no memory after initialization. Members, retained
 entries, batches, messages, writes, and delivery buffers have compile time
@@ -129,7 +131,7 @@ try node.init(1, &membership);
 Returning a large node by value would make an accidental copy easy to miss.
 The destination pointer makes ownership and storage visible.
 
-== Batches remain bounded
+=== Batches remain bounded
 
 Batching is useful only when it does not turn latency into an unbounded queue.
 `max_batch` is a compile time limit. `appendBatch` rejects a larger slice before
@@ -138,10 +140,10 @@ it mutates the log. The caller supplies the slot output buffer.
 Preflight checks happen before the first proposal. A rejected batch therefore
 has no partial prefix.
 
-= Assertions and errors
+== Assertions and errors
 
-An error reports a state that a caller, network, or bounded resource may
-produce. An assertion reports a broken internal invariant.
+Operating errors are returned. Examples are invalid membership, wrong recipient,
+not leader, and slot exhaustion. Programmer and invariant errors are assertions.
 
 #table(
   columns: (1fr, 1.5fr, 1.5fr),
@@ -170,7 +172,7 @@ The library does not use `catch unreachable` for ordinary errors. It does not
 panic because a peer sent an old ballot. It does not continue after a journal
 sync fails.
 
-= Names carry the proof
+== Names carry the proof
 
 Names come from the domain.
 
@@ -189,7 +191,7 @@ Units belong in names when two units could be confused. Use `timeout_ticks`,
 `metadata_count`, and `from_slot`. Do not make the reader guess whether a number
 is bytes, entries, ticks, or nodes.
 
-= Comments explain why
+== Comments explain why
 
 This comment is weak.
 
@@ -208,7 +210,7 @@ The statement already says that. A useful comment preserves a reason.
 Comments should mention crash boundaries, quorum arguments, ownership, or a
 surprising performance decision. They should not translate Zig into English.
 
-= Formatting is executable
+== Formatting is executable
 
 The repository makes the standard part of the build.
 
@@ -227,7 +229,7 @@ Formatting is necessary but not sufficient. `zig fmt` cannot prove that a name
 is precise or that a comment explains the correct invariant. Human review uses
 the checklist below.
 
-= Review checklist
+== Review checklist
 
 Review a protocol change in this order.
 
