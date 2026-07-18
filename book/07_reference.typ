@@ -1,4 +1,4 @@
-#import "theme.typ": *
+#import "theme.typ" : *
 
 #part_page("VII", [Desk reference], [
   This part collects messages, state, errors, formulas, and answers in one place.
@@ -7,6 +7,8 @@
 = Consensus Desk Reference
 
 == Message reference
+
+This table summarizes all core protocol messages exchanged between nodes in our Multi-Paxos implementation:
 
 #table(
   columns: (auto, 1.2fr, 1.5fr),
@@ -27,15 +29,19 @@
 
 == Durable writes
 
+These are the three critical records that acceptors must write to stable disk storage before sending any replies over the network:
+
 #table(
   columns: (auto, 1fr, 1.5fr),
-  table.header([*Write*], [*Fields*], [*Required before*]),
+  table.header([*Write*], [*Fields*], [*Required before sending...*]),
   [`promise`], [`ballot`], [Promise replies for that ballot.],
   [`accept`], [`ballot, slot, value`], [Accepted acknowledgement.],
   [`commit`], [`slot, value`], [Application delivery and catch up claim.],
 )
 
 == Node state
+
+This table maps the internal fields of a consensus node (`Consensus.Node`) to their persistence lifecycle:
 
 #table(
   columns: (auto, 1fr, auto),
@@ -55,6 +61,8 @@
 )
 
 == Error reference
+
+This list describes the operational errors returned by the public library methods:
 
 #table(
   columns: (auto, 1fr),
@@ -78,6 +86,8 @@
 
 == Formula sheet
 
+Quick mathematical references for cluster design:
+
 #table(
   columns: (1.3fr, auto, 1.2fr),
   table.header([*Quantity*], [*Formula*], [*Example*]),
@@ -92,39 +102,32 @@
 
 == Invariants for review
 
-+ Ballot pairs are unique and totally ordered.
-+ Every quorum intersects every quorum in the same membership epoch.
-+ An acceptor never accepts below its durable promise.
-+ One ballot and slot have at most one value.
-+ A new leader uses the value from the greatest accepted ballot reported by a
-  complete phase one quorum.
-+ A value is called chosen only after a quorum accepts it.
-+ One slot has at most one committed value.
-+ Application entries are released only as a contiguous slot prefix.
-+ Durable writes precede every message that depends on them.
-+ Slots are never reused within an epoch.
+Review these ten rules to double-check any change to the protocol:
+
+- *Ballot Uniqueness*: Ballot numbers must be globally unique and totally ordered.
+- *Quorum Intersection*: Any two quorums in the same epoch must share a node.
+- *Promise Invariant*: An acceptor must never accept a proposal with a ballot lower than its promise.
+- *Single Value per Ballot*: One ballot and slot can have at most one proposed value.
+- *Highest Vote Recovery*: A new leader must propose the value from the highest ballot number reported in its complete Phase One quorum.
+- *Consensus Boundary*: A value is chosen only when a quorum has accepted it.
+- *Commit Consistency*: A slot has at most one committed value.
+- *Contiguous Application*: Committed entries must be applied to the state machine sequentially in slot order.
+- *Write-Before-Send*: Acceptors must sync votes to disk before sending messages.
+- *Epoch Limits*: Slots must never be reused within the same epoch.
 
 == Answers to selected exercises
 
 === Exercise 1.1
-
-A majority of five is three. Two nodes may be unavailable while three remain.
+A majority of five is three. Two nodes may be offline while three remain active to form a quorum and make progress.
 
 === Exercise 2.1
-
-`{A1, A2}` and `{A3, A4}` do not intersect. If both were quorums, they could
-choose different values without sharing a witness.
+`{A1, A2}` and `{A3, A4}` do not intersect. If both were quorums, they could choose conflicting values independently, violating safety.
 
 === Exercise 4.1
-
-Choose `apple` from ballot 9. Knowledge that ballot 3 succeeded does not change
-the procedure. The induction says the later legal vote at ballot 9 must already
-preserve any earlier chosen value.
+The new candidate must propose `apple` because it is associated with ballot 9, which is the highest accepted ballot number reported. The fact that ballot 3 succeeded does not change this; ballot 9 was already forced to carry `apple` by induction.
 
 === Exercise 8.1
-
-The promise write precedes the promise reply. Each accept write precedes its
-accepted reply. The commit write precedes local application and later catch up.
+The promise write must precede the promise reply. The accept write must precede the accepted reply. The commit write must precede application delivery and catch-up.
 
 == Glossary
 
