@@ -8,102 +8,60 @@
 
 = Multi-Paxos Log Replication
 
-== One Paxos instance per slot
+== Why Multi-Paxos?
 
-Let slot 1 choose `open`. Let slot 2 choose `write A`. Let slot 3 choose `close`.
-Each slot is a separate consensus problem. Safety for slot 2 says nothing about
-slot 3. The log obtains its order from slot numbers.
+Classic Paxos chooses exactly one value for one slot. If we want to build a replicated log to run a database, we could run a completely separate instance of Classic Paxos for every single slot in the log. 
 
-The direct construction runs phase one and phase two in every slot. It is safe
-and slow. A stable leader can prepare one ballot across all bounded slots. Once
-it has a quorum of complete replies, it may run phase two for each free slot.
-This is Multi Paxos.
+But this is slow! Every slot would require:
+1. Phase One (Prepare & Promise) -> 1 Round Trip.
+2. Phase Two (Accept & Accepted) -> 1 Round Trip.
 
-The proof has not changed. Each slot still follows B1, B2, and B3. We have only
-combined the phase one questions into fewer messages.
+This means every single log append takes at least two network round trips and two disk syncs.
 
-=== Slot numbers
+Multi-Paxos is an elegant optimization. Instead of running Phase One for each slot, a candidate campaigns for *all slots in the log* at the same time. Once the candidate wins a quorum of promises for the entire log, it becomes the stable leader. 
 
-The library uses one based `u32` slots. Slot zero means "no slot." The conversion
-to an array index occurs in one helper.
+For all subsequent slots, the leader can skip Phase One entirely and propose values in Phase Two directly! The cost of a log append drops to a single network round trip.
 
-```zig
-fn slotIndex(slot: Slot) !usize {
-    if (slot == 0) return error.InvalidSlot;
-    if (slot > options.max_slots) return error.SlotLimitReached;
-    return @as(usize, slot - 1);
-}
-```
-
-Centralizing the conversion is more than tidiness. It gives one place to check
-the two boundaries. An index is not a count. A slot is not an index.
-
-== A batched prepare reply
-
-An acceptor may have accepted values in many slots. Its response to prepare is a
-series of messages:
-
-```text
-promise(ballot, slot 2, accepted ballot 7, value B)
-promise(ballot, slot 5, accepted ballot 9, value E)
-promise_done(ballot, accepted_count 2)
-```
-
-The network may deliver `promise_done` first. If the candidate counted the
-member immediately, it could become leader without seeing value `E`. That value
-might already be chosen.
-
-The candidate therefore tracks, for each member:
-
-+ whether the final marker arrived,
-+ the number of entries promised by the marker,
-+ the number of distinct entries received,
-+ a Boolean per slot to reject duplicates.
-
-A member's response is complete only when the marker exists and both counts are
-equal. A quorum means a quorum of complete responses.
-
-=== Why a count instead of FIFO
-
-#callout([Why a count instead of FIFO], [
-  TCP preserves sender order on one connection, but the Paxos safety core need
-  not assume TCP. A count makes the requirement explicit and lets other
-  transports reorder messages safely.
-], kind: "idea")
-
-=== Selecting recovered values
-
-For each slot, compare every accepted ballot reported by the complete quorum.
-Keep the greatest one and its value.
-
-Consider three promise replies.
-
-#table(
-  columns: (auto, auto, auto, 1fr),
-  table.header([*Member*], [*Slot*], [*Ballot*], [*Value*]),
-  [`N1`], [`4`], [`(6, 1)`], [`alpha`],
-  [`N2`], [`4`], [`(8, 2)`], [`beta`],
-  [`N3`], [`4`], [`null`], [`null`],
+#book_figure(
+  [Multi-Paxos runs Phase One once to establish leadership across all slots,
+  allowing subsequent appends to run Phase Two in parallel with a single round trip.],
+  log_picture(),
 )
 
-The new leader must propose `beta` in slot 4. It does not matter that `alpha`
-arrived first. Arrival order is not ballot order.
+== Combining the Phase One Replies
 
-The test named "phase one tolerates reordering and recovers the highest accepted
-value" constructs this schedule. It sends completion markers before entries and
-gives two minority acceptors different old values. The leader waits and chooses
-the value from the greater ballot.
+How does a candidate query the entire log? In Phase One, it sends a single `prepare` message. Acceptors reply with all of their accepted votes across all slots in a sequence of messages:
 
-== Holes and the no op value
+```text
+promise (ballot, slot 1, accepted_ballot 3, value "A")
+promise (ballot, slot 3, accepted_ballot 4, value "C")
+promise_done (ballot, accepted_count 2)
+```
 
-Suppose recovery finds a value in slot 5 but no accepted value in slot 4. The
-leader must not put an important new command into slot 4 if clients may already
-have observed work associated with slot 5. It fills the hole with a no op.
+Because the network can reorder packets, the final `promise_done` marker might arrive before the individual slot `promise` entries. If the leader immediately declared itself ready, it might miss some accepted entries, violating safety!
 
-Lamport called this the olive day decree. It changes no application state. It
-does make the log prefix complete.
+To prevent this, the candidate tracks the expected entry count from `promise_done` and waits until it has received every single entry:
 
-The host supplies the no op value when it calls `campaign`.
+```zig
+// From the library's promise counting logic
+const complete = member_promise.done and 
+                 member_promise.received == member_promise.expected;
+```
+
+A member's reply is counted toward the quorum only when it is complete. This count-based tracking makes the protocol transport-independent: we do not assume TCP FIFO ordering for correctness.
+
+== Holes and the No-Op Value
+
+Imagine that N1 becomes the leader. During its Phase One recovery, it discovers:
+- Slot 1 has an accepted vote `alpha`.
+- Slot 3 has an accepted vote `gamma`.
+- Slot 2 has no accepted votes reported by anyone.
+
+By the safety rules, the leader must recover and propose `alpha` in Slot 1 and `gamma` in Slot 3. But what about Slot 2? The leader cannot leave Slot 2 empty. If it did, and later applied Slot 3, the database would have a gap in its history, violating state machine order.
+
+The leader must fill the gap in Slot 2. It proposes a *No-Op* (no-operation) command. A No-Op command consumes the slot, but when the state machine applies it, it performs no work.
+
+In our Zig library, the host application supplies the No-Op value when starting a campaign:
 
 ```zig
 try node.campaign(.{
@@ -113,139 +71,47 @@ try node.campaign(.{
 }, &effects);
 ```
 
-The protocol cannot invent a valid generic `Value`. Only the application knows
-which value means no work.
+This keeps the library clean and generic: the consensus core does not need to invent application-specific command values.
 
-== Learning in order
+== The Stable Leader Pipeline
 
-A network can deliver commit for slot 7 before commit for slot 6. The learner
-records slot 7 but does not apply it. State machines must see one common prefix.
+A stable leader can have multiple proposals in flight at the same time. This is called *pipelining*. It hides network latency by allowing the leader to propose Slot 101 before Slot 100 has committed.
 
-#book_figure(
-  [Slots 1 through 5 may be applied. Slot 7 is known, but slot 6 blocks it.],
-  log_picture(),
-)
+However, pipelining introduces the risk of unbounded memory usage. If clients send writes faster than the disk can sync them, the queue of uncommitted proposals will grow forever.
 
-When slot 6 arrives, the learner emits both 6 and 7 in order. The field
-`delivered_through` marks the prefix already returned during this process
-lifetime.
+Our library solves this by using *static bounds*: the maximum number of slots (`max_slots`) is fixed at compile time, and the node state allocates no dynamic memory. If the pipeline reaches its limit, the library returns `error.SlotLimitReached`. The host application must handle this by applying backpressure to the clients.
 
-Across process restart, delivery is at least once. The application must persist
-its applied slot with its state. If it sees an old slot again, it ignores it.
+== Membership Changes: The Stop Sign
 
-=== Catch up
+A consensus cluster cannot remain fixed forever. Machines wear out, datacenters change, and operators must add or remove nodes. 
 
-A lagging node sends:
+If we simply change the membership configuration on the fly, we risk splitting the cluster. For example, if we transition from three nodes $\{A, B, C\}$ to a new set $\{D, E, F\}$, a partition could allow $\{A, B\}$ to make decisions under the old configuration, while $\{D, E\}$ make different decisions under the new configuration.
 
-```text
-learn { from_slot }
+Our library implements a safe, clean reconfiguration mechanism called a *Stop Sign*:
+
+#definition([Stop Sign], [
+  A special log entry that contains the new membership configuration. Once a Stop Sign
+  is accepted, the current log is sealed—no further proposals can be made in this epoch.
+  Once the Stop Sign is committed and applied, the next configuration can safely begin.
+])
+
+```zig
+const slot = try node.reconfigure(
+    next_configuration_id,
+    &.{ 2, 3, 4, 5, 6 }, // New membership IDs
+    "epoch_metadata",
+    &effects,
+);
 ```
 
-The peer returns every known commit at or after that slot. The method is simple
-and bounded. It is suitable for the library's fixed log. A large production
-system should transfer a snapshot when the missing prefix is too large.
+By placing the configuration change *inside* the log itself, we order it relative to all other decisions. Every node transitions to the new membership at exactly the same slot, preventing split-brain scenarios.
 
-The catch up request may go to any member. A leader is a good choice because it
-is likely to know the newest prefix. A stale peer can return only what it knows;
-the learner may ask another peer later.
+== Bounded Logs and Epochs
 
-== Stable leader pipeline
+Because the log size `max_slots` is bounded at compile time, what do we do when we run out of slots? We transition to a new epoch.
 
-After phase one, several slots may be in phase two at the same time. The API lets
-the host call `propose` again before an earlier proposal commits. It can also use
-`proposeBatch` to assign several consecutive slots in one call. Each slot has its
-own compact acknowledgement bit set.
+1. *Checkpoint*: The application applies all committed slots up to slot $K$, writes a snapshot of its database state to disk, and calls `node.checkpoint` to seal the epoch.
+2. *Epoch Transition*: The host decides a Stop Sign that names the new configuration.
+3. *Clean Start*: The host initializes a fresh node for the next epoch starting at Slot 1, using the snapshot as its initial state.
 
-Pipelining hides network latency, but it creates a bound question. The current
-library bounds slots and effect buffers at compile time. The host should also
-bound client requests in flight. An unbounded input queue would move the memory
-problem outside the protocol without solving it.
-
-For a three node cluster, one stable value creates six remote protocol messages.
-With `W` values in flight, a rough upper bound for protocol envelopes in the
-transport is `6W`, before retries and catch up. The right `W` follows from disk
-latency, network bandwidth, and the largest acceptable response time.
-
-== Leader replacement trace
-
-We now follow the case that makes Paxos worth learning.
-
-#transcript((
-  [1], [N1], [Leads ballot `(4, 1)` and sends accept for `red` in slot 8.],
-  [2], [N2], [Persists the acceptance and replies.],
-  [3], [N1], [The local vote and N2 form a quorum. `red` is chosen.],
-  [4], [N1], [Crashes before sending commit.],
-  [5], [N3], [Starts ballot `(5, 3)` and sends prepare.],
-  [6], [N2], [Promises `(5, 3)` and reports `(4, 1), red` for slot 8.],
-  [7], [N3], [Gets a complete quorum. `red` is the greatest report for slot 8.],
-  [8], [N3], [Reproposes `red` in ballot `(5, 3)`.],
-  [9], [N3], [Gets a quorum and announces commit.],
-))
-
-The client may have timed out at step 4. It cannot conclude that `red` failed.
-It must retry with the same request identity. The state machine will recognize
-the duplicate if a second slot later contains that request.
-
-=== A value accepted by only one node
-
-Now suppose N1 crashes before its local vote gains any remote vote. The value is
-not chosen. A later leader may still recover it if N1 belongs to the new phase
-one quorum and its ballot is the greatest report.
-
-Preserving the value is conservative. It is not evidence that the old client
-succeeded. It is the uniform rule that also protects values which did succeed
-without an announcement.
-
-== Reads
-
-Consensus orders writes. Reads need a stated consistency level.
-
-#table(
-  columns: (auto, 1.2fr, 1.2fr),
-  table.header([*Read*], [*Method*], [*Property*]),
-  [Local], [Read the local applied state.], [Fast and possibly stale.],
-  [Log barrier], [Propose a read marker and wait to apply it.], [Linearizable and
-    consumes a slot.],
-  [Read index], [Confirm current leadership with a quorum, then wait for the
-    confirmed applied index.], [Linearizable with extra protocol support.],
-  [Lease], [Use a time bounded leader lease.], [Fast, but clocks enter the
-    safety argument.],
-)
-
-Version 0.1 supplies local decided reads and the log barrier through ordinary
-proposals. It does not implement read index or leases. The application must not
-call a local read linearizable merely because it came from the leader.
-
-== Membership
-
-Membership changes are consensus decisions about future quorums. A careless
-switch from old members to new members can create two nonintersecting quorums.
-
-The small `Protocol.Node` keeps membership fixed. The `ReplicatedLog.Node` places
-a stop sign in the ordered log. The stop sign names the next membership and
-seals the current configuration. A decided stop sign constructs the next epoch.
-The transport must retain enough configuration identity to reject delayed
-messages.
-
-Other choices include joint consensus, delayed activation by slot, and
-matchmaker protocols. They differ in proof and operation. This library selects
-one explicit stop sign design rather than hiding several proofs behind a Boolean
-option.
-
-== Bounded logs and epochs
-
-`max_slots` is a hard limit. A slot is never reused within an epoch. After the
-last slot, `propose` returns `error.SlotLimitReached`.
-
-Before that point, the application should:
-
-+ persist an application snapshot and its applied slot,
-+ verify the snapshot on enough nodes,
-+ call `checkpoint` with an immutable snapshot reference,
-+ decide the stop sign and stop proposals in the old epoch,
-+ create the next epoch with `initFromStop`,
-+ reject delayed envelopes from the old epoch at the transport boundary.
-
-The core message type does not contain a configuration identifier. A production
-transport must frame one outside the message. Node IDs should also remain stable
-for the logical members they name.
+This epoch-based design allows the library to achieve zero allocation at runtime, ensuring maximum speed and memory safety.
