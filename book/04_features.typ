@@ -3,9 +3,19 @@
 
 = Advanced Replicated Log Features
 
+#objectives([
+  By the end of this chapter you should be able to tune logical timers without
+  confusing them with safety, validate flexible quorum arithmetic, repair a
+  same-epoch follower, and use `ReplicatedLog` without attributing host-owned
+  snapshot work to the library.
+])
+
 == Logical Time: The Power of Ticks
 
-Consensus depends on order, not time. If a consensus library queries the system clock directly, it introduces a source of non-determinism. System clocks can drift, jump backward during NTP syncs, or pause during virtual machine migrations.
+Paxos safety does not depend on accurate clocks. Progress mechanisms do need a
+way to suspect silence and retransmit. Reading the system clock inside the core
+would make identical input schedules harder to reproduce, so the host converts
+elapsed time or scheduler events into logical ticks.
 
 Our library keeps time out of the consensus core. The node has no clock. Instead, the host application drives time by calling the `tick` method at a stable interval:
 
@@ -22,19 +32,31 @@ When you call `tick`, the node performs three logical duties:
   tick_flow(),
 )
 
-+ *Liveness check (Follower)*: Counts ticks since it last heard from the leader. If the count exceeds `election_timeout_ticks`, the follower assumes the leader has failed and starts a campaign.
++ *Liveness check (Follower)*: Counts ticks since accepted leader traffic. At
+  `election_timeout_ticks` it starts a campaign; this is suspicion, not proof
+  that the prior leader failed.
 + *Heartbeat emission (Leader)*: Sends heartbeats at `heartbeat_interval_ticks` to remind followers that it is active, preventing split campaigns.
 + *Retransmission (Leader)*: At `resend_interval_ticks`, the leader sweeps its slot log and resends uncommitted proposals to slow or returning peers.
 
-Because ticks are just integer calls, testing becomes trivial: a simulator can fast-forward time simply by calling `tick` in a loop, without waiting for real milliseconds to pass.
+Because ticks are input calls, a test or simulator can advance logical time by
+calling `tick` without waiting for real milliseconds. This makes timeout paths
+reproducible; it does not make all liveness schedules trivial to test.
 
 == Flexible Quorums: Shifting the Balance
 
 In classic Paxos, majorities are used for both Phase One (prepare) and Phase Two (propose). For a five-node cluster, both quorums must be size 3.
 
-But Leslie Lamport and Heidi Howard proved a deeper truth: *any quorum size is safe as long as every Phase One quorum intersects with every Phase Two quorum.*
+Howard, Malkhi, and Spiegelman made the Flexible Paxos trade-off explicit:
+every possible phase-one quorum must intersect every possible phase-two
+quorum. The current library supports uniform quorum *sizes*, for which the
+condition is:
 $$ |Q_1| + |Q_2| > N $$
-Two Phase Two quorums do *not* need to intersect with each other. Why? Because the leader handles slot ordering. We only need the Phase One query to meet the Phase Two vote to discover any chosen values.
+Two phase-two quorums need not intersect. Within one ballot, uniqueness and the
+single-value check prevent two values; before a later ballot proposes, its
+phase-one quorum intersects the earlier phase-two quorum and recovers the
+highest vote. Flexible quorums change availability: a five-node `(Q1=4, Q2=2)`
+system can write with two members under a stable leader but needs four members
+to replace that leader.
 
 This allows you to tune your cluster for different workloads:
 
@@ -42,11 +64,14 @@ This allows you to tune your cluster for different workloads:
   columns: (auto, auto, auto, 1fr),
   table.header([*Nodes (N)*], [*Read (Phase 1)*], [*Write (Phase 2)*], [*Operational Trade-off*]),
   [5], [3], [3], [Standard symmetric majority quorum.],
-  [5], [4], [2], [*Optimized Writes*: Write quorum of 2 allows lightning-fast writes (only one remote response needed). Leader replacement requires 4 nodes.],
-  [5], [2], [4], [*Optimized Recovery*: Election is very fast, but writes require 4 nodes. Useful for read-heavy static clusters.],
+  [5], [4], [2], [Smaller stable-leader vote quorum; leader replacement needs
+    four members.],
+  [5], [2], [4], [Smaller phase-one quorum; every new value needs four durable
+    acceptances.],
 )
 
-In the Zig library, we validate this inequality at compile time:
+The options are compile-time constants, but validation occurs when
+`Membership.init` receives the runtime member slice:
 
 ```zig
 const P = paxos.Protocol(Command, .{
@@ -73,10 +98,13 @@ const slot = try node.reconfigure(
 );
 ```
 
-When a node accepts a Stop Sign:
-1. *Immediate Seal*: It seals the current log. The node will reject any new local client proposals for that epoch.
+When a stop sign enters the log:
+1. *Immediate local seal*: The proposer seals when `reconfigure` returns;
+   another member seals after accepting the stop. This conservative seal can
+   later be cleared by recovery if a higher ballot chose a command instead.
 2. *Order Conservation*: It continues processing network messages to help decide and commit all slots up to the Stop Sign.
-3. *Clean Handover*: Once the Stop Sign commits and is applied to the state machine, the host knows the epoch is over. It creates a new node instance starting at Slot 1 under the new membership.
+3. *Clean handover*: Once `isReconfigured()` returns the decided stop, the host
+   transfers application state and creates a new instance at Slot 1.
 
 This epoch-based design ensures that configuration changes are totally ordered alongside regular writes, preserving safety.
 
@@ -88,4 +116,22 @@ If a node gets partitioned and falls behind, it does not need to run a complex r
 try node.requestCatchUp(peer_id, first_missing_slot, &effects);
 ```
 
-The peer replies with committed entries. The lagging node applies them in strict order. If the gap is too large (e.g., the peer has already discarded old slots to free disk space), the host can transfer a snapshot file instead, bringing the node up to date in one quick step.
+The peer replies with every committed entry it still represents from that slot.
+The lagging node may receive them out of order, but releases only a contiguous
+prefix. The current bounded core does not compact within an epoch. If the old
+epoch instance is no longer available, `requestCatchUp` cannot cross that
+boundary; the host must transfer and verify the snapshot named by the decided
+stop sign, then initialize the appropriate epoch.
+
+#exercise([14.1], [
+  For seven members, choose uniform phase-one and phase-two sizes optimized for
+  a small stable-leader write quorum of three. What phase-one size is required?
+  How many unavailable members can the cluster tolerate during leader
+  replacement? Check the exact inequality used by `Membership.init`.
+])
+
+#teach_back([
+  Explain why `read_quorum_size` is not an application read API. Then explain
+  one safe way to serve a linearizable key-value read using an ordered barrier,
+  without claiming that `committedAt` itself provides linearizability.
+])

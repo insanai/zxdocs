@@ -1,19 +1,40 @@
 #import "theme.typ": *
 
-= TigerStyle Coding Standard
+= Writing Reviewable Consensus Code
+
+#objectives([
+  By the end of this chapter you should be able to review a change in reasoning
+  order, distinguish recoverable input errors from internal invariant checks,
+  and connect a source transition to the proof obligation it preserves.
+])
 
 == Why Zero Allocation Matters
 
 In typical application development, we allocate memory on the heap whenever we need a new buffer or object. If we run out of memory, the operating system might kill our process, or the program might crash. 
 
-For a consensus protocol, *dynamic allocation is a safety risk*. 
-
-If a database node runs out of memory while writing a vote to disk, the process might panic midway, leaving the journal in a half-written state. Furthermore, heap allocation introduces non-determinism (memory fragmentation, variable allocator latency) that makes performance profiling and testing difficult.
+Dynamic allocation is not inherently a Paxos safety violation: a node that
+fails cleanly on allocation failure can remain fail-stop. It does introduce
+additional failure paths, latency variance, fragmentation, and ownership work.
+A torn journal record is a storage-format and recovery problem whether or not a
+heap was involved. This library chooses fixed bounds so its core never needs to
+solve those problems at runtime.
 
 Our library follows the *TigerStyle* coding guidelines:
 + *Zero runtime allocation*: All memory needed by the consensus core is allocated statically at startup or on the call stack. The library does not import or use a heap allocator.
 + *Static bounds*: Cluster size, slot log capacity, and message buffers are defined at compile time.
-+ *Fail-fast assertions*: We protect internal invariants using standard assertions. If an invariant is violated, the node halts immediately.
++ *Fail-fast checks*: Recoverable boundaries return errors; safe builds also
+  assert internal invariants close to their mutation sites.
+
+It also follows a Knuth-inspired literate rule: organize an explanation around
+the human proof, not the compiler's file order. That does not mean comments
+should narrate syntax. A useful source comment names the invariant, the reason
+for a write, or the ownership boundary that a reviewer could otherwise miss.
+
+Lamport's hierarchical-proof practice adds another rule: a long argument needs
+levels. First state the transition's claim; then split it into obligations such
+as membership validation, durable monotonicity, quorum evidence, and emitted
+effects. A reviewer should not have to remember an unstructured page of prose
+while inspecting one branch.
 
 == Control Flow Rules
 
@@ -66,7 +87,11 @@ We distinguish between two kinds of failures:
    - Each error returns a structured explanation with a clear top boundary header (e.g. `-- NOT LEADER --`), a simple English description of what failed in the state machine, and a `Hint:` suggesting a resolution path.
 2. *Invariant Violations*: These are bugs. An acceptor votes for a ballot lower than its promise, or the write count exceeds the size of the array. These represent impossible state transitions. 
 
-If we detect an invariant violation, *we assert and crash*. 
+Internal impossible states use assertions in builds where runtime safety is
+enabled. Untrusted bytes, wrong recipients, stale ballots, capacity limits, and
+storage failures must use validation, errors, or protocol replies instead;
+correctness must not depend on a debug assertion that an optimized build may
+omit.
 
 In consensus engineering, a dead node is safe, but a corrupt node that continues running and sends corrupt messages can break safety for the entire cluster. We use `std.debug.assert` to protect all internal boundaries:
 
@@ -95,12 +120,21 @@ std.debug.assert(self.messages_count <= self.messages.len);
 - Cross-language measurements must pin dependency versions and disclose differences.
 - Performance claims use observed numbers and never infer language superiority.
 
-== Review Checklist: The Human Proof
+== Review Checklist: A Human Proof Outline
 
-Even with tests and formatters, human review is our final defense. When reviewing a change to the consensus core, ask these questions:
+Human review complements executable tests; this repository does not yet ship a
+machine-checked specification that refines to the Zig code. When reviewing a
+change to the consensus core, ask these questions in order:
 
 + *What invariant does this change affect?* Trace the code back to Leslie Lamport's invariants `B1`, `B2`, or `B3`.
 + *Is the write synced before the send?* Ensure no network message leaves before the corresponding write is durable.
 + *What happens if this message is duplicated or delayed?* Verify that the handler is idempotent.
 + *Are all buffers bounded?* Make sure no loop or array mutation can run out of bounds.
 + *Is it readable?* Can a colleague review the code and understand the proof without reading this book?
+
+#teach_back([
+  Choose `Node.onAccept` or `DurableState.apply`. Explain it in reasoning order:
+  precondition, state protected, durable change, emitted evidence, duplicate
+  behavior, and failure behavior. Only then read the function and list any line
+  your explanation failed to predict.
+])
