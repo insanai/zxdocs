@@ -72,12 +72,12 @@ snapshots, and a written frame is never moved or rewritten. That
 stability is what makes the next step legal.
 
 #callout(title: [These pragmas are replication invariants], tone: "warning")[
-  Application SQL currently runs inside Zaxonlite's `BEGIN IMMEDIATE`.
-  SQLite refuses changing `journal_mode` or `synchronous` there, but
-  `wal_autocheckpoint` can replace the installed WAL hook. The security plan
-  therefore adds a narrow authorizer that denies capture-changing pragmas and
-  verifies the hook/mode contract before payload extraction. Loadable
-  extensions are already omitted at SQLite compile time.
+  Application SQL runs inside Zaxonlite's `BEGIN IMMEDIATE`. SQLite refuses
+  changing `journal_mode` or `synchronous` there, but a `wal_autocheckpoint`
+  write would replace the installed WAL hook. The invariant guard below
+  therefore denies capture-changing statements at prepare time, and the
+  node re-verifies the hook and mode contract before every payload
+  extraction. Loadable extensions are omitted at SQLite compile time.
 ]
 
 After every commit, the hook reports the total number of committed
@@ -121,6 +121,51 @@ are illustrative; the mechanics are exact.
   are cumulative and seeded per WAL file. It does not matter here,
   because Zaxonlite never splices frames into another WAL. It applies
   pages offline instead.
+]
+
+== The invariant guard
+
+Everything above assumes the writer connection stays configured exactly
+as the node opened it. A single application statement could break that.
+`COMMIT` would end the outer transaction capture depends on. `ATTACH`
+would produce WAL frames in a file Zaxonlite never replicates. A write
+to `wal_autocheckpoint` would replace the installed hook. So every
+application statement — `exec`, `query`, prepared statements,
+transactions, the CLI, the C ABI, and the network surface alike — is
+screened by a narrow SQLite authorizer (`guard.zig`) at prepare time,
+before any side effect. Zaxonlite's own metadata statements run in a
+separate internal scope that the authorizer waves through.
+
+The denied list is short and exact: transaction control (`BEGIN`,
+`COMMIT`, `ROLLBACK`, `SAVEPOINT`, `RELEASE`), `ATTACH` and `DETACH`,
+any read or write of the reserved `__zaxon_*` namespace,
+`pragma wal_checkpoint` in both its forms, and writes to
+`wal_autocheckpoint`, `journal_mode`, `synchronous`, `page_size`,
+`locking_mode`, `auto_vacuum`, `writable_schema`, and `query_only`.
+Reads of those pragmas stay allowed, and everything else SQLite permits
+stays available: DDL, triggers, views, and ordinary pragmas such as
+`user_version` and `foreign_keys`. A denied statement fails at prepare
+with SQLite's authorization error, which reaches the caller as an
+ordinary SQL error.
+
+The authorizer already denies every statement that could change the
+capture configuration; a runtime check keeps the invariant robust
+anyway. After each application batch, and before commit and payload
+extraction, the node re-verifies the capture contract: the outer
+transaction is still open, the journal mode is WAL, the page size is
+the expected one, and the frame-counting WAL hook is still the
+installed one. Any mismatch fails the write with
+`error.CaptureContractViolated` instead of capturing the wrong bytes.
+A build invariant completes the fence: the bundled amalgamation keeps
+`SQLITE_OMIT_LOAD_EXTENSION`, and a test asserts both the compile
+option and that `load_extension`, `readfile`, and `writefile` are
+absent from the SQL surface.
+
+#callout(title: [A guard, not a sandbox], tone: "note")[
+  The application is trusted; it is the single database principal. The
+  guard protects Zaxonlite's replication invariants against accidental
+  interference. It is not a sandbox for hostile tenants and not
+  multi-user RBAC.
 ]
 
 == The apply technique

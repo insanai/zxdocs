@@ -58,7 +58,8 @@ tail. So we keep both, and everything between.
     loss, duplication, reordering, seven-byte fragmentation, and
     delayed durable sync?], [`zig build test-fault-network`],
   [CLI contract], [Do exit codes, JSON shapes, session flags, the
-    scripted shell, and locking match the reference?],
+    scripted shell, locking, and the mutual-TLS service match the
+    reference?],
     [`zig build test-cli`],
   [C ABI], [Does every exported function work, including locking and
     replay after reopen?], [`zig build test-cabi`],
@@ -69,6 +70,9 @@ tail. So we keep both, and everything between.
     ever drift from a live row-count model?], [`zig build soak`],
   [Benchmark], [What do writes, reads, recovery, and rebuild cost in
     ReleaseFast on this machine?], [`zig build benchmark`],
+  [Cluster benchmark], [What do replicated writes and reads cost across
+    three real server processes, in plaintext, PSK, and mTLS transport
+    modes?], [`zig build bench-cluster`],
 )
 
 `zig build test-cluster -Dcluster-runs=N` repeats the whole cluster
@@ -158,6 +162,54 @@ between them.
     must refuse writes and fenced reads.],
 )
 
+== The three-node transport benchmark
+
+`zig build bench-cluster -- [--sync os|full] <plaintext|psk|tls>
+[writes] [reads]` runs the harness in `zaxonlite/src/cluster_bench.zig`.
+It spawns three ReleaseFast `zaxon serve` processes on loopback ports in
+the named transport and sync mode, waits for a leader, then drives
+sequential replicated writes followed by `leader` and `linearizable`
+reads over one persistent client connection to the leader — the shape
+of an embedded client, not a pipelined load generator. Every response
+is verified before it counts; a request the node declines (for example
+after a leadership move) is retried through the configured endpoint
+list, and the retry stays in that operation's latency sample. It
+reports ops/s with p50, p95, p99, and max latency per workload, plus
+each server process's RSS and CPU delta across the run. The defaults
+are 1000 writes and 2000 reads. In `tls` mode the harness generates a
+throwaway CA and per-node `zaxon-node-<id>` certificates with the
+`openssl` CLI, so the three processes exercise the real mutual-TLS peer
+and client paths.
+
+The build step always passes `--record
+benchmarks/results/transport-latest.json`, so every run replaces its
+mode-and-sync row in that file, and the table below is read from it
+when this book compiles — the same contract as the rqlite dashboard:
+the compiled book always shows the last recorded runs, never a number
+copied into prose.
+
+#transport_bench_table()
+
+Two lines dominate this table. Across transport modes the write row
+barely moves, because a sequential replicated write is dominated by
+quorum fsyncs and the mTLS cost disappears inside them; the read rows
+show encryption's real price on this host — a few microseconds at p50
+and a throughput cost under about 16% — plus roughly 5–6 MiB of
+additional RSS per node for OpenSSL state. Across *sync* modes the
+write row moves by more than an order of magnitude: `full` issues one
+`F_FULLFSYNC` per commit point on macOS — the payload install flushes
+to the drive and the journal sync is the single drive-cache barrier
+that makes both power-loss durable — while `os` trusts `fsync(2)` and
+the drive cache. The write latency under `full` is therefore two
+barriers in sequence, the leader's and a quorum follower's, which is
+the price of surviving power loss on that platform. Reads never touch
+the journal, so their rows are indifferent to the sync mode. Sustained
+`full`-mode
+writes can also stall the leader's tick loop long enough to move
+leadership — visible as occasional large maxima — which is exactly the
+behavior an operator should expect from a workload that saturates a
+full-flush storage budget.
+
 == Measured against rqlite
 
 Benchmarks are the easiest place for a book to lie, so this dashboard
@@ -203,6 +255,22 @@ the rows is a product gap. Front ends, durability scheduling, and
 storage layouts differ by design, and the table cannot attribute its
 gap to any single one of them. It is not evidence about Paxos versus
 Raft, and it is not evidence about languages.
+
+The recorded run also pins the sync contract: both systems flush the
+drive's cache on every acknowledged write — Zaxonlite's default `full`
+mode issues `F_FULLFSYNC` on macOS, exactly as Go's file sync does for
+rqlite. Group fsync already consolidates Zaxonlite's per-write flushes
+to one barrier per node per commit point (the journal sync; payload
+installs ride it — see chapter 6). The gap that remains is ordering:
+Zaxonlite's sync-before-send contract runs the leader's barrier and
+then a follower's barrier in sequence, while rqlite's Raft
+implementation overlaps the leader's log fsync with the followers'.
+Overlapping them is protocol pipelining work, not storage work, and
+this table is the honest record until it is done. A development
+`--sync os` run on the same machine reverses the ranking at roughly a
+tenfold lower write latency, but at the price of power-loss
+durability; chapter 13 states when that trade is acceptable, and
+chapter 6 states why a consensus voter must not make it silently.
 
 === Failure and recovery under a realistic workload
 

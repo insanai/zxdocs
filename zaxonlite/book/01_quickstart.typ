@@ -83,10 +83,12 @@ $ zaxon serve --data ./n3 --node 3 --listen 127.0.0.1:7003 \
 
 #callout(title: [Loopback development cluster], tone: "warning")[
   These nodes listen on `127.0.0.1`, so `zaxon` lets them run without
-  a transport secret. A non-loopback listen address is refused until you
-  supply `--auth-file`, but that shared key is still only the current
-  development transport. The production plan uses Unix-domain sockets
-  locally and per-node mTLS for TCP. Chapter 13 states the exact boundary.
+  a transport credential. A non-loopback listen address is refused until
+  you supply `--auth-file` or a mutual-TLS identity
+  (`--tls-cert`/`--tls-key`/`--tls-ca`); the shared key alone is still
+  only a development transport. A single local node can serve over an
+  owner-only Unix-domain socket instead (`--listen unix:<path>`).
+  Chapter 13 states the exact boundary of each mode.
 ]
 
 Now wait for the cluster to elect a leader, from a fourth terminal:

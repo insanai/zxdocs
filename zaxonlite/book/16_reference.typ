@@ -5,7 +5,8 @@
 
 These are the tables to keep beside a terminal. Every row was verified
 against `zaxonlite/src` (`main.zig`, `server.zig`, `client.zig`,
-`types.zig`, `prepared.zig`, `command.zig`), against
+`tls.zig`, `types.zig`, `prepared.zig`, `command.zig`,
+`durability.zig`), against
 `include/zaxonlite.h`, and against the format contract.
 
 == CLI commands and flags
@@ -13,11 +14,13 @@ against `zaxonlite/src` (`main.zig`, `server.zig`, `client.zig`,
 Chapter 2 is the full command reference. It shows one worked example per
 command, so we do not repeat the commands here. Two flags select the mode.
 `--data <dir>` runs the command against a local node, in process.
-`--connect host:port[,...]` speaks the client RPC protocol to a running
+`--connect <endpoint>[,...]` speaks the client RPC protocol to a running
 cluster and follows `not_leader` redirects on its own. `--json` switches
 any command to machine-readable output on stdout.
 
-The remaining flags are a short list. Each belongs to one or two commands.
+An endpoint is `host:port`, or `unix:<path>` for a local server's
+Unix-domain socket. The remaining flags are a short list. Each belongs
+to one or two commands.
 
 #table(
   columns: (auto, 1fr),
@@ -40,7 +43,9 @@ The remaining flags are a short list. Each belongs to one or two commands.
   [`--leader`], [Make `wait` also wait for a known leader.],
   [`--timeout-ms <n>`], [Deadline for `wait`. The default is 10000.],
   [`--node <id>`], [This server's node ID. Required by `serve`.],
-  [`--listen host:port`], [This server's endpoint. Required by `serve`.],
+  [`--listen <endpoint>`], [This server's endpoint: `host:port`, or
+    `unix:<path>` for owner-only single-node local service. Required by
+    `serve`.],
   [`--role <role>`], [`data-voter` (the default), `witness`, `standby`,
     or `read-replica`.],
   [`--peer <spec>`], [One peer as `id@host:port[/role]`. Repeat the flag
@@ -49,6 +54,15 @@ The remaining flags are a short list. Each belongs to one or two commands.
     identity.],
   [`--auth-file <path>`], [Transport secret provider, or `ZAXON_AUTH_FILE`.
     Never a literal key on the command line.],
+  [`--tls-cert <path>`], [Node certificate PEM for mutual TLS (`serve`
+    and client mode). All three TLS flags go together.],
+  [`--tls-key <path>`], [Node private key PEM for mutual TLS.],
+  [`--tls-ca <path>`], [Cluster CA PEM that every peer certificate must
+    chain to.],
+  [`--sync <mode>`], [Durability sync mode, any command: `full` (the
+    default; `F_FULLFSYNC` on macOS, survives power loss) or `os`
+    (plain `fsync`, development only on macOS). Any other value is a
+    usage error, exit 2: `--sync must be os or full`.],
   [`--enable-failpoints`], [Honor failpoint RPCs. Test controllers only.],
   [`--json`], [Machine-readable output on stdout.],
 )
@@ -56,7 +70,8 @@ The remaining flags are a short list. Each belongs to one or two commands.
 Configuration precedence is fixed: explicit flags win, then environment
 variables, then the `--config`/`ZAXON_CONFIG` JSON file. The environment
 names are `ZAXON_DATA`, `ZAXON_CONNECT`, `ZAXON_LISTEN`, `ZAXON_NODE`,
-`ZAXON_ROLE`, `ZAXON_PEERS`, `ZAXON_CLUSTER_ID`, and `ZAXON_AUTH_FILE`.
+`ZAXON_ROLE`, `ZAXON_PEERS`, `ZAXON_CLUSTER_ID`, `ZAXON_AUTH_FILE`,
+`ZAXON_TLS_CERT`, `ZAXON_TLS_KEY`, `ZAXON_TLS_CA`, and `ZAXON_SYNC`.
 
 == Exit codes
 
@@ -143,7 +158,10 @@ Every `int` function returns the same codes: 0 ok, 1 SQL or session
 error, 2 misuse (a null argument, or a write on the read path), 3
 integrity failure, 4 unavailable. `zaxonlite_last_error` holds the most
 recent message per handle. JSON buffers are released with
-`zaxonlite_free`.
+`zaxonlite_free`. Declared counts and lengths are validated against
+product limits before use (registry ≤ 36 members, secret ≤ 4096 bytes,
+value ≤ 64 MiB), and every out-parameter is set to a safe empty value
+on every path; chapter 11 states the full boundary contract.
 
 #table(
   columns: (auto, 1fr),
@@ -179,7 +197,7 @@ recent message per handle. JSON buffers are released with
     handle.],
   [`zaxonlite_cluster_open`, `_close`], [Own a transport-owning member
     built from a runtime registry (`zaxonlite_cluster_options`, at most
-    nine voters).],
+    36 members, nine of them voters).],
   [`zaxonlite_cluster_exec`, `_query_json`], [Cluster writes and reads
     through the facade.],
   [`zaxonlite_cluster_call_json`, `_last_error`], [Generic JSON RPC and
@@ -237,8 +255,14 @@ produces.
   [`-- NODE OPEN FAILED --`], [Identity, journal, payload, or filesystem
     verification failed on open. Exits 4.],
   [`-- AUTHENTICATION REQUIRED --`], [A non-loopback listener or peer was
-    configured without a transport secret. Exits 4.],
+    configured without a transport secret or TLS identity. Exits 4.],
+  [`-- TLS IDENTITY FAILED --`], [The TLS certificate, key, or CA cannot
+    be loaded, or the key does not match the certificate. Exits 4 from
+    `serve`, 2 from client mode.],
   [`-- LISTEN FAILED --`], [The server endpoint cannot be bound.
+    Exits 4.],
+  [`-- UNIX SOCKET LISTEN FAILED --`], [The Unix-socket path already
+    exists, cannot be bound, or its permissions cannot be restricted.
     Exits 4.],
   [`-- GATEWAY LISTEN FAILED --`], [The gateway endpoint cannot be bound.
     Exits 4.],
@@ -270,6 +294,17 @@ produces.
   [Protocol append batch], [16 entries], [`types.zig`],
   [Stop-sign metadata], [256 bytes], [`types.zig`],
   [Wire frame body], [64 MiB], [format contract],
+  [Declared snapshot or backup transfer], [4 GiB default, server
+    configurable], [`wire.zig`, `server.zig`],
+  [Concurrent server connections], [4 × configured members + 16 default],
+    [`server.zig`],
+  [Handshake completion deadline], [10 000 ms default, 0 disables],
+    [`server.zig`],
+  [Mutual TLS protocol version], [TLS 1.3 minimum], [`tls.zig`],
+  [Peer certificate common name], [`zaxon-node-<id>`, under 64 bytes],
+    [`tls.zig`],
+  [C ABI cluster registry], [36 members, at most 9 voters],
+    [`embedded.zig`],
   [One transaction payload], [64 MiB minus 73 bytes], [`command.zig`],
   [Explicit transaction], [1024 statements, 64 MiB copied input],
     [`prepared.zig`],

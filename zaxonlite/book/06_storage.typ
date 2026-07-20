@@ -70,6 +70,44 @@ state them as pairs.
   session row that records it, so a retry replays the saved result
   instead of applying twice.
 
+== How far a sync reaches
+
+The five rules say *when* to sync. The sync policy says what a sync
+means. On Linux and the other supported platforms, `fsync(2)` flushes
+the drive's write cache, so a confirmed sync is durable against power
+loss. On macOS it does not: `fsync` hands the bytes to the drive but
+leaves them in its volatile cache, and a power cut can drop writes the
+kernel already confirmed. For rule 2 that is not mere data loss. A
+voter that forgets an acknowledged promise or accept can vote again,
+and two quorums stop intersecting — the same amnesia the
+interior-corruption rule below refuses to open with, inflicted by
+hardware instead of a damaged file.
+
+The policy therefore has two modes, set once at startup for the whole
+process. `full`, the default for real binaries, makes every
+authoritative barrier on macOS issue `fcntl(F_FULLFSYNC)`, which
+flushes the drive cache; a filesystem that refuses the request falls
+back to plain `fsync`. `os` keeps plain `fsync` and is
+development-only on macOS: process-crash recovery is identical under
+both modes, and only power-loss durability differs. On the other
+supported platforms the two modes are the same syscall. The CLI sets
+the policy with `--sync` (chapter 2), embedded hosts call
+`zaxonlite.durability.setSyncMode` before opening a node, and test
+builds default to `os`, because the crash campaigns simulate process
+death, which loses nothing either way.
+
+Full mode does not flush the drive cache once per file. `F_FULLFSYNC`
+empties the drive's entire cache, so one barrier per commit point
+covers every block already handed to the drive: a payload install
+flushes its object and directory entries with plain `fsync` — into the
+drive, not yet to stable media — and the journal sync that follows is
+the single full barrier that lands both together. That journal barrier
+precedes every vote, recovered value, and client acknowledgement (the
+sync-before-send rule above), so every counted vote still implies
+durable payload bytes at its consumer. Rarer transitions that create
+their own commit points — snapshot generations, epoch installs, the
+`CURRENT` pointer, backups — keep their own full barriers.
+
 == The recovery sequence
 
 #book_figure([

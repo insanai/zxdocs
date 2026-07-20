@@ -75,16 +75,33 @@ prevents replay of an earlier handshake. The sequence prevents replay,
 reorder, and truncation within a connection.
 
 #callout(title: [Shared-secret integrity, not per-node identity], tone: "warning")[
-  The transport proves that both endpoints possess the same PSK and provides
-  frame integrity and replay rejection. It does not bind the hello's
-  `node_id` to a distinct credential. It also does not encrypt: every body
-  crosses the network in the clear. Zaxonlite intentionally treats an admitted
-  application caller as having full database authority; end-user permissions
-  belong in that application, not in this RPC protocol. Without a secret,
-  non-loopback listeners are refused, but loopback remains reachable by other
-  local processes. The production plan replaces local TCP with a Unix-domain
-  socket and replaces the PSK with per-node mTLS for TCP.
+  The PSK handshake proves that both endpoints possess the same PSK and
+  provides frame integrity and replay rejection. It does not bind the
+  hello's `node_id` to a distinct credential. It also does not encrypt:
+  every body crosses the network in the clear. Zaxonlite intentionally
+  treats an admitted application caller as having full database authority;
+  end-user permissions belong in that application, not in this RPC
+  protocol. Without a transport credential, non-loopback listeners are
+  refused, but loopback remains reachable by other local processes. A
+  single local node can serve over an owner-only Unix-domain socket
+  instead of TCP (chapter 2); for TCP, the mutual TLS transport below
+  adds per-node identity and confidentiality.
 ]
+
+== Mutual TLS
+
+When the server carries a TLS identity, the TCP connection completes a
+mutual TLS 1.3 handshake before the first frame. The client presents a
+certificate and key (`--tls-cert`, `--tls-key`) and verifies the server
+against the cluster CA (`--tls-ca`); the server verifies the client
+certificate against the same CA and refuses a connection without one. A
+client certificate needs only to chain to the CA — its common name is not
+interpreted. Peer connections are stricter: a peer's certificate common
+name must be exactly `zaxon-node-<id>` for the node id its hello claims
+(chapter 7). Everything in this chapter is unchanged inside the channel:
+the same hello, the same optional PSK handshake, the same frames. A
+plaintext client dialing a TLS listener fails the handshake and never
+reaches the frame protocol.
 
 == The RPC contract
 
@@ -224,9 +241,12 @@ Any other node replies
 with `leader:null` when no leader is known. The reference client
 (`callCluster`) tries endpoints round-robin, follows the embedded leader
 hint, sleeps 150 ms between attempts, and gives up after 12 attempts
-with `NoLeaderReachable`. With `require_leader = false` the first
-reachable node's answer is returned as-is. That is how you `status` a
-follower.
+with `NoLeaderReachable`. A hint is followed only when it names one of
+the caller's configured endpoints: a redirect must not send the client
+outside its known cluster, so an unmatched hint falls back to
+round-robin over the configured list. With `require_leader = false` the
+first reachable node's answer is returned as-is. That is how you
+`status` a follower.
 
 `query` takes three levels. `any` is a local read with no leadership
 required. `leader` reads the leader's applied state. `linearizable`, the
@@ -301,7 +321,7 @@ and never terminates authentication. It holds no secret, no Paxos state,
 and no SQLite state. Each inbound connection is proxied byte-for-byte to
 one backend, chosen round-robin with failover to the next backend when a
 dial fails, and copied in both directions until either side closes.
-Four consequences are worth stating directly.
+Five consequences are worth stating directly.
 
 - *Authentication is end-to-end.* The hello, the PSK handshake, and
   every HMAC-protected frame pass through unmodified. The client
@@ -319,6 +339,10 @@ Four consequences are worth stating directly.
   `127.*` or `::1`. The check is deliberately narrow, so `localhost` is
   not accepted. Non-loopback deployment requires the authenticated
   transport, and confidentiality still requires a tunnel.
+- *Gateway mode does not support `--tls` yet.* Starting a gateway with
+  the TLS flags is a usage error, exit 2: the gateway holds no
+  certificate to present and no CA to verify against. Gateway
+  deployments use the PSK transport or external TLS termination.
 
 To deploy against one, list the gateway's `host:port` as an endpoint and
 keep the same secret you would use against storage nodes. Restarting a

@@ -197,6 +197,33 @@
   ]
 }
 
+#let transport_bench_table() = {
+  let data = json("../../../zaxonlite/benchmarks/results/transport-latest.json")
+  let row(run) = (
+    raw(run.mode),
+    raw(run.sync),
+    [#run.write_ops_s ops/s · p50 #run.write_p50_us µs],
+    [#run.read_leader_ops_s ops/s · p50 #run.read_leader_p50_us µs],
+    [#run.read_linearizable_ops_s ops/s · p50 #run.read_linearizable_p50_us µs],
+    [#run.max_node_rss_mib MiB],
+  )
+  [
+    #table(
+      columns: (auto, auto, 1.15fr, 1.15fr, 1.15fr, auto),
+      table.header(
+        [*Mode*], [*Sync*], [*Replicated writes*],
+        [*`leader` reads*], [*`linearizable` reads*], [*Node RSS*],
+      ),
+      ..data.runs.map(row).flatten(),
+    )
+    #text(size: 8pt, fill: gray)[
+      #data.note. #data.runs.at(0).writes writes and
+      #data.runs.at(0).reads reads per configuration; RSS is the largest
+      server process after the workload.
+    ]
+  ]
+}
+
 #let bench_realworld_table() = {
   let data = json("../../../zaxonlite/benchmarks/results/realworld-latest.json")
   let zx = data.results.zaxonlite

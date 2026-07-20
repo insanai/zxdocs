@@ -43,15 +43,22 @@ which.
   [*Enforced.* In `node.zig`, `consumeEffects` runs `journal.sync`
     before `confirmWritesDurable` and before any envelope enters the
     `outbox`. In `server.zig`, `runWrite` replies only after the slot
-    is chosen and applied.
+    is chosen and applied. Every sync routes through `durability.zig`,
+    whose default `full` mode issues `F_FULLFSYNC` on macOS so the
+    flush reaches stable media, not just the drive's volatile cache;
+    the development-only `os` mode keeps plain `fsync` there.
 
     *Checked.* The `crash_test.zig` cases `after_accept_sync` and
     `after_commit_sync_before_apply` require a recovered count of
     exactly 1. The cluster scenario's final step asserts every
     acknowledged write is present exactly once, 153 rows after total
-    restart.
+    restart. The crash campaigns simulate process death, under which
+    the two sync modes are identical; the power-loss durability of
+    `full` rests on the platform's `F_FULLFSYNC` contract and has no
+    automated oracle.
 
-    *Clause.* Format §5; plan "Ordering rules", steps 2 to 4.],
+    *Clause.* Format §5; plan "Ordering rules", steps 2 to 4;
+    chapter 6's sync policy.],
 
   [Payload bytes are verified and durable before any value-bearing
     Promise, Accept, or Commit enters the Paxos transition. The
@@ -243,8 +250,10 @@ which.
     slot.],
 
   [No silent wire-version downgrade. Wrong protocol versions, missing
-    shared secrets, and replayed or tampered frames are refused. This does
-    not authenticate a distinct configured node identity.],
+    shared secrets, and replayed or tampered frames are refused. The PSK
+    alone does not authenticate a distinct configured node identity; the
+    mutual-TLS row below adds that binding when a TLS identity is
+    configured.],
   [*Enforced.* `wire.zig` `Hello.decode` accepts exactly version 4
     and raises `UnsupportedProtocolVersion` otherwise; `server.zig`
     refuses non-loopback listeners or peers without a secret;
@@ -260,6 +269,43 @@ which.
     *Clause.* Format §1 to §3: no negotiation down, exact-major wire.
     The identity and application-owned authorization boundaries are documented
     in chapters 7, 12, and 13 and in the security remediation plan.],
+
+  [With a TLS identity configured, every TCP connection is mutual
+    TLS 1.3: both sides present certificates chaining to the cluster
+    CA, and a peer connection's certificate common name must match the
+    node id claimed in its hello, on the accept side and the dial side
+    alike.],
+  [*Enforced.* `tls.zig` `Context.initCommon` sets a TLS 1.3 minimum
+    and verifies with `SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT`
+    in both directions. `server.zig` `serveConnection` compares an
+    accepted peer hello's node id against the certificate's
+    `zaxon-node-<id>` common name, and the peer dial loop applies the
+    same comparison to the dialed member. Client certificates need only
+    chain to the CA.
+
+    *Checked.* The `cli_test.zig` mutual-TLS section generates a CA,
+    node, client, and foreign-CA certificate with the `openssl` CLI,
+    then proves RPC round trips over mTLS, refusal of a plaintext
+    client, and refusal of a foreign-CA certificate that carries the
+    right name. `tls.zig` unit tests pin the common-name format and
+    credential refusal.
+
+    *Clause.* Security remediation plan, SEC-001: per-node transport
+    identity.],
+
+  [A `not_leader` redirect cannot send a client outside its configured
+    cluster: a leader hint is followed only when it names a configured
+    endpoint.],
+  [*Enforced.* `client.zig` `callClusterWithTransport` matches the
+    hinted host and port against the caller's endpoint list and
+    otherwise falls back to round-robin over that list.
+
+    *Checked.* Every cluster and CLI suite exercises honest redirects
+    through this path. No automated oracle sends an adversarial hint
+    today; see the gaps below.
+
+    *Clause.* Security remediation plan, SEC-011: validated client
+    redirects.],
 
   [One serialized writer per database. Concurrent endpoints never
     create multi-leader writes.],
@@ -297,23 +343,30 @@ which.
 Chapter 17 listed the suites. These are the holes the suites leave,
 stated so that this chapter cannot be read as a completeness claim:
 
-- Protocol v4 proves only shared-PSK possession. It has no credential-bound
-  node identity or confidentiality. Zaxonlite intentionally has one
-  application principal rather than database-user/RPC roles, but the current
-  transport tests do not establish the planned mTLS boundary.
-- Public SQL has no narrow authorizer protecting Zaxonlite's outer transaction,
-  attached-file boundary, WAL-hook settings such as `wal_autocheckpoint`, or
-  `__zaxon_*` metadata. This is a replication invariant gap reachable through
-  the normal API, not a multi-tenant SQL sandbox requirement. Loadable
-  extensions are already compiled out with `SQLITE_OMIT_LOAD_EXTENSION`.
+- The PSK mode proves only shared-secret possession. The mutual TLS 1.3
+  transport now supplies per-node identity and confidentiality for TCP
+  (SEC-001), and the client follows only redirects that name configured
+  endpoints (SEC-011), but the rest of the plan stays open: one-time
+  enrollment tokens for certificate issuance, revocation and the
+  eviction denylist, and TLS for gateway mode. No automated oracle
+  sends an adversarial redirect hint yet. Zaxonlite intentionally has
+  one application principal rather than database-user/RPC roles.
+- Public SQL is now screened by the narrow authorizer in `guard.zig`, which
+  protects the outer transaction, the attached-file boundary, capture-critical
+  pragmas such as `wal_autocheckpoint`, and `__zaxon_*` metadata, with the
+  capture contract re-verified before every payload extraction. The guard's
+  decision table and contract check have unit tests, and a build test asserts
+  `SQLITE_OMIT_LOAD_EXTENSION`. It remains an invariant guard for a trusted
+  application, not a multi-tenant SQL sandbox, and no fuzzing targets it yet.
 - Transferred snapshot manifests are digest-checked but are not verified
   against the existing Paxos-decided stop sign before installation. Normal
   rollover already decides the physical manifest hash; the missing work is
   retained proof plus read-quorum confirmation during transfer, not a new
   certificate/signature phase.
-- Connection readers, handshake/idle time, query work/results, and several
-  transfer/recovery sizes lack production resource budgets. Existing fuzzing
-  is not a denial-of-service or admission-control oracle.
+- Connection admission is now capped and handshakes carry a deadline, and
+  declared transfers are bounded at 4 GiB, but idle time, query work/results,
+  and several recovery sizes still lack production resource budgets. Existing
+  fuzzing is not a denial-of-service or admission-control oracle.
 
 - The chapter-6 crash matrix is not fully automated in both the
   one-node and three-node roles. Completing it is a release blocker.

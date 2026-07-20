@@ -15,11 +15,12 @@ binary carries three modes that share one command surface:
 
 - Embedded mode (`--data <dir>`): the command opens the node in-process,
   exactly as an embedding application would. No server runs.
-- Client mode (`--connect host:port[,host:port...]`): the command speaks the
+- Client mode (`--connect <endpoint>[,...]`): the command speaks the
   replication protocol to running `zaxon serve` processes. It walks the
   endpoint list and follows leader redirects on its own.
 - Server mode (`zaxon serve`): the process hosts one role-aware node behind
-  a TCP endpoint, alone or in a cluster.
+  a TCP endpoint, alone or in a cluster, or behind a local Unix-domain
+  socket for a single node.
 
 Use embedded mode for a stopped node: local inspection, integrity checks,
 recovery, one-machine databases. Use client mode whenever a `serve` process
@@ -49,7 +50,10 @@ of the files they judge.
 
 == Client mode
 
-`--connect` takes a comma-separated endpoint list. For a command that needs
+`--connect` takes a comma-separated endpoint list. An endpoint is
+`host:port` or `unix:<path>`; the latter dials a local server's
+Unix-domain socket. The same syntax applies to the config file's
+`connect` field and to `ZAXON_CONNECT`. For a command that needs
 the leader, the client tries each endpoint until one answers, and follows
 the redirect the follower sends back. You never need to know who leads.
 
@@ -65,10 +69,17 @@ the redirect the follower sends back. You never need to know who leads.
 
 Commands that do not need the leader, such as `status`, `members`, `wait`,
 and `stop`, are answered by whichever endpoint you reached. So is a
-`query --level any` read. When no endpoint can complete a leader-only
-request, the client prints one `-- NO REACHABLE LEADER --` diagnostic and
-exits 4. Its hint states the two causes worth checking: a lost voter
-quorum, or wrong `--connect` addresses and credentials.
+`query --level any` read. A leader hint is followed only when it names one
+of the endpoints you configured; a hint pointing anywhere else falls back
+to round-robin over your list, so a redirect can never send the client
+outside the cluster it was told about. When no endpoint can complete a
+leader-only request, the client prints one `-- NO REACHABLE LEADER --`
+diagnostic and exits 4. Its hint states the two causes worth checking: a
+lost voter quorum, or wrong `--connect` addresses and credentials.
+
+When the servers require mutual TLS, client mode takes the same three
+certificate flags as `serve`: `--tls-cert`, `--tls-key`, and `--tls-ca`.
+Chapter 13 covers provisioning.
 
 == Server mode: `serve`
 
@@ -92,14 +103,38 @@ membership, plus `--cluster-id` when given. Two clusters with the same
 member list but different `--cluster-id` values refuse to mix. That fence
 protects safety against cross-cluster replay.
 
-#callout(title: [Non-loopback requires the current shared secret], tone: "warning")[
-  Without `--auth-file`, every listen and peer address must be loopback.
-  A public address is refused at startup, exit 4:
-  "A non-loopback listener cannot start without a transport secret."
-  The flag takes a provider file path, never a literal secret, so the key
-  stays out of shell history and process listings. This check matches the
-  implementation; it does not make protocol v4 a production transport.
-  The security plan replaces TCP PSK authentication with per-node mTLS.
+For a single local node that should not open a TCP port at all,
+`--listen unix:<path>` serves over a Unix-domain socket instead.
+Filesystem permissions are the local authorization boundary: the socket
+is restricted to owner-only permissions (mode 0600) immediately after
+binding. A pre-existing file at the socket path is refused, never
+silently unlinked, so a stale socket left by a crash needs explicit
+operator removal; an orderly shutdown removes the path itself. The mode
+is single-node only. Configured peers are rejected, because cluster
+links require TCP, and gateway mode is TCP-only. Clients reach the node
+with `--connect unix:<path>`.
+
+`serve` can also carry a mutual TLS identity: `--tls-cert <pem>`,
+`--tls-key <pem>`, and `--tls-ca <pem>`, always all three together; a
+partial set is a usage error, exit 2. Every TCP connection the server
+accepts or dials, peer and client alike, then runs TLS 1.3 with mutual
+certificate verification against the cluster CA, and a peer's certificate
+must name exactly the node id it claims. TLS and the PSK compose: when
+both are configured, the PSK handshake runs inside the TLS channel.
+Chapter 13 covers certificate provisioning and the identity rules;
+chapter 7 states what each transport mode proves.
+
+#callout(title: [Non-loopback requires a transport credential], tone: "warning")[
+  Without `--auth-file` or a TLS identity, every listen and peer address
+  must be loopback. A public address is refused at startup, exit 4:
+  "A non-loopback listener cannot start without a transport secret or TLS
+  identity." The diagnostic's hint names the ways out: provide
+  `--auth-file` or `--tls-cert`/`--tls-key`/`--tls-ca`, bind a loopback
+  address, or serve locally through `--listen unix:<path>`. Both
+  credential flags take file paths, never literal secrets, so keys stay
+  out of shell history and process listings. A PSK alone still does not
+  make protocol v4 a production transport; chapter 13 states the exact
+  boundary of each mode.
 ]
 
 `--enable-failpoints` makes the server honor fault-injection RPCs. It exists
@@ -236,6 +271,21 @@ after rebuilding the node from its authoritative state, and ends with
 `--connect` is refused, exit 2, because rebuilding a node that a live
 server owns would race the server. Stop the node, then recover it.
 
+== The sync mode: `--sync`
+
+Every command takes `--sync <mode>`, which sets the process-wide
+durability policy before any storage I/O runs. The mode decides how far
+a sync must reach before the node treats bytes as durable. `full`, the
+default, flushes the drive's volatile write cache on macOS through
+`fcntl(F_FULLFSYNC)`, so an acknowledged write survives power loss, not
+just a process crash. `os` keeps the plain platform `fsync(2)`, which
+on macOS does not reach the drive cache; it is for development and
+benchmarks only there. On Linux and the other supported platforms plain
+`fsync` already flushes the cache, so the two modes are identical. Any
+other value is a usage error, exit 2: `--sync must be os or full`.
+Chapter 6 explains why a consensus voter must not run `os` on macOS in
+production, and chapter 13 prices the difference.
+
 == Configuration file and environment
 
 Every mode can read a JSON config file, named by `--config <path>` or the
@@ -253,6 +303,11 @@ each optional:
   [`peers`], [Array of peer specs, each `id@host:port[/role]`.],
   [`cluster_id`], [Extra entropy for the derived database identity.],
   [`auth_file`], [Path to the transport secret provider.],
+  [`tls_cert`], [Node certificate PEM for mutual TLS.],
+  [`tls_key`], [Node private key PEM for mutual TLS.],
+  [`tls_ca`], [Cluster CA PEM that peer certificates must chain to.],
+  [`sync`], [Durability sync mode, as for `--sync`: `full` (the
+    default) or `os`.],
 )
 
 An unknown field is an error, not a warning: the command reports
@@ -260,7 +315,8 @@ An unknown field is an error, not a warning: the command reports
 a config file should fail loudly, not silently misconfigure a database.
 Each field also has an environment variable: `ZAXON_DATA`, `ZAXON_CONNECT`,
 `ZAXON_NODE`, `ZAXON_ROLE`, `ZAXON_LISTEN`, `ZAXON_PEERS` (comma
-separated), `ZAXON_CLUSTER_ID`, and `ZAXON_AUTH_FILE`.
+separated), `ZAXON_CLUSTER_ID`, `ZAXON_AUTH_FILE`, `ZAXON_TLS_CERT`,
+`ZAXON_TLS_KEY`, `ZAXON_TLS_CA`, and `ZAXON_SYNC`.
 
 Precedence is fixed: a command-line flag beats an environment variable,
 and an environment variable beats the file. A complete node config:

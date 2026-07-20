@@ -222,9 +222,10 @@ the derived database identity, an optional PSK (`auth_secret` plus
 
 Roles are `ZAXONLITE_DATA_VOTER`, `ZAXONLITE_WITNESS`,
 `ZAXONLITE_STANDBY`, `ZAXONLITE_READ_REPLICA`, and `ZAXONLITE_GATEWAY`.
-The registry has rules: at most nine entries may be voting roles, at
-least one member must be a campaigning data voter, ids must be unique
-and non-zero, and `node_id` must appear in the registry. Open starts the
+The registry has rules: it holds at most 36 members, at most nine
+entries may be voting roles, at least one member must be a campaigning
+data voter, ids must be unique and non-zero, and `node_id` must appear
+in the registry. Open starts the
 node, or the stateless router when the local role is gateway, then
 blocks until the local endpoint answers. If the endpoint never answers,
 open fails with 4 at the timeout.
@@ -256,6 +257,21 @@ them.
 + *You borrow error strings.* `zaxonlite_last_error` and
   `zaxonlite_cluster_last_error` return handle-internal storage. Do not
   free them. Copy them out if you need them past the next call.
+
+== The boundary contract
+
+The header states the argument rules once, and every exported function
+follows them. `NULL` is accepted only where a parameter is documented
+optional; a non-zero length always requires a non-null pointer, and a
+null pointer always requires a zero length. Declared counts and lengths
+are validated against product limits before any memory is read, sliced,
+or allocated from them: the cluster registry holds at most 36 members,
+a secret is at most 4096 bytes, and one bound TEXT or BLOB value is at
+most 64 MiB. Every fallible function sets its output handles, pointers,
+and scalar out-parameters to a safe empty value — `NULL`, 0, or
+`false` — before doing any other work, on success and on every error
+path, so a caller that ignores a return code still never reads an
+uninitialized output. Violating the argument rules is misuse, code 2.
 
 == Threading discipline
 

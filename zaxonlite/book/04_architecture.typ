@@ -46,8 +46,12 @@ each part is tested on its own.
     encodings of its entries and durable writes.],
   [`sqlite.zig`], [Narrow bindings over the pinned SQLite amalgamation:
     exactly the C API subset the product needs.],
-  [`server.zig` / `client.zig` / `wire.zig`], [The TCP host behind
-    `zaxon serve`, the RPC client, and the shared frame codec.],
+  [`guard.zig`], [The SQL invariant guard: a narrow authorizer screening
+    application statements at prepare time, plus the capture-contract
+    check run before every payload extraction.],
+  [`server.zig` / `client.zig` / `wire.zig`], [The TCP or Unix-socket
+    host behind `zaxon serve`, the RPC client, and the shared frame
+    codec.],
   [`capi.zig`], [The C ABI (`libzaxonlite` + `zaxonlite.h`).],
 )
 
@@ -152,6 +156,10 @@ Bounded client sessions are rows in a replicated table,
 transaction as the user's SQL. This placement is the whole trick.
 Exactly-once retry needs no separate log, because wherever the frames
 go, the session state goes with them, atomically.
+
+Application SQL can neither read nor write the `__zaxon_*` namespace:
+the invariant guard (chapter 5) denies the reserved prefix at prepare
+time, so the replicated metadata stays Zaxonlite's alone.
 
 The `__zaxon_meta.batch_id` marker travels the same way. On restart,
 recovery compares it against the last committed descriptor to prove the

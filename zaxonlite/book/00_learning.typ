@@ -85,10 +85,11 @@ The honest boundary matters as much as the feature list. The repository
 supplies the replicated database itself. That means the node and facade
 libraries, the C ABI, and the `zaxon` command line with its serve and
 client modes. It also means shared-secret, integrity-protected TCP framing,
+a mutual TLS 1.3 transport with per-node certificates,
 snapshots, logical backup streaming, `zaxon integrity-check`,
 `zaxon recover`, and `zaxon status --json` for automation. The shared
-secret is the protocol-v4 implementation, not the planned production
-identity boundary.
+secret alone is not a production identity boundary; the TLS mode is,
+once you provision its certificates.
 
 Your deployment must still provide four things. The release limits state them
 directly.
@@ -96,10 +97,12 @@ directly.
 + *Application authentication.* Zaxonlite has one database principal. Your
   application authenticates its users and decides which operations and SQL
   they may issue.
-+ *A production transport.* Use the embedded API in process. The security
-  plan adds Unix-domain sockets for local service and per-node mTLS after
-  one-time enrollment for TCP clusters. The current PSK proves only shared
-  secret possession and does not encrypt.
++ *A production transport.* Use the embedded API in process, the
+  owner-only Unix-domain socket (`--listen unix:<path>`) for local
+  service, or mutual TLS with operator-provisioned per-node
+  certificates for TCP clusters. The PSK mode proves only shared
+  secret possession and does not encrypt, and the one-time enrollment
+  flow that would automate certificate issuance is still future work.
 + *Monitoring and alerting.* The node reports status; nothing in the
   repository watches it. After a fatal storage error the host must stop
   voting and serving. Something of yours must notice and page a human.

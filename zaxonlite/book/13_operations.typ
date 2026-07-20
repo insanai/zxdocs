@@ -28,11 +28,13 @@
 == What changes off the laptop
 
 The quickstart ran everything on `127.0.0.1`. The current implementation is
-not ready for a production network. A realistic deployment would change at
-least these four things, but the security plan must be completed first.
+not ready for a production network: the security plan's remaining gates
+must be completed first. A realistic deployment would change at least
+these four things.
 
 + Listen and peer addresses become real network addresses, and `zaxon` then
-  refuses to start until you configure an authentication key.
+  refuses to start until you configure a transport credential: a PSK
+  provider file, a mutual-TLS identity, or both.
 + Each `--peer` may carry a role suffix, as in `2@10.0.0.2:9901/data-voter`,
   and every storage node must receive the same registry.
 + Two clusters whose members use the same ids would derive the same database
@@ -98,19 +100,27 @@ code 2 instead of being silently ignored. Every field is optional.
   table.header([*Field*], [*Flag and environment*], [*Meaning*]),
   [`data`], [`--data`, `ZAXON_DATA`], [The node data directory, created when
     missing; selects embedded mode.],
-  [`connect`], [`--connect`, `ZAXON_CONNECT`], [Comma-separated `host:port`
-    server endpoints; selects client mode.],
+  [`connect`], [`--connect`, `ZAXON_CONNECT`], [Comma-separated server
+    endpoints, each `host:port` or `unix:<path>`; selects client mode.],
   [`node`], [`--node`, `ZAXON_NODE`], [This node's integer id, for `serve`.],
   [`role`], [`--role`, `ZAXON_ROLE`], [`data-voter`, `witness`, `standby`,
     `read-replica`, or `gateway`.],
-  [`listen`], [`--listen`, `ZAXON_LISTEN`], [The `host:port` listen endpoint,
-    for `serve`.],
+  [`listen`], [`--listen`, `ZAXON_LISTEN`], [The listen endpoint for `serve`:
+    `host:port`, or `unix:<path>` for single-node local service.],
   [`peers`], [`--peer` (repeat), `ZAXON_PEERS`], [An array of
     `id@host:port[/role]` peer specifications.],
   [`cluster_id`], [`--cluster-id`, `ZAXON_CLUSTER_ID`], [Extra entropy for
     the derived database identity.],
   [`auth_file`], [`--auth-file`, `ZAXON_AUTH_FILE`], [The path to the
     pre-shared-key provider file. Always a path, never the key.],
+  [`tls_cert`], [`--tls-cert`, `ZAXON_TLS_CERT`], [The node certificate
+    PEM for mutual TLS. All three TLS fields go together.],
+  [`tls_key`], [`--tls-key`, `ZAXON_TLS_KEY`], [The node private key
+    PEM.],
+  [`tls_ca`], [`--tls-ca`, `ZAXON_TLS_CA`], [The cluster CA PEM that
+    every peer certificate must chain to.],
+  [`sync`], [`--sync`, `ZAXON_SYNC`], [Durability sync mode: `full`
+    (the default) or `os` (development only on macOS).],
 )
 
 A complete member configuration looks like this:
@@ -136,9 +146,32 @@ from any source is a usage error with exit code 2, never a silent default.
 That covers an unreadable file, a non-integer `ZAXON_NODE`, and an unknown
 role alike.
 
-== Current transport boundary
+== Durability against power loss: the sync mode
 
-The transport authenticates with a pre-shared key. Both sides prove
+The default sync mode, `full`, is the safe one, and production needs no
+flag at all. On macOS it makes every authoritative sync flush the
+drive's volatile cache with `F_FULLFSYNC`, so an acknowledged write
+survives a power cut and a voter can never forget a promise it made.
+Chapter 6 explains why that is a safety property of the consensus, not
+a data-loss preference. On Linux plain `fsync` already reaches stable
+media, the two modes are equivalent, and this section changes nothing.
+
+The safety has a measured price on macOS. Each replicated write pays
+one full flush per node at its commit point — the journal barrier,
+which the payload install rides (chapter 6) — and the leader's and a
+quorum follower's barriers run in sequence. On Apple silicon that
+moves a three-voter loopback cluster's writes from roughly 2 ms p50
+and a few hundred per second under `os` to roughly 33 ms p50 and
+about 29 per second under `full`; chapter 17's benchmark table
+records both configurations. Reads are untouched. Sustained full-mode write load can also stall the leader's
+tick loop long enough for leadership to move, visible as occasional
+large latency maxima. Use `--sync os` only for development loops and
+benchmarks on macOS, never for a directory whose votes you intend to
+keep.
+
+== The PSK transport boundary
+
+The first transport mode authenticates with a pre-shared key. Both sides prove
 possession of the secret in a challenge-response handshake. The responder
 contributes a fresh 32-byte random nonce, so an earlier handshake cannot be
 replayed. After the handshake, every frame carries an HMAC-SHA256 tag over
@@ -160,11 +193,14 @@ Know exactly what that buys—and what it does not.
   backups travel in cleartext.
 
 An encrypted tunnel can hide bytes from the network, but it does not bind the
-PSK holder to a configured node identity. Protocol v4 is therefore a
-development interface even when placed behind a tunnel. The production target
-is a Unix-domain socket protected by filesystem permissions for local service,
-or one-time node enrollment followed by per-node mTLS for TCP. Application
-authorization stays outside Zaxonlite; see the security remediation plan.
+PSK holder to a configured node identity. PSK-only TCP is therefore a
+development interface even when placed behind a tunnel. Local single-node
+service already has its production form: a Unix-domain socket protected by
+filesystem permissions, described below. For TCP, the mutual TLS transport
+in the next section supplies both per-node identity and confidentiality;
+the one-time enrollment flow that would automate certificate issuance
+remains future work. Application authorization stays outside Zaxonlite;
+see the security remediation plan.
 
 The secret comes only from a provider file, named by `--auth-file <path>`,
 by `ZAXON_AUTH_FILE`, or by the `auth_file` configuration field. The file
@@ -184,28 +220,98 @@ node and every client of one cluster must present the same secret.
 
 Unauthenticated operation is confined to loopback addresses. `serve` refuses to
 start, with exit code 4, when the listen address or any peer address is
-non-loopback and no secret is configured. Loopback means `127.0.0.0/8` or
-`::1`. Binding `0.0.0.0` counts as non-loopback even on a single-host
-cluster. This is a startup check, not a warning, and there is no flag to opt
-out of authentication on a network address. Loopback is not an authentication
-boundary: any process or user sharing the host or network namespace may invoke
-the service, including administrative operations.
+non-loopback and neither a secret nor a TLS identity is configured. Loopback
+means `127.0.0.0/8` or `::1`. Binding `0.0.0.0` counts as non-loopback even
+on a single-host cluster. This is a startup check, not a warning, and there
+is no flag to opt out of authentication on a network address. Loopback is
+not an authentication boundary: any process or user sharing the host or
+network namespace may invoke the service, including administrative
+operations. The refusal diagnostic's hint names the alternative for local
+service: `--listen unix:<path>`.
+
+== The mutual TLS transport
+
+The second transport mode gives every node its own certificate. When
+`serve` is started with `--tls-cert <pem>`, `--tls-key <pem>`, and
+`--tls-ca <pem>` — always all three together — every TCP connection the
+process accepts or dials runs TLS 1.3 at minimum with mutual
+verification: both sides must present a certificate that chains to the
+cluster CA, and a connection without one is refused. Client commands
+take the same three flags, the same `tls_cert`/`tls_key`/`tls_ca`
+configuration fields, and the same `ZAXON_TLS_CERT`, `ZAXON_TLS_KEY`,
+and `ZAXON_TLS_CA` environment variables.
+
+Identity is bound by certificate common name. A peer connection must
+present the certificate issued for the node id it claims in its hello,
+with common name exactly `zaxon-node-<id>`; the check runs on both the
+accepting and the dialing side, so neither direction trusts a claimed id
+on its own. A client certificate needs only to chain to the cluster CA;
+its name is not interpreted. TLS also encrypts the wire, which the PSK
+mode never did, and the two modes compose: when both are configured, the
+PSK challenge-response runs inside the TLS channel. Gateway mode does
+not support `--tls` yet and rejects the flags with a usage error.
+
+Certificates are operator-provisioned; the one-time enrollment and token
+flow from the security plan is not implemented yet. The `openssl` CLI is
+enough. Create the cluster CA once, then issue each node its
+`zaxon-node-<id>` certificate and each client any name that suits your
+inventory:
+
+```console
+$ openssl ecparam -name prime256v1 -genkey -noout -out ca.key
+$ openssl req -x509 -new -key ca.key -out ca.crt -days 365 \
+    -subj '/CN=zaxon-cluster-ca'
+$ openssl ecparam -name prime256v1 -genkey -noout -out n1.key
+$ openssl req -new -key n1.key -out n1.csr -subj '/CN=zaxon-node-1'
+$ openssl x509 -req -in n1.csr -CA ca.crt -CAkey ca.key \
+    -CAcreateserial -out n1.crt -days 365
+```
+
+With one such identity per node, the member from the configuration file
+above starts as:
+
+```console
+$ zaxon serve --data /var/lib/app/n1 --node 1 --listen 10.0.0.1:9901 \
+    --peer 2@10.0.0.2:9901 --peer 3@10.0.0.3:9901 \
+    --tls-cert /etc/zaxon/n1.crt --tls-key /etc/zaxon/n1.key \
+    --tls-ca /etc/zaxon/ca.crt
+```
+
+and a client reaches it with the client certificate:
+
+```console
+$ zaxon status --connect 10.0.0.1:9901 --tls-cert client.crt \
+    --tls-key client.key --tls-ca ca.crt
+```
+
+An unreadable certificate, a key that does not match, or a missing CA
+file fails startup with `-- TLS IDENTITY FAILED --`. Keep the key files
+readable by the service user only; like the PSK, they are named by path
+and never by value. The implementation links the system OpenSSL 3
+libraries rather than bundling a TLS stack; the build defaults to the
+Homebrew `openssl@3` prefix and takes `-Dopenssl-prefix` for other
+installations.
+
+There is no certificate revocation in this release: a certificate
+remains valid until it expires or the operator replaces the cluster CA
+and redeploys every identity. The security plan's eviction design — an
+active-registry check plus a persisted node-ID/certificate-serial
+denylist whose reload closes matching live sockets — remains future
+work. The initial release has static membership, so removing a voter
+remains an operator-controlled offline replacement procedure; the book
+does not claim online consensus membership management.
 
 #callout(title: [Current release restriction], tone: "danger")[
-  Do not treat protocol-v4 TCP as the production trust boundary. It has no
-  per-node mTLS identity, confidentiality, connection/thread admission bounds,
-  handshake or idle deadlines, or query work/result budgets. Zaxonlite does not
-  require separate operator credentials: the application is the one database
-  authority. Follow the release gates in
+  Do not treat PSK-only TCP as the production trust boundary: it has no
+  per-node identity and no confidentiality. The mutual TLS transport
+  supplies both, but certificate issuance, rotation, and revocation are
+  manual, and the service still has no idle deadlines or query
+  work/result budgets. Connection admission is capped and handshakes
+  carry a deadline (chapter 7), but nothing else is bounded. Zaxonlite
+  does not require separate operator credentials: the application is the
+  one database authority. Follow the release gates in
   `docs/zaxonlite-security-remediation-plan.typ`.
 ]
-
-The mTLS plan also defines eviction. A certificate alone will not authorize a
-peer: its cluster/node identity must remain in the active registry and outside
-a persisted node-ID/certificate-serial denylist. Reloading that denylist closes
-matching live sockets. The initial release has static membership, so removing
-a voter remains an operator-controlled offline replacement procedure; the book
-does not claim online consensus membership management.
 
 #callout(title: [Plaintext at rest], tone: "warning")[
   The current database, captured payloads, journals, snapshots, and backups are
@@ -215,6 +321,22 @@ does not claim online consensus membership management.
   off media theft is in scope. An encrypted edge profile is future work and
   needs its own direct-I/O, recovery, snapshot, backup, key, and rekey tests.
 ]
+
+== Local service over a Unix-domain socket
+
+`zaxon serve --listen unix:<path>` serves a single local node over a
+Unix-domain socket instead of TCP, and filesystem permissions become the
+local authorization boundary. The server restricts the socket to owner-only
+permissions (mode 0600) immediately after binding, so only the owning user
+can connect; widening access is a deliberate host configuration, not a
+default. A pre-existing file at the socket path is refused — never silently
+unlinked or taken over — so a stale socket left by a crash requires explicit
+operator removal after confirming no server owns it. An orderly shutdown
+removes the socket path. The mode serves exactly one node: configured peers
+are rejected, because cluster links require TCP, and gateway mode is
+TCP-only. Clients name the socket the same way everywhere an endpoint is
+accepted: `--connect unix:<path>`, the `connect` configuration field, or
+`ZAXON_CONNECT`.
 
 == Monitoring
 

@@ -26,7 +26,9 @@ node is allowed to act on it.
 
 `zaxon serve` hosts one node behind one TCP endpoint. Peer traffic and
 client traffic share that endpoint. The first frame on any connection is a
-`hello` that says which kind of connection this is.
+`hello` that says which kind of connection this is. A single local node
+may instead listen on a Unix-domain socket (chapter 2); cluster links
+always require TCP, so a unix-mode server rejects configured peers.
 
 Connections follow the roles. Voters dial every storage node. Learners dial
 only voters, so they can return payload ACKs and payload requests. A link
@@ -48,9 +50,14 @@ per connection, one sender per peer, and one tick thread. Each sender owns
 a bounded frame queue. The tick thread drives elections, heartbeats, and
 retransmission. A single mutex guards the node. The write path's fsyncs
 serialize under that mutex, exactly as the ordering contract requires.
-Connection readers themselves are not currently bounded by an admission
-quota or I/O deadline, so this shape is not resource-bounded under hostile
-traffic.
+Admission is bounded. The server caps concurrent connections — peers,
+clients, and transfer streams together — at four per configured member
+plus sixteen by default, sized for a small cluster; an over-limit
+connection is closed at accept, and admission is refused during
+shutdown. An accepted connection must complete hello and authentication
+within a handshake deadline, 10 seconds by default, or the tick loop
+closes it. Established connections still carry no idle deadline or
+per-query work budget.
 
 == Registry, voter membership, and scale
 
@@ -143,18 +150,25 @@ a write quorum. Recovery can always fetch the payload by digest from some
 surviving voter. And a node missing a payload for a committed slot refuses
 to serve rather than invent state.
 
-#callout(title: [The wire proves PSK possession, not identity], tone: "warning")[
+#callout(title: [Two transport modes: PSK possession, or mTLS identity], tone: "warning")[
   Protocol v4 authenticates possession of a provider-file PSK with a
   challenge-response: a fresh nonce, a connection-unique session key, and a
   monotonically sequenced HMAC on every post-handshake frame. A wrong
   proof, a replay, tampering, or a version downgrade closes the stream.
   The same PSK is used by all nodes and clients, while the plain `hello`
   supplies the claimed peer ID and connection kind. It therefore does not
-  authenticate a distinct configured node. The application is intentionally
-  the only database principal, but the cluster still needs per-node identity.
-  Without a provider, the server refuses non-loopback addresses; loopback is
-  not a durable local-access policy. HMAC does not encrypt SQL or page data.
-  The production plan uses Unix-domain sockets locally and mTLS on TCP.
+  authenticate a distinct configured node, and HMAC does not encrypt SQL
+  or page data. The mutual TLS transport closes both gaps: with
+  `--tls-cert`/`--tls-key`/`--tls-ca`, every TCP connection — peer and
+  client — runs TLS 1.3 with certificates verified against the cluster CA
+  in both directions, and a peer connection's certificate common name must
+  be exactly `zaxon-node-<id>` for the node id its hello claims, checked
+  on the accepting and the dialing side alike. The two modes compose:
+  when both are configured, the PSK challenge runs inside the TLS
+  channel. Without either credential, the server refuses non-loopback
+  addresses; loopback is not a durable local-access policy, and local
+  single-node service can avoid TCP entirely through the owner-only
+  Unix-domain socket (chapter 2).
 ]
 
 == How a learner learns
@@ -189,9 +203,10 @@ voters.
 ))
 
 A learner checks the claimed sender against its registry. It rejects
-certificates from claimed non-voters. Under protocol v4 this is a protocol
-invariant, not a hostile-peer security boundary, because any PSK holder can
-claim a configured voter ID in the hello. It rejects other epochs and
+certificates from claimed non-voters. Under the PSK transport this is a
+protocol invariant, not a hostile-peer security boundary, because any PSK
+holder can claim a configured voter ID in the hello; under mutual TLS the
+claimed peer ID is additionally bound to the sender's certificate name. It rejects other epochs and
 conflicting duplicates. It applies slots
 only contiguously and buffers at most a compile-time-bounded reorder
 window. A reconnect resets the leader's cursor and replays the chosen

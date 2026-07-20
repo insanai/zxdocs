@@ -96,7 +96,13 @@ keep no identity file because they hold no state.
 
 Every connection speaks one framing: a `u32 total_len` (body length plus
 one), a `u8 kind` byte, then the body. A body of 64 MiB or more is a
-protocol error. The largest legal body is one byte under 64 MiB.
+protocol error. The largest legal body is one byte under 64 MiB. One
+declared snapshot or backup transfer — the size announced by
+`snapshot_begin` or `backup_begin` — is bounded by
+`wire.max_transfer_bytes`, 4 GiB by default, sized for the small
+embedded database profile. The server enforces its configured bound
+(`ServeOptions.max_transfer_bytes`), and the client enforces the same
+default on backup downloads.
 
 #table(
   columns: (auto, auto, 1fr),

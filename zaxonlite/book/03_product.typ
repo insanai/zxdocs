@@ -39,14 +39,23 @@ documents every command.
 #callout(title: [Security model and current status], tone: "warning")[
   Zaxonlite is a single-application database, not a multi-user SQL server.
   The application authenticates its users and decides what SQL to issue.
-  Protocol v4's shared PSK proves possession of one cluster-wide secret but
-  does not bind a configured node to a unique credential or encrypt traffic,
-  so the current TCP service is a development interface. Public SQL also has
-  no narrow SQLite invariant guard yet: transaction-control statements,
-  attached databases, `wal_autocheckpoint`, and access to `__zaxon_*`
-  objects can interfere with replication. Loadable SQLite extensions are
-  already compiled out. The production target is Unix-domain sockets locally
-  and one-time node enrollment followed by mTLS on TCP. The detailed plan is in
+  TCP now offers two transport modes. Protocol v4's shared PSK proves
+  possession of one cluster-wide secret but does not bind a configured node
+  to a unique credential or encrypt traffic, so a PSK-only TCP service
+  remains a development interface. Mutual TLS 1.3
+  (`--tls-cert`/`--tls-key`/`--tls-ca`) gives every node an
+  operator-provisioned certificate chained to one cluster CA, binds a peer
+  connection to the node id its certificate names, and encrypts the wire;
+  the one-time enrollment flow that would automate certificate issuance is
+  still future work. A single local node can instead serve over an
+  owner-only Unix-domain socket (`--listen unix:<path>`), where filesystem
+  permissions are the boundary.
+  A narrow SQLite invariant guard screens every application statement:
+  transaction control, `ATTACH`/`DETACH`, the reserved `__zaxon_*`
+  namespace, and capture-critical pragmas are denied at prepare time, and
+  loadable SQLite extensions are compiled out. The guard protects
+  replication invariants for a trusted application; it is not a sandbox or
+  multi-user RBAC. The detailed security plan is in
   `docs/zaxonlite-security-remediation-plan.typ`.
 ]
 
