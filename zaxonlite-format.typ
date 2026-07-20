@@ -82,7 +82,7 @@ speculative image is rebuilt from decided state.
 = Journal
 
 Each epoch journal is `paxos-<configuration-id-hex>.log`. Records contain magic,
-format version, kind, reserved bytes, payload length, monotonic sequence,
+format version, kind, reserved bytes, monotonic sequence, payload length,
 canonical payload, and checksum. Protocol writes appear in the exact order
 emitted by `ReplicatedLog`. The host syncs the journal before confirming durable
 effects or sending dependent messages.

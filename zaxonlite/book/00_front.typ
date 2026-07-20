@@ -1,8 +1,6 @@
 #import "theme.typ": *
 
-// ----------------------------------------------------------------------
 // Cover
-// ----------------------------------------------------------------------
 
 #{
   let cover_ink = rgb("28372f")
@@ -62,38 +60,54 @@
   pagebreak()
 }
 
-// ----------------------------------------------------------------------
 // Colophon and orientation
-// ----------------------------------------------------------------------
 
 #heading(numbering: none, outlined: false)[About this book]
 
-This book documents Zaxonlite: an embeddable SQLite service replicated by
-the paxos-zig Multi-Paxos library, and the `zaxon` command line that hosts
-and drives it. It is written for three readers at once:
+This book documents Zaxonlite. Zaxonlite is an embeddable SQLite service
+replicated by the paxos-zig Multi-Paxos library. Its front door is the
+`zaxon` command line, one binary that is both server and client.
 
-+ *the application developer*, who wants a durable SQL store with
-  exactly-once write retry and knows exactly what is guaranteed;
-+ *the operator*, who deploys `zaxon serve` alone or with voters and learners and
-  needs the file formats, the recovery story, and the failure playbook;
-+ *the engineer*, who wants to see how WAL-frame replication, a
-  journal-authoritative storage design, and an explicit-effects Paxos
-  core compose into a small, testable system.
+The book runs the system before it explains it. Chapter 1 takes you from a
+fresh build to a three-voter cluster that survives a killed leader. Chapter
+2 covers every `zaxon` command. Chapter 3 states what those commands
+promise. Part II then explains how the machine works. Part III moves the
+same machine into your own process, in Zig or through the C ABI. Part IV
+covers operating it. Part V is reference and evidence.
 
-The implemented vertical slice is exercised by unit tests, single-process
-durability tests, a three-process loopback cluster scenario with a SIGKILL
-failpoint, a CLI contract test, a C ABI smoke test, seeded property fuzzing, a
-soak run, role/gateway/adverse-network integration tests, and benchmarks.
-Protocol v4 adds mutually authenticated, sequenced HMAC framing and
-voter-certified learner commits. The 10,000-crash, 100-run, and 1-GiB stress
-targets are explicitly deferred; where this book states a current guarantee,
-the final chapter names its evidence.
+Five readers use this book, and each gets a guide of their own. All five
+start with the quickstart in chapter 1. Running the system first is the
+fastest way to build a correct mental model of it.
+
++ *The Zig developer embedding one durable node* wants a crash-consistent
+  SQL store in-process, with no network. Chapter 9 is the guide, built
+  around `Node.open`.
++ *The Zig developer embedding a cluster member* owns the listener, peers,
+  and role inside one process. Chapter 10 is the guide, built around
+  `Embedded.open`.
++ *The C ABI embedder* links `zaxonlite.h` from another language. Chapter
+  11 carries the same guarantees across the opaque-handle boundary.
++ *The operator* deploys `zaxon serve` with voters and learners. Chapters
+  13 and 15 supply the failure playbook and the file formats.
++ *The client or gateway developer* speaks the TCP RPC protocol. Chapter
+  12 covers leader redirects and end-to-end authenticated streams.
+
+The implemented vertical slice is tested, not merely described. Its
+evidence includes unit tests, single-process durability tests, and a
+three-process loopback cluster scenario with a SIGKILL failpoint. It also
+includes a CLI contract test, a C ABI smoke test, seeded property fuzzing,
+a soak run, role, gateway, and adverse-network integration tests, and
+benchmarks. Protocol v4 adds mutually authenticated, sequenced HMAC
+framing and voter-certified learner commits. The 10,000-crash, 100-run,
+and 1-GiB stress targets are explicitly deferred. Where this book states a
+current guarantee, chapter 17 names its evidence.
 
 #callout(title: "Reading order", tone: "note")[
-  Chapters 1–3 explain what Zaxonlite is and the one idea it is built on
-  (replicating committed WAL frames). Chapters 4–6 are the storage,
-  cluster, and consistency deep dives. Chapters 7–9 are reference:
-  operations, APIs, and on-disk/wire formats. Chapter 10 is the evidence.
+  Run first, understand second, embed third. Part I gets a cluster running
+  on your machine and states its guarantees. Part II explains the machine:
+  architecture, WAL replication, storage, clusters, and consistency. Part
+  III embeds it in your own process. Part IV operates it. Part V holds the
+  formats, the desk reference, verification, and conformance.
 ]
 
 #v(6mm)

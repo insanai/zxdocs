@@ -12,6 +12,8 @@
 #let red_light = rgb("fcecec")
 #let gray = rgb("667085")
 #let rule = rgb("d4d9e2")
+#let green = rgb("27734d")
+#let green_light = rgb("eaf7f0")
 
 #let book(body) = {
   set document(
@@ -84,6 +86,97 @@
     #body
   ]
 }
+
+// Part divider pages, matching the paxos-zig book's structure.
+#let part_page(number, title, summary) = {
+  set page(header: none)
+  pagebreak(to: "odd")
+  align(center + horizon)[
+    #text(size: 11pt, tracking: 1.6pt, fill: accent)[PART #number]
+    #v(5mm)
+    #text(size: 28pt, weight: "bold")[#title]
+    #v(7mm)
+    #line(length: 34mm, stroke: 1.5pt + accent)
+    #v(7mm)
+    #box(width: 72%, text(size: 10.5pt, fill: gray)[#summary])
+  ]
+  pagebreak()
+}
+
+// Step-by-step message walkthroughs, as in the paxos-zig book.
+#let transcript(rows) = table(
+  columns: (auto, auto, 1fr),
+  align: (right, left, left),
+  table.header(
+    [*Step*], [*Actor*], [*Event and reason*],
+  ),
+  ..rows,
+)
+
+#let book_figure(caption, body) = figure(
+  placement: auto,
+  body,
+  caption: text(size: 9pt, fill: gray)[#caption],
+)
+
+// Pedagogy blocks shared in spirit with the paxos-zig book so both books
+// read the same way: learning contracts, exercises, and teach-back prompts.
+#let objectives(body) = callout(title: [Learning contract], tone: "decision", body)
+
+#let checkpoint(title, body) = callout(title: [Checkpoint: #title], body)
+
+#let predict(body) = callout(title: [Predict before reading on], tone: "warning", body)
+
+#let exercise(number, body, hint: none) = block(
+  width: 100%,
+  inset: 9pt,
+  outset: (y: 3pt),
+  radius: 3pt,
+  fill: amber_light,
+  stroke: 0.6pt + amber,
+  breakable: true,
+)[
+  #text(weight: "bold", fill: amber)[Exercise #number.]
+  #h(4pt)
+  #body
+  #if hint != none [
+    #linebreak()
+    #text(size: 9pt, fill: gray)[Hint: #hint]
+  ]
+]
+
+#let teach_back(body) = block(
+  width: 100%,
+  inset: 9pt,
+  outset: (y: 3pt),
+  radius: 3pt,
+  fill: blue_light,
+  stroke: 0.6pt + blue,
+  breakable: true,
+)[
+  #text(weight: "bold", fill: blue)[Teach it back.]
+  #h(4pt)
+  #body
+]
+
+#let api_anchor(symbol, purpose, source: none) = {
+  let location = if source == none { [] } else { [ in #source] }
+  callout(title: [API anchor: #symbol], [#purpose#location])
+}
+
+#let code_file(path, body) = block(
+  width: 100%,
+  inset: 0pt,
+  outset: (y: 4pt),
+  stroke: 0.6pt + rule,
+  radius: 3pt,
+  breakable: true,
+)[
+  #block(width: 100%, inset: 6pt, fill: blue_light)[
+    #text(size: 8pt, weight: "bold", fill: blue)[#path]
+  ]
+  #block(width: 100%, inset: 8pt)[#body]
+]
 
 #let field_table(..rows) = table(
   columns: (auto, auto, 1fr),

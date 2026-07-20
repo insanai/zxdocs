@@ -741,11 +741,11 @@ data-directory lock, make a backup first, and default to inspection only.
     deadline.], [Final observed state.],
 )
 
-`serve` accepts configuration from flags, one TOML file, or environment
-variables, with the precedence documented and printable via
-`zaxon config show`. Secrets may be named by file or secret-provider
-handle and must not appear in `status`, process arguments in recommended
-examples, or logs.
+`serve` accepts configuration from flags, one JSON file (`--config <path>`
+or `ZAXON_CONFIG`), or `ZAXON_*` environment variables; flags override
+environment values, which override file values. Secrets may be named by
+file or secret-provider handle and must not appear in `status`, process
+arguments in recommended examples, or logs.
 
 == CLI examples
 
