@@ -43,11 +43,14 @@ protocol repair (`reconnected`).
   gateway routes client connections and stores nothing.
 ], cluster_topology())
 
-The thread model is small on purpose. There is one accept loop, one reader
+The thread model is direct. There is one accept loop, one reader
 per connection, one sender per peer, and one tick thread. Each sender owns
 a bounded frame queue. The tick thread drives elections, heartbeats, and
 retransmission. A single mutex guards the node. The write path's fsyncs
 serialize under that mutex, exactly as the ordering contract requires.
+Connection readers themselves are not currently bounded by an admission
+quota or I/O deadline, so this shape is not resource-bounded under hostile
+traffic.
 
 == Registry, voter membership, and scale
 
@@ -140,14 +143,18 @@ a write quorum. Recovery can always fetch the payload by digest from some
 surviving voter. And a node missing a payload for a committed slot refuses
 to serve rather than invent state.
 
-#callout(title: [The wire is authenticated, not encrypted], tone: "warning")[
-  Protocol v4 authenticates peers with a provider-file PSK
+#callout(title: [The wire proves PSK possession, not identity], tone: "warning")[
+  Protocol v4 authenticates possession of a provider-file PSK with a
   challenge-response: a fresh nonce, a connection-unique session key, and a
   monotonically sequenced HMAC on every post-handshake frame. A wrong
   proof, a replay, tampering, or a version downgrade closes the stream.
-  Without a provider, the server refuses non-loopback addresses. HMAC does
-  not encrypt SQL. A confidential deployment still needs an encrypted
-  tunnel. Chapter 13 shows the configuration.
+  The same PSK is used by all nodes and clients, while the plain `hello`
+  supplies the claimed peer ID and connection kind. It therefore does not
+  authenticate a distinct configured node. The application is intentionally
+  the only database principal, but the cluster still needs per-node identity.
+  Without a provider, the server refuses non-loopback addresses; loopback is
+  not a durable local-access policy. HMAC does not encrypt SQL or page data.
+  The production plan uses Unix-domain sockets locally and mTLS on TCP.
 ]
 
 == How a learner learns
@@ -181,8 +188,11 @@ voters.
     leader hint.],
 ))
 
-A learner defends itself. It rejects certificates from non-voters. It
-rejects other epochs. It rejects conflicting duplicates. It applies slots
+A learner checks the claimed sender against its registry. It rejects
+certificates from claimed non-voters. Under protocol v4 this is a protocol
+invariant, not a hostile-peer security boundary, because any PSK holder can
+claim a configured voter ID in the hello. It rejects other epochs and
+conflicting duplicates. It applies slots
 only contiguously and buffers at most a compile-time-bounded reorder
 window. A reconnect resets the leader's cursor and replays the chosen
 prefix; the replay is idempotent. The certifying voter also serves as the
@@ -236,6 +246,17 @@ empty, rebuilds its image from the snapshot, and catches up the remaining
 suffix normally. The cluster test exercises exactly this path: a member
 stopped across a rollover rejoins and converges to byte-identical content.
 
+#callout(title: [Snapshot transfer drops an existing proof], tone: "danger")[
+  Normal rollover already gets consensus on the physical snapshot: the
+  `zx1 <name> <manifest-sha256>` metadata is the decided Paxos stop sign,
+  and every caught-up member independently requires the same digest. The
+  receive path verifies the transferred manifest and image but does not carry
+  and confirm that decided stop sign before replacing state. The repair is not
+  a second consensus phase or signatures over SQLite files. Transfer the
+  retained stop-sign proof, obtain the same proof digest from a read quorum
+  over mTLS, and only then install the matching physical image.
+]
+
 == Failpoints
 
 How do we know the crash matrix in chapter 8 holds on a real cluster? We
@@ -244,7 +265,10 @@ cleanup, which behaves like a SIGKILL at that line. The sites bracket the
 write path: before and after payload sync, after journal append, after
 journal sync, before follower apply, and before the client reply. A test
 controller arms them at runtime through an RPC. Only servers started with
-`--enable-failpoints` honor it.
+`--enable-failpoints` honor it. Zaxonlite intentionally has no internal
+administrator role, so every caller admitted to this single-principal
+interface could invoke an enabled failpoint. Never enable it outside
+disposable tests.
 
 The cluster scenario's centerpiece is the retry you will meet again in
 chapter 8. It kills the leader after quorum choice and before the client

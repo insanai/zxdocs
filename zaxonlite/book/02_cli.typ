@@ -92,12 +92,14 @@ membership, plus `--cluster-id` when given. Two clusters with the same
 member list but different `--cluster-id` values refuse to mix. That fence
 protects safety against cross-cluster replay.
 
-#callout(title: [Non-loopback means authenticated], tone: "warning")[
+#callout(title: [Non-loopback requires the current shared secret], tone: "warning")[
   Without `--auth-file`, every listen and peer address must be loopback.
   A public address is refused at startup, exit 4:
   "A non-loopback listener cannot start without a transport secret."
   The flag takes a provider file path, never a literal secret, so the key
-  stays out of shell history and process listings.
+  stays out of shell history and process listings. This check matches the
+  implementation; it does not make protocol v4 a production transport.
+  The security plan replaces TCP PSK authentication with per-node mTLS.
 ]
 
 `--enable-failpoints` makes the server honor fault-injection RPCs. It exists

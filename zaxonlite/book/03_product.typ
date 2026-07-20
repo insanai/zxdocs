@@ -36,6 +36,20 @@ embeds a node directly. With `--connect` it speaks the client RPC protocol
 to running servers and follows leader redirects on its own. Chapter 2
 documents every command.
 
+#callout(title: [Security model and current status], tone: "warning")[
+  Zaxonlite is a single-application database, not a multi-user SQL server.
+  The application authenticates its users and decides what SQL to issue.
+  Protocol v4's shared PSK proves possession of one cluster-wide secret but
+  does not bind a configured node to a unique credential or encrypt traffic,
+  so the current TCP service is a development interface. Public SQL also has
+  no narrow SQLite invariant guard yet: transaction-control statements,
+  attached databases, `wal_autocheckpoint`, and access to `__zaxon_*`
+  objects can interfere with replication. Loadable SQLite extensions are
+  already compiled out. The production target is Unix-domain sockets locally
+  and one-time node enrollment followed by mTLS on TCP. The detailed plan is in
+  `docs/zaxonlite-security-remediation-plan.typ`.
+]
+
 == The one idea
 
 Most replicated-SQLite systems replay SQL text on every node, and hope the

@@ -242,8 +242,9 @@ which.
     *Clause.* Format §3: a configured voter certifies one chosen
     slot.],
 
-  [No silent downgrade. Wrong protocol versions, missing secrets, and
-    replayed or tampered frames are refused.],
+  [No silent wire-version downgrade. Wrong protocol versions, missing
+    shared secrets, and replayed or tampered frames are refused. This does
+    not authenticate a distinct configured node identity.],
   [*Enforced.* `wire.zig` `Hello.decode` accepts exactly version 4
     and raises `UnsupportedProtocolVersion` otherwise; `server.zig`
     refuses non-loopback listeners or peers without a secret;
@@ -256,8 +257,9 @@ which.
     rejects replay and tampering"; the cluster step "reject a client
     with the wrong transport secret".
 
-    *Clause.* Format §1 to §3: no negotiation down, exact-major
-    wire.],
+    *Clause.* Format §1 to §3: no negotiation down, exact-major wire.
+    The identity and application-owned authorization boundaries are documented
+    in chapters 7, 12, and 13 and in the security remediation plan.],
 
   [One serialized writer per database. Concurrent endpoints never
     create multi-leader writes.],
@@ -294,6 +296,24 @@ which.
 
 Chapter 17 listed the suites. These are the holes the suites leave,
 stated so that this chapter cannot be read as a completeness claim:
+
+- Protocol v4 proves only shared-PSK possession. It has no credential-bound
+  node identity or confidentiality. Zaxonlite intentionally has one
+  application principal rather than database-user/RPC roles, but the current
+  transport tests do not establish the planned mTLS boundary.
+- Public SQL has no narrow authorizer protecting Zaxonlite's outer transaction,
+  attached-file boundary, WAL-hook settings such as `wal_autocheckpoint`, or
+  `__zaxon_*` metadata. This is a replication invariant gap reachable through
+  the normal API, not a multi-tenant SQL sandbox requirement. Loadable
+  extensions are already compiled out with `SQLITE_OMIT_LOAD_EXTENSION`.
+- Transferred snapshot manifests are digest-checked but are not verified
+  against the existing Paxos-decided stop sign before installation. Normal
+  rollover already decides the physical manifest hash; the missing work is
+  retained proof plus read-quorum confirmation during transfer, not a new
+  certificate/signature phase.
+- Connection readers, handshake/idle time, query work/results, and several
+  transfer/recovery sizes lack production resource budgets. Existing fuzzing
+  is not a denial-of-service or admission-control oracle.
 
 - The chapter-6 crash matrix is not fully automated in both the
   one-node and three-node roles. Completing it is a release blocker.

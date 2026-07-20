@@ -84,16 +84,22 @@ The C entry points are `zaxonlite_open` and `zaxonlite_cluster_open` in
 The honest boundary matters as much as the feature list. The repository
 supplies the replicated database itself. That means the node and facade
 libraries, the C ABI, and the `zaxon` command line with its serve and
-client modes. It also means mutually authenticated, integrity-protected
-TCP framing, snapshots, logical backup streaming, `zaxon integrity-check`,
-`zaxon recover`, and `zaxon status --json` for automation.
+client modes. It also means shared-secret, integrity-protected TCP framing,
+snapshots, logical backup streaming, `zaxon integrity-check`,
+`zaxon recover`, and `zaxon status --json` for automation. The shared
+secret is the protocol-v4 implementation, not the planned production
+identity boundary.
 
-Your deployment must still add three things. The release limits state them
+Your deployment must still provide four things. The release limits state them
 directly.
 
-+ *An encrypted tunnel.* The pre-shared-key transport authenticates peers
-  and integrity-protects every frame. It does not encrypt. Where SQL
-  confidentiality matters, run the TCP links inside a tunnel you provide.
++ *Application authentication.* Zaxonlite has one database principal. Your
+  application authenticates its users and decides which operations and SQL
+  they may issue.
++ *A production transport.* Use the embedded API in process. The security
+  plan adds Unix-domain sockets for local service and per-node mTLS after
+  one-time enrollment for TCP clusters. The current PSK proves only shared
+  secret possession and does not encrypt.
 + *Monitoring and alerting.* The node reports status; nothing in the
   repository watches it. After a fatal storage error the host must stop
   voting and serving. Something of yours must notice and page a human.

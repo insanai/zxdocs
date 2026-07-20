@@ -133,13 +133,17 @@ facade adds no session helper.
 When `auth_secret` is set, every connection the facade makes or
 accepts runs the pre-shared-key transport authentication. That covers
 peer and client connections alike. All members must carry the same
-secret. The secret provides integrity and authentication, not secrecy.
+secret. The secret proves shared possession and provides frame integrity,
+not unique node identity or secrecy. It is the implemented development
+transport; the production plan replaces it with per-node mTLS.
 
 == Walkthrough: three voters in one process
 
 This is the shape of `zaxonlite/src/role_cluster_test.zig`, reduced to
-three data voters. In production these are three processes on three
-machines. The API is identical. First we write the registry. Every
+three data voters. A deployed cluster normally uses three processes on
+three machines; production TCP additionally requires the planned mTLS
+transport. The API shape is otherwise identical. First we write the
+registry. Every
 member will pass this same slice:
 
 ```zig
@@ -229,8 +233,9 @@ Stated directly, per the release limits in `docs/zaxonlite-format.typ`:
 + *No dynamic registry.* Adding even a read replica means restarting
   members with the new registry, keeping the same voters and the same
   `cluster_id`.
-+ *No secrecy on the wire.* `auth_secret` authenticates; it does not
-  encrypt. Run untrusted networks through your own tunnel.
++ *No production transport in protocol v4.* `auth_secret` proves shared
+  possession and integrity; it does not bind a unique node or encrypt.
+  The security plan uses one-time enrollment and per-node mTLS for TCP.
 + *No session sugar and no read-level knob.* `exec` is leader-routed
   and `query` is linearizable. Every other combination goes through
   `call`.

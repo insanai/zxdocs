@@ -81,10 +81,12 @@ $ zaxon serve --data ./n3 --node 3 --listen 127.0.0.1:7003 \
     --peer 1@127.0.0.1:7001 --peer 2@127.0.0.1:7002
 ```
 
-#callout(title: [Loopback only, until you add a key], tone: "warning")[
+#callout(title: [Loopback development cluster], tone: "warning")[
   These nodes listen on `127.0.0.1`, so `zaxon` lets them run without
-  authentication. A non-loopback listen address is refused until you supply
-  `--auth-file`. Chapter 13 covers securing a real deployment.
+  a transport secret. A non-loopback listen address is refused until you
+  supply `--auth-file`, but that shared key is still only the current
+  development transport. The production plan uses Unix-domain sockets
+  locally and per-node mTLS for TCP. Chapter 13 states the exact boundary.
 ]
 
 Now wait for the cluster to elect a leader, from a fourth terminal:

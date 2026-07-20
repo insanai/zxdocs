@@ -90,15 +90,16 @@ fastest way to build a correct mental model of it.
 + *The operator* deploys `zaxon serve` with voters and learners. Chapters
   13 and 15 supply the failure playbook and the file formats.
 + *The client or gateway developer* speaks the TCP RPC protocol. Chapter
-  12 covers leader redirects and end-to-end authenticated streams.
+  12 covers leader redirects and the current shared-secret streams.
 
 The implemented vertical slice is tested, not merely described. Its
 evidence includes unit tests, single-process durability tests, and a
 three-process loopback cluster scenario with a SIGKILL failpoint. It also
 includes a CLI contract test, a C ABI smoke test, seeded property fuzzing,
 a soak run, role, gateway, and adverse-network integration tests, and
-benchmarks. Protocol v4 adds mutually authenticated, sequenced HMAC
-framing and voter-certified learner commits. The 10,000-crash, 100-run,
+benchmarks. Protocol v4 adds mutually proven shared-secret possession,
+sequenced HMAC framing, and voter-certified learner commits. It does not
+bind a unique node credential or encrypt traffic. The 10,000-crash, 100-run,
 and 1-GiB stress targets are explicitly deferred. Where this book states a
 current guarantee, chapter 17 names its evidence.
 

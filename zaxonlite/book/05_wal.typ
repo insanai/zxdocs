@@ -71,6 +71,15 @@ With automatic checkpoints disabled, the WAL only grows between
 snapshots, and a written frame is never moved or rewritten. That
 stability is what makes the next step legal.
 
+#callout(title: [These pragmas are replication invariants], tone: "warning")[
+  Application SQL currently runs inside Zaxonlite's `BEGIN IMMEDIATE`.
+  SQLite refuses changing `journal_mode` or `synchronous` there, but
+  `wal_autocheckpoint` can replace the installed WAL hook. The security plan
+  therefore adds a narrow authorizer that denies capture-changing pragmas and
+  verifies the hook/mode contract before payload extraction. Loadable
+  extensions are already omitted at SQLite compile time.
+]
+
 After every commit, the hook reports the total number of committed
 frames now in the WAL. We remember the previous total. The frames
 between the old count and the new count are exactly this transaction's

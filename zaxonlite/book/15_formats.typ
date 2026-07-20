@@ -66,10 +66,15 @@ db_sha256=<64 hex>
 ```
 
 The stop-sign metadata is the string `zx1 <snapshot-name-16hex>
-<manifest-sha256>`. A generation is installable only when its manifest
-hashes to the decided value. This closes the loop from Chapter 6. The
-cluster decides which snapshot is legal. The local disk does not get a
-vote.
+<manifest-sha256>`. During normal local rollover,
+`completeClusterRollover` requires the manifest to hash to this decided
+value. Followers reproduce the physical file from the same decided WAL page
+frames and require the identical manifest digest. The network
+snapshot-install path does not yet carry or confirm that decided stop-sign
+evidence before accepting a self-consistent future manifest. The planned
+`CheckpointProofV1` packages the existing stop-sign tuple and requires an
+mTLS read quorum to confirm its digest before activation; it does not add
+snapshot signatures or another Paxos phase.
 
 == Identity file
 

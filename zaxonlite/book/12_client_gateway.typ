@@ -74,13 +74,16 @@ sequence closes it too (`ReplayDetected`). The fresh responder nonce
 prevents replay of an earlier handshake. The sequence prevents replay,
 reorder, and truncation within a connection.
 
-#callout(title: [Authenticated, not encrypted], tone: "warning")[
-  The transport provides mutual authentication, frame integrity, and
-  replay rejection. It does *not* encrypt: SQL text and result rows cross
-  the network in the clear. Deployments needing confidentiality must run
-  the protocol through an encrypted tunnel until native TLS is added.
-  Without a secret configured, the server refuses to listen on
-  non-loopback addresses at all.
+#callout(title: [Shared-secret integrity, not per-node identity], tone: "warning")[
+  The transport proves that both endpoints possess the same PSK and provides
+  frame integrity and replay rejection. It does not bind the hello's
+  `node_id` to a distinct credential. It also does not encrypt: every body
+  crosses the network in the clear. Zaxonlite intentionally treats an admitted
+  application caller as having full database authority; end-user permissions
+  belong in that application, not in this RPC protocol. Without a secret,
+  non-loopback listeners are refused, but loopback remains reachable by other
+  local processes. The production plan replaces local TCP with a Unix-domain
+  socket and replaces the PSK with per-node mTLS for TCP.
 ]
 
 == The RPC contract
@@ -113,6 +116,13 @@ fields are compatible, so ignore fields you do not use. The dispatch in
 
 The subsections that follow give each op's request fields and success
 response. A field not marked optional is required.
+
+Protocol v4 applies no permission matrix to this list. That matches the
+single-application design: possession of the embedded handle or access to the
+service means full database authority. An application that serves unrelated
+users must authenticate them and expose only its own permitted operations.
+Failpoints remain a test-only capability and must be disabled in real data
+directories.
 
 === Observing the cluster: status, members, leader, hash
 
@@ -173,8 +183,9 @@ answers with `expired`, the count removed.
 === Operating: failpoint, stop
 
 `failpoint` takes `name` and answers `{"ok":true}`. The server rejects
-it unless it was started with `--enable-failpoints`, so a production
-node cannot be faulted over the wire. `stop` takes no fields, answers
+it unless it was started with `--enable-failpoints`; when enabled, every
+admitted application caller can fault the node over the wire. `stop` takes
+no fields, answers
 `{"ok":true}`, and then shuts down gracefully.
 
 === The error codes you must handle

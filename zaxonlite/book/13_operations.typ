@@ -11,8 +11,9 @@
 
 #objectives([
   By the end of this chapter you should be able to configure a member from a
-  file instead of a pile of flags, secure a networked cluster with a
-  pre-shared key, read `status` and `members` as monitoring signals, act on
+  file instead of a pile of flags, state the exact limitations of the
+  protocol-v4 pre-shared key, read `status` and `members` as monitoring
+  signals, act on
   the failure playbook without improvising, run the backup and disaster
   recovery runbooks, and roll a new binary through a live cluster.
 ])
@@ -26,8 +27,9 @@
 
 == What changes off the laptop
 
-The quickstart ran everything on `127.0.0.1`. A production deployment
-changes four things, and nothing else.
+The quickstart ran everything on `127.0.0.1`. The current implementation is
+not ready for a production network. A realistic deployment would change at
+least these four things, but the security plan must be completed first.
 
 + Listen and peer addresses become real network addresses, and `zaxon` then
   refuses to start until you configure an authentication key.
@@ -134,7 +136,7 @@ from any source is a usage error with exit code 2, never a silent default.
 That covers an unreadable file, a non-integer `ZAXON_NODE`, and an unknown
 role alike.
 
-== Securing a deployment
+== Current transport boundary
 
 The transport authenticates with a pre-shared key. Both sides prove
 possession of the secret in a challenge-response handshake. The responder
@@ -144,13 +146,25 @@ the frame kind, a strictly increasing sequence number, and the body. A bad
 tag, a skipped sequence, or a peer that never authenticates closes the
 connection.
 
-Know exactly what that buys.
+Know exactly what that buys—and what it does not.
 
-- Protected: peer authentication, frame integrity, and replay rejection.
-- Not protected: confidentiality. SQL text, query results, and page images
-  travel in the clear. Where the data itself must be hidden from the
-  network, run the endpoints over an encrypted tunnel such as WireGuard, an
-  SSH tunnel, or a mesh VPN until native TLS is added.
+- Protected: proof that the remote endpoint holds the cluster-wide PSK,
+  frame integrity, and replay rejection on one connection.
+- Not protected: node identity. The unauthenticated hello supplies the claimed
+  node ID and peer/client kind. Any PSK holder can impersonate a configured
+  voter.
+- Not provided: database-user authorization. This is intentional: the
+  embedding or socket-owning application is the single database principal and
+  applies end-user policy before calling Zaxonlite.
+- Not protected: confidentiality. SQL text, results, pages, snapshots and
+  backups travel in cleartext.
+
+An encrypted tunnel can hide bytes from the network, but it does not bind the
+PSK holder to a configured node identity. Protocol v4 is therefore a
+development interface even when placed behind a tunnel. The production target
+is a Unix-domain socket protected by filesystem permissions for local service,
+or one-time node enrollment followed by per-node mTLS for TCP. Application
+authorization stays outside Zaxonlite; see the security remediation plan.
 
 The secret comes only from a provider file, named by `--auth-file <path>`,
 by `ZAXON_AUTH_FILE`, or by the `auth_file` configuration field. The file
@@ -163,17 +177,44 @@ node and every client of one cluster must present the same secret.
   There is no flag that accepts a literal key, and there never will be:
   command lines leak through process listings and shell history. Give the
   provider file tight permissions, readable by the service user only. The
-  process zeroes the key bytes in memory when it is done with them.
+  loader does not currently verify owner/mode or reject symlinks. The CLI
+  loader zeroes its original allocation, but embedded mode keeps an arena copy
+  that is not explicitly wiped on close.
 ]
 
-Unauthenticated operation is confined to one machine. `serve` refuses to
+Unauthenticated operation is confined to loopback addresses. `serve` refuses to
 start, with exit code 4, when the listen address or any peer address is
 non-loopback and no secret is configured. Loopback means `127.0.0.0/8` or
 `::1`. Binding `0.0.0.0` counts as non-loopback even on a single-host
 cluster. This is a startup check, not a warning, and there is no flag to opt
-out of authentication on a network address. The rule protects safety: an
-unauthenticated peer that could vote or certify commits could silently
-diverge the cluster.
+out of authentication on a network address. Loopback is not an authentication
+boundary: any process or user sharing the host or network namespace may invoke
+the service, including administrative operations.
+
+#callout(title: [Current release restriction], tone: "danger")[
+  Do not treat protocol-v4 TCP as the production trust boundary. It has no
+  per-node mTLS identity, confidentiality, connection/thread admission bounds,
+  handshake or idle deadlines, or query work/result budgets. Zaxonlite does not
+  require separate operator credentials: the application is the one database
+  authority. Follow the release gates in
+  `docs/zaxonlite-security-remediation-plan.typ`.
+]
+
+The mTLS plan also defines eviction. A certificate alone will not authorize a
+peer: its cluster/node identity must remain in the active registry and outside
+a persisted node-ID/certificate-serial denylist. Reloading that denylist closes
+matching live sockets. The initial release has static membership, so removing
+a voter remains an operator-controlled offline replacement procedure; the book
+does not claim online consensus membership management.
+
+#callout(title: [Plaintext at rest], tone: "warning")[
+  The current database, captured payloads, journals, snapshots, and backups are
+  plaintext. Zaxonlite reads the WAL and applies page images through direct I/O
+  outside SQLite's VFS, so SQLCipher or an encrypted VFS is not presently a
+  drop-in option. Use platform full-disk or filesystem encryption when powered-
+  off media theft is in scope. An encrypted edge profile is future work and
+  needs its own direct-I/O, recovery, snapshot, backup, key, and rekey tests.
+]
 
 == Monitoring
 
