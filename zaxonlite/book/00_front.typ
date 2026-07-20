@@ -23,7 +23,7 @@
     columns: (1fr, auto),
     text(size: 7.5pt, weight: "bold", tracking: 1.25pt,
       fill: cover_green_line)[AN EMBEDDED REPLICATED DATABASE],
-    text(size: 7.5pt, tracking: 0.8pt, fill: cover_muted)[ZIG · 0.1.0],
+    text(size: 7.5pt, tracking: 0.8pt, fill: cover_muted)[ZIG · UNRELEASED],
   )
 
   v(15mm)
@@ -31,8 +31,8 @@
   v(5mm)
   text(size: 12pt, fill: cover_muted)[
     Replicated SQLite on Multi-Paxos: WAL frames as the unit of
-    consensus, a journal you can trust, and one library from a single
-    durable node to a three-voter cluster
+    consensus, a journal you can trust, and one implementation from an
+    embedded durable node to role-aware clustered deployments
   ]
   v(7mm)
   line(length: 28mm, stroke: 1.4pt + cover_peach_line)
@@ -74,18 +74,20 @@ and drives it. It is written for three readers at once:
 
 + *the application developer*, who wants a durable SQL store with
   exactly-once write retry and knows exactly what is guaranteed;
-+ *the operator*, who deploys `zaxon serve` alone or as three voters and
++ *the operator*, who deploys `zaxon serve` alone or with voters and learners and
   needs the file formats, the recovery story, and the failure playbook;
 + *the engineer*, who wants to see how WAL-frame replication, a
   journal-authoritative storage design, and an explicit-effects Paxos
   core compose into a small, testable system.
 
-Everything described here is implemented in the `zaxonlite/` package of
-the paxos-zig repository and exercised by its test suites: unit tests,
-single-process durability tests, a three-process cluster scenario with a
-SIGKILL failpoint, a CLI contract test, a C ABI smoke test, seeded
-property fuzzing, a soak run, and benchmarks. Where the text states a
-guarantee, the final chapter names the test that enforces it.
+The implemented vertical slice is exercised by unit tests, single-process
+durability tests, a three-process loopback cluster scenario with a SIGKILL
+failpoint, a CLI contract test, a C ABI smoke test, seeded property fuzzing, a
+soak run, role/gateway/adverse-network integration tests, and benchmarks.
+Protocol v4 adds mutually authenticated, sequenced HMAC framing and
+voter-certified learner commits. The 10,000-crash, 100-run, and 1-GiB stress
+targets are explicitly deferred; where this book states a current guarantee,
+the final chapter names its evidence.
 
 #callout(title: "Reading order", tone: "note")[
   Chapters 1–3 explain what Zaxonlite is and the one idea it is built on

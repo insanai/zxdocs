@@ -51,6 +51,12 @@ Key surface on `Node`:
     transport.],
 )
 
+For a transport-owning member, use `Embedded.open` with a runtime slice of
+`EmbeddedMember { id, address, role }`. The facade copies the registry, owns
+the listener, peer senders, tick loop, and client routing, and exposes `exec`,
+`query`, and generic JSON `call`. At most nine members may be voting roles;
+learners do not consume those slots.
+
 == The C ABI
 
 `libzaxonlite.a` plus `zaxonlite.h` export the embedded surface with
@@ -84,6 +90,12 @@ zaxonlite_integrity_check(db);
 zaxonlite_close(db);
 ```
 
+The matching cluster C surface is `zaxonlite_cluster_open` with
+`zaxonlite_cluster_options` and `zaxonlite_member` records. It owns transport
+and exposes `zaxonlite_cluster_exec`, `zaxonlite_cluster_query_json`, and
+`zaxonlite_cluster_call_json`. Member strings and the registry are copied
+before open returns.
+
 Each handle owns an internal event-loop instance; use a handle from one
 thread at a time (SQLite connection discipline). `zaxonlite_last_error`
 returns the most recent message for the handle.
@@ -94,6 +106,9 @@ Anything that can frame bytes over TCP can be a client: one `hello`
 frame (`kind = client`), then one JSON request per `rpc_request` frame
 and one JSON response per `rpc_response`. Requests are objects with an
 `op` — `exec`, `query`, `session`, `wait`, `status`, `leader`,
-`snapshot`, `integrity`, `expire-sessions`, `stop` — mirroring the CLI
+`members`, `snapshot`, `backup`, `integrity`, `expire-sessions`, `stop` — mirroring the CLI
 exactly; error responses carry `{"ok":false,"error":code,` and, for
 `not_leader`, the leader's endpoint for redirect-following.
+An `any` query may carry `freshness_ms`; a learner rejects it when leader
+contact exceeds the bound or its applied slot trails the latest reported
+decision.

@@ -14,9 +14,9 @@ layout serve two deployments:
 + *one durable node*: a single process, no network, every write fsynced
   through the journal — an upgrade path for any application that outgrew
   plain SQLite's durability story;
-+ *three voters over TCP*: three `zaxon serve` processes elect a leader,
-  replicate WAL frames, survive the loss of any one machine, and catch a
-  restarted or reimaged member back up automatically.
++ *role-aware clusters over TCP*: one to nine configured voters run Paxos;
+  witnesses vote without campaigning, standbys/read replicas learn chosen
+  entries without changing quorum, and stateless gateways route clients.
 
 The companion CLI is `zaxon`. It embeds a node directly (`--data`) or
 speaks the client RPC protocol to running servers (`--connect`),
@@ -44,7 +44,7 @@ that produced them.
 == User-visible guarantees
 
 + *Acknowledged means durable and decided.* A write is acknowledged only
-  after its descriptor is committed by the (one- or three-member) quorum,
+  after its descriptor is committed by the configured voter quorum,
   its journal records are fsynced, and the slot has been applied locally.
 + *Exactly-once retry.* A client session executes sequence $n$ at most
   once. Retrying the last sequence returns the recorded result — across
@@ -61,10 +61,22 @@ that produced them.
   deleting it (or restoring a stale copy) converges back to the decided
   state from snapshot plus journal suffix.
 
+== Node types and scaling
+
+`data-voter` proposes, votes, materializes SQLite, and serves SQL. `witness`
+votes and stores durable payloads but cannot campaign or serve SQL. `standby`
+and `read-replica` are non-voting chosen-log learners with SQLite copies; only
+the standby is marked promotion-eligible. `gateway` is a byte-transparent
+router with no Paxos or SQLite state.
+
+For voter set $V$, majority $q=floor(|V|/2)+1$. Learners are absent from $V$,
+so adding them does not change write quorum. The implementation profile bounds
+voters at nine but allocates the total registry at runtime. That is a scaling
+boundary, not a promise that millions of all-to-all sockets are practical.
+
 == Explicit non-goals
 
 Zaxonlite does not do multi-master writes, cross-database transactions,
-SQL-visible replication controls, or dynamic membership beyond the
-snapshot-sealed epoch mechanism. It bounds one epoch at 256 slots and one
-cluster at three voters by compile-time configuration; both are policy
-choices of the `ReplicatedLog` instantiation, not architectural limits.
+SQL-visible replication controls, or automatic voter replacement. It bounds
+one epoch at 256 slots and one consensus group at nine voters; both are policy
+choices of the `ReplicatedLog` instantiation, not Paxos theorems.

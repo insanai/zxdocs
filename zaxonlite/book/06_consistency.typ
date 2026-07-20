@@ -112,6 +112,8 @@ it is outstanding.
     picks a complete generation — old or new — never `tmp-*`.],
 )
 
-Every row is exercised: by the failpoint hooks in the write path, the
-torn-tail and stale-image single-process tests, the fuzz harness's
-random crash injection, and the cluster scenario's leader kill.
+The hooks and harnesses exist, but the current automated suite does not yet
+exercise every row in both one-node and three-node roles. It covers torn tails,
+stale/corrupt image replacement, both snapshot transition prefixes, and the
+cluster leader kill after choice/before reply. Completing the remaining rows
+and required schedule counts is a release blocker in the product plan.

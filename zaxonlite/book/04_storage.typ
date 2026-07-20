@@ -23,13 +23,17 @@ every open before rebuild.
 
 == Ordering rules
 
-The host enforces four write-ordering invariants, and the crash tests
+The host enforces five write-ordering invariants, and the crash tests
 exist to catch any violation:
 
-+ payload fsync *before* the descriptor is proposed (payload-before-vote);
++ payload fsync and an explicit `payload_stored` ACK *before* a value-bearing
+  promise, accept, or commit is released to that peer;
 + journal append + fsync *before* any dependent message leaves the
   process (sync-before-send) — structurally guaranteed because
   `consumeEffects` journals before it fills the outbox;
++ parent-directory sync after every authoritative create/link/rename, so
+  journal names, payload objects, `identity`, `CURRENT`, and snapshot
+  generations survive with their synced contents;
 + commit *before* apply, applied contiguously in slot order;
 + session-row update inside the captured transaction *before*
   acknowledgement (acknowledge-after-session-update).
@@ -39,12 +43,14 @@ exist to catch any violation:
 `Node.open` performs, in order: lock the directory; load or create
 `identity`; open the payload store; open the epoch journal and replay it
 into `DurableState` (truncating a torn final record; rejecting interior
-corruption); restore the protocol node; *(one-member only)* campaign;
-rebuild the materialized image — delete `-wal`/`-shm`, copy the snapshot
-image if `current.db` is missing, then chain-validate and offline-apply
-every committed batch; complete a pending epoch rollover if a decided
-stop sign was replayed; finally validate that the image's recorded
-`batch_id` equals the last committed descriptor's.
+corruption); restore the protocol node; validate the installed snapshot's
+identity, epoch relation, manifest fields, and image digest; resume an
+interrupted snapshot install if required; *(one-member only)* campaign; rebuild
+the materialized image by always deleting `current.db`/`-wal`/`-shm`, copying
+the snapshot base, then chain-validating and offline-applying every committed
+batch; complete a pending epoch rollover if a decided stop sign was replayed;
+finally validate that the image's recorded `batch_id` equals the last committed
+descriptor's.
 
 #callout(title: "Torn tail versus interior corruption", tone: "warning")[
   A record that fails to parse *and* touches end-of-file is a torn

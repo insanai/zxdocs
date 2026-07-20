@@ -101,11 +101,12 @@
     #text(weight: "bold", fill: green)[Product promise]
     #linebreak()
     Link one library, open one database, and obtain a durable single-node
-    SQLite service or a highly available three-node cluster without operating
-    a separate database daemon.
+    SQLite service or a highly available cluster with voters, witnesses,
+    standbys, read replicas, and gateways, without operating a separate
+    database daemon.
   ]
   #v(34mm)
-  #text(size: 9pt, fill: gray)[Working draft · 19 July 2026]
+  #text(size: 9pt, fill: gray)[Implementation specification · 20 July 2026]
 ]
 
 #pagebreak()
@@ -116,8 +117,8 @@
 Build an embeddable Zig library named *Zaxonlite*, that links
 SQLite into the application process and uses this repository's
 `paxos.ReplicatedLog` as its only consensus engine. It will expose a deliberately
-small API for opening a node, executing SQL, querying, joining a three-node
-cluster, backing up, and inspecting health. A companion `zaxon` CLI will
+small API for opening a node, executing SQL, querying, joining a cluster,
+backing up, and inspecting health. A companion `zaxon` CLI will
 provide an interactive SQL shell, a standalone host for applications that do
 not embed the library directly, and operational commands over the same client
 and administration protocols.
@@ -147,9 +148,10 @@ files jointly authoritative and gives recovery one explicit order.
 + *Embedded first.* SQLite, the Paxos node, storage, and transport live in the
   caller's process. A standalone server may be a thin example, never a required
   deployment component.
-+ *One API for one or three nodes.* A one-node membership uses the same journal,
-  recovery, transaction, and snapshot code as a cluster; transport becomes a
-  local no-op.
++ *One API for every supported topology.* A one-node membership uses the same
+  journal, recovery, transaction, and snapshot code as a cluster. The voter
+  set is deliberately small; non-voting replicas and gateways are runtime
+  registry entries and never enlarge a Paxos quorum.
 + *Durability before evidence.* Persist every `Effects.writesSlice()` in order,
   sync it, call `confirmWritesDurable()`, and only then send
   `messagesSlice()` or apply `committedSlice()`.
@@ -157,8 +159,8 @@ files jointly authoritative and gives recovery one explicit order.
   SQL text.
 + *Safe defaults.* A successful write is durable on a quorum. Reads are
   linearizable by default. Stale local reads require an explicit option.
-+ *Small operational surface.* Static membership in the first usable release;
-  one data directory, one endpoint, and a compact health API.
++ *Small operational surface.* An explicit bootstrap registry and voter set,
+  one data directory per storage node, one endpoint, and a compact health API.
 + *Evidence over slogans.* Safety, recovery, and performance claims each have a
   named test or benchmark and an exit threshold.
 
@@ -172,23 +174,32 @@ The first production-shaped release includes:
 + a `zaxon` CLI for serving a node, interactive SQL, scripted execution,
   status, backup, snapshots, and integrity checks;
 + SQLite compiled and linked into the same process;
-+ a one-node durable mode and a three-voter TCP cluster;
++ a one-node durable mode and TCP clusters with one to nine configured voters
+  plus runtime-sized non-voting replicas;
++ explicit `data-voter`, `witness`, `standby`, `read-replica`, and `gateway`
+  roles with capability validation and a role-pinned data-directory identity;
++ a transport-owning Zig facade and matching C facade for embedded clusters;
 + leader discovery and transparent client redirection/retry;
 + implicit and explicit SQLite transactions with one writer at a time;
 + exact transaction-effect replication using captured WAL frames;
++ a maximum encoded transaction payload of 64 MiB minus 73 bytes of hash and
+  authenticated wire framing in protocol v4; larger transactions fail without
+  entering Paxos;
 + linearizable leader reads using a Paxos quorum read fence, with a committed
   barrier as the bring-up/fallback path, and opt-in bounded-stale local reads;
 + idempotent write retry using bounded, replicated client sessions and monotonic
   request sequence numbers;
 + crash-safe journal recovery, snapshots, catch-up, and checksummed files;
-+ TLS or an authenticated transport before any non-loopback production use;
++ authenticated, integrity-protected transport before any non-loopback use,
+  plus an encrypted tunnel when SQL confidentiality is required;
 + health, leader, applied-slot, snapshot, and integrity inspection APIs.
 
 == Explicit non-goals for the first release
 
 + multi-writer execution on different leaders;
 + geo-distributed latency optimization;
-+ arbitrary cluster sizes or automatic membership replacement;
++ more than nine voting acceptors in one consensus group, automatic voter
+  replacement, or claiming that millions of all-to-all voters are practical;
 + follower writes without leader forwarding;
 + distributed transactions across multiple database files;
 + compatibility with every SQLite VFS or virtual-table extension;
@@ -221,6 +232,32 @@ The first production-shaped release includes:
     leader, resolves any chosen-but-not-yet-committed value, and rebuilds the
     same committed database state.],
 )
+
+== Node roles and scaling law
+
+#table(
+  columns: (auto, auto, auto, auto, 1fr),
+  table.header([*Type*], [*Votes*], [*Campaigns*], [*SQLite reads*], [*Purpose*]),
+  [`data-voter`], [yes], [yes], [yes], [Normal acceptor/proposer/learner and
+    materialized database.],
+  [`witness`], [yes], [no], [no], [Durable promise/vote and payload copy that
+    reduces failure-domain cost without becoming a SQL leader.],
+  [`standby`], [no], [no], [stale local], [Full chosen-log and SQLite copy,
+    eligible for a later controlled promotion.],
+  [`read-replica`], [no], [no], [stale local], [Read scaling without changing
+    write quorum or failure tolerance.],
+  [`gateway`], [no], [no], [routes only], [Stateless end-to-end TCP routing;
+    owns neither Paxos nor SQLite state.],
+)
+
+For voter set $V$, a majority is $q = floor(|V|/2) + 1$ and tolerates
+$f = floor((|V|-1)/2)$ voter failures. Learners are absent from $V$, so adding
+one million learners would not change $q$ mathematically. It would still be an
+engineering error to create one million all-to-all connections or threads;
+actual scale is bounded by transport, storage, and placement resources and by
+sharding independent database groups. The implementation profile supports at
+most nine voters, matching the practical 3/5/7/9 operational range, while the
+total registry is allocator-backed rather than a seven-node array.
 
 = Architecture
 
@@ -261,8 +298,9 @@ the leader or returns a structured leader hint according to configuration.
 #table(
   columns: (1.1fr, 1.7fr, 1.25fr),
   table.header([*Component*], [*Responsibility*], [*Does not own*]),
-  [`sqlite`], [Prepare/step/finalize statements; transaction isolation; produce
-    and consume WAL frames through a custom VFS/WAL integration.], [Consensus,
+  [`sqlite`], [Prepare/step/finalize statements; transaction isolation; capture
+    committed WAL frames through the supported WAL hook plus validated direct
+    WAL reads, and consume them through offline page apply.], [Consensus,
     networking, cluster durability.],
   [`state_machine`], [Turn one committed frame batch into one atomic SQLite
     state transition; maintain `applied_slot`, chain identity, and bounded
@@ -314,8 +352,9 @@ const Command = union(enum) {
 
 The payload contains a versioned header, per-transaction session/sequence IDs
 and bounded results, transaction boundary markers, and the associated WAL
-frames. It also contains enough metadata to validate page size, database
-identity, the parent chain, and a whole-payload checksum. A one-transaction
+frames. It contains page size, database identity, and count metadata. The
+fixed descriptor—not the payload—carries the parent chain and the SHA-256
+content address that verifies the whole payload. A one-transaction
 write is represented as a batch of one. Values are content-addressed. An
 acceptor must not pass
 an incoming `accept` descriptor to `ReplicatedLog.step` until the referenced
@@ -443,11 +482,13 @@ Concurrent reads that were registered before the fence completes may share the
 round; later reads need a new fence unless a separately proved lease is active.
 
 Current `heartbeat` handling in `src/protocol.zig` cannot implement this: it has
-no nonce and no affirmative heartbeat ACK. Add a generic bounded
-`beginReadFence`/ACK capability with distinct-member counting and standalone
-protocol tests. Reusing a periodic heartbeat response or a wall-clock “recent
-quorum” is unsafe. Followers may serve local snapshot reads only when the caller
-requests stale consistency and receives `applied_slot` in the response.
+no nonce and no affirmative heartbeat ACK. Zaxonlite therefore implements a
+bounded host-level challenge/ACK frame keyed by a fresh fence ID, includes the
+captured slot, validates exact ballot equality, and counts distinct configured
+members. Reusing a periodic heartbeat response or a wall-clock “recent quorum”
+is unsafe. A generic core helper remains an optional API consolidation, not a
+safety dependency. Followers may serve local snapshot reads only when the
+caller requests stale consistency and receives `applied_slot` in the response.
 
 == SQLite integration decision
 
@@ -836,8 +877,8 @@ an incompatible chain.
     quorums.], [Usually more replication work and no extra write execution
     capacity.],
   [Read replicas], [More stale/local read capacity and geographic copies.],
-    [Does not increase single-database write capacity; a non-voting replica mode
-    is new product/library work.],
+    [Does not increase single-database write capacity; voter-certified learners
+    implement this without quorum inflation.],
   [Many shards], [Independent writers and failure/size domains.], [Can scale
     aggregate writes when keys route cleanly; no cross-shard transaction in the
     first design.],
@@ -851,14 +892,15 @@ under a separate clock-and-grant proof.
 
 == Horizontal scale roadmap
 
-1. Make one three-voter database correct, bounded, and observable.
+1. Completed: make one runtime-role cluster correct, bounded, and observable,
+   including one through nine voters and non-voting learners.
 2. Add multiple named databases in one process, each with an independent
    `ReplicatedLog`, SQLite state machine, directories, limits, and metrics.
 3. Introduce a deterministic shard router from database/key to Paxos group;
    spread group leadership across physical nodes.
 4. Add shard placement and movement using snapshot plus suffix transfer.
-5. Add optional non-voting read replicas if the consensus core or host gains a
-   clearly separated learner role.
+5. Completed: add bounded non-voting learners, role-aware standbys and read
+   replicas, and stateless gateways.
 6. Keep cross-shard transactions out of scope until there is a separate atomic
    commit design; do not imply that Paxos per shard provides them.
 
@@ -908,8 +950,9 @@ deterministic, bounded, I/O-free package.
     every referenced payload before `step`; later add staged recovery so only
     highest-ballot winners must be fetched before activation.],
   [Current heartbeat], [Maintains leader hints and catch-up but sends no
-    affirmative nonce ACK.], [Add a bounded Paxos read-fence challenge/ACK API;
-    periodic heartbeat receipt is not a linearizable read proof.],
+    affirmative nonce ACK.], [The product host supplies a bounded fresh-ID
+    challenge/ACK with distinct-member counting; periodic heartbeat receipt is
+    not a linearizable read proof. A core wrapper is optional.],
   [`requestCatchUp`], [Repair a lagging node within a retained epoch.], [Payload
     transfer, snapshot fallback, rate limits, applied-state catch-up.],
   [`checkpoint`, stop signs, `initFromStop`], [Seal an epoch after a named SQLite
@@ -1328,19 +1371,20 @@ leader election restriction.
 
 `specs/Paxos.tla` models durable `promised`, `accepted`, and `committed` state
 plus a monotonic message set. Its action mapping is Prepare/Promise/Accept/Vote/
-Decide/Learn to the corresponding Zig transitions. On 19 July 2026, the checked
-configuration was independently rerun with TLC 2.14:
+Decide/Learn to the corresponding Zig transitions. On 20 July 2026, the checked
+configuration was independently rerun with TLC 2.14. The exact state counts for
+the upgraded voter-plus-learner fixture are recorded in `specs/README.md`:
 
-+ 21,974,932 states generated;
-+ 1,150,419 distinct states;
-+ complete breadth-first search to depth 18;
++ 85,515,700 states generated and 3,986,355 distinct states;
++ complete breadth-first search to depth 20 with zero queued states;
 + no violation of Agreement, CommitUniqueness, PromisedDominatesVotes, or
-  Validity.
+  Validity;
++ no learner emitted a promise or accepted vote.
 
-The checked configuration has three nodes, one slot, one client value plus
-no-op, one round owned by each node, and a fourteen-message state constraint.
-This is bounded exhaustive evidence, not an unbounded theorem and not a
-mechanical refinement proof of the Zig program.
+The checked configuration has three voters, two learners, one slot, one client
+value plus no-op, and one round owned by each voter. This is bounded exhaustive
+evidence, not an unbounded theorem and not a mechanical refinement proof of the
+Zig program.
 
 #table(
   columns: (1.3fr, 1.05fr, 1.65fr),
@@ -1378,6 +1422,48 @@ mechanical refinement proof of the Zig program.
   accurate to call the complete Zaxonlite product formally verified.
 ], fill: amber-light, stroke: amber)
 
+= rqlite incorporation review
+
+rqlite is a useful product benchmark, not a consensus template: it replicates
+SQLite through Raft, while Zaxonlite must preserve Paxos ballots, quorum
+intersection, and Phase-1 recovery. The following review uses rqlite's current
+official feature, clustering, and read-only-node documentation.
+
+#table(
+  columns: (1.15fr, 1.35fr, 1.5fr),
+  table.header([*rqlite capability*], [*Zaxonlite decision*], [*Evidence / limit*]),
+  [Voting HA cluster], [Implemented with Multi-Paxos data voters and optional
+    acceptor-only witnesses.], [Three-process election, loss, catch-up, total
+    restart, and leader-death-before-reply tests.],
+  [Read-only non-voter], [Implemented as voter-certified `standby` and
+    `read-replica` learners.], [Local `any` reads, optional `freshness_ms`,
+    lag rejection, and a real six-node role test.],
+  [Any-node client access], [Implemented by leader hints, transparent client
+    redirection, and stateless gateways.], [Learners remember the voter that
+    certified their latest chosen entry; no learner becomes a proposer.],
+  [Nodes/discovery API], [The `members` RPC exposes every configured address,
+    role, voter capability, self, and leader.], [Bootstrap remains explicit and
+    static; DNS/Consul/etcd discovery and automatic join are roadmap work.],
+  [Dynamic join/removal], [Not copied into the first release.], [Safe voter
+    replacement requires stop-sign epoch transition, learner catch-up proof,
+    and operational fencing; timeout-based voter reaping would be unsafe.],
+  [Hot backup], [Implemented as authenticated, digest-verified streaming to an
+    atomically installed plain SQLite file.], [Cloud scheduling and restoring an
+    external SQLite image into a live cluster remain separate product work.],
+  [TLS and authorization], [PSK mutual authentication, replay protection, and
+    HMAC integrity are implemented.], [Traffic is not encrypted and there is no
+    per-user authorization; use an encrypted tunnel in this release.],
+  [HTTP, CDC, cloud backup], [Not required for the embedded first release.],
+    [The Zig/C APIs and compact TCP JSON protocol remain the supported surface.],
+)
+
+This incorporates the correctness-relevant lessons—non-voters, bounded stale
+reads, transparent routing, observable roles, and online backup—without
+wholesale adoption of Raft's leader/log rules. It also keeps the operational
+limit honest: rqlite itself recommends small odd voting groups because large
+consensus groups add coordination cost; Zaxonlite similarly bounds voters while
+allowing runtime-sized non-voters.
+
 = Better-than-dqlite feature targets
 
 The baseline inspiration is dqlite: embedded SQLite, a network client/server
@@ -1410,7 +1496,7 @@ The product should differentiate only where tests establish a real property.
 )
 
 #callout([Comparison boundary], [
-  Do not advertise a dqlite advantage until the benchmark uses equivalent
+  Do not advertise a dqlite or rqlite advantage until the benchmark uses equivalent
   durability, transaction sizes, concurrency, network topology, SQLite options,
   hardware, warm-up, and failure behavior. Report p50/p95/p99 commit latency
   beside throughput and fsync counts; a throughput win that hides unbounded
@@ -1419,70 +1505,93 @@ The product should differentiate only where tests establish a real property.
 
 = Delivery plan
 
-== Implementation status (19 July 2026, second pass)
+== Implementation status (20 July 2026, first-release audit)
 
-Every phase milestone is implemented in `zaxonlite/` and green under the
-full build matrix (`test`, `test-single`, `test-cluster`, `test-cli`,
-`test-cabi`, `fuzz`, `soak`, `benchmark`, and `book-zaxonlite` at the
-repository root).
+#callout([Status: first-release scope implemented], [
+  The one-node product, runtime-role cluster, transport-owning Zig and C
+  facades, authenticated process host, CLI, recovery paths, and deterministic
+  adverse-network schedules are implemented and tested. The explicitly
+  deferred 10,000 crash schedules, 100 consecutive cluster runs, 1 GiB
+  recovery, and publication of Linux-only dqlite numbers remain post-release
+  stress work. A local installed-rqlite comparison is recorded separately and
+  is not silently generalized beyond its host.
+], fill: amber-light, stroke: amber)
 
-Phase 0 + Phase 1 (as before): the WAL capture/apply spike with the
-byte-identical rebuild oracle; descriptor codec, cumulative chain hash,
-framed journal with torn-tail truncation and interior-corruption
-rejection; the content-addressed payload store; the durable one-member
-node with the full ordering contract; restart/rebuild recovery;
-replicated bounded sessions; crash-resumable snapshot epochs with GC;
-the embedded `zaxon` CLI.
+Implemented and covered by the current automated suites:
 
-Phase 2 — real three-process cluster:
++ WAL-hook capture and offline page apply, including DDL, DML, triggers, BLOBs,
+  rollback/savepoint, and nondeterministic SQL, with a byte-identical rebuild
+  oracle;
++ fixed descriptors, cumulative chain validation, a checksummed/fsynced Paxos
+  journal, verified content-addressed payloads, and a 64 MiB-minus-73-byte
+  maximum payload policy;
++ journal-authoritative recovery that always discards the working image,
+  restores a digest-verified snapshot, replays the suffix, and resumes both
+  interrupted checkpoint rollover and interrupted snapshot installation;
++ bounded per-peer payload gates with an explicit durable `payload_stored` ACK;
+  value-bearing Phase-1 `promise` as well as `accept` and `commit` are held
+  before `ReplicatedLog.step`, closing the same-transition recovery hazard;
++ one writer, dependency-before-proposal, bounded replicated retry sessions,
+  follower offline apply, leader-change resynchronization, and fatal stop on
+  journal/payload durability failure;
++ a real authenticated three-process test covering wrong-secret rejection,
+  election, writes through every
+  endpoint, one stopped voter, catch-up, leader death before reply,
+  exactly-once retry, snapshot transfer/rollover, image deletion, and total
+  restart;
++ default-linearizable reads using fresh host-level fence IDs, captured slots,
+  exact-ballot replies, and distinct-member quorum counting; explicit `leader`
+  and `any` modes remain available;
++ mutually authenticated PSK challenge-response, connection-unique session
+  keys, monotonically sequenced HMAC protection of every post-handshake frame,
+  hard downgrade rejection, and unauthenticated loopback-only fallback;
++ prepared bindings and bounded explicit multi-call transaction builders in
+  both Zig and C, plus restart/integrity and compiled C smoke coverage;
++ a transport-owning embedded facade and matching C API; runtime role registry;
+  three data-voter, witness, standby, read-replica, and stateless gateway
+  implementations; voter-certified learner replication; and process-safe
+  connection-handler shutdown;
++ digest-verified remote streamed backup, JSON/environment/CLI configuration
+  precedence, provider-file secrets, static-membership inspection, an offline
+  recovery command, and a standalone format/upgrade contract;
++ a five-boundary real one-process `_exit` crash matrix in addition to the
+  leader-before-reply cluster crash;
++ a real adverse TCP schedule covering deterministic frame loss, semantic
+  duplication, pair reordering, seven-byte partial-frame writes, and delayed
+  journal sync, plus a journal-only 1 MiB payload recovery test;
++ an exact pinned three-node durable-state comparison harness for dqlite
+  1.18.7/go-dqlite 3.0.4 with equal payloads, warmup, verification, and JSON
+  output, using dqlite's supported default materialization rather than its
+  removed disk-mode option (dqlite itself requires Linux);
++ a three-voter rqlite comparison harness using the system `rqlited` and
+  `rqlite` tools, equal one-row autocommits, no queued writes, CLI membership
+  evidence, strong exact-payload verification, percentiles, and JSON output;
+  the recorded v10.2.7 Darwin-arm64 run observed 474.6 Zaxonlite writes/s
+  versus 45.0 rqlite writes/s (p50 1.69 ms versus 21.96 ms), explicitly a
+  host-specific end-to-end observation rather than a Paxos-versus-Raft theorem;
++ a deterministic four-client order-processing comparison with 70%
+  linearizable reads, 30% idempotent writes, abrupt follower and leader loss,
+  per-node catch-up, total-cluster restart, accounting/inventory invariants and
+  integrity checks; two local runs retained correct identical state throughout,
+  while the book reports the observed throughput and recovery-time ranges;
++ CLI/RPC operations with Elm-style boundary/explanation/`Hint:` diagnostics,
+  snapshots, integrity inspection, the C ABI, seeded fuzz/soak/benchmark
+  harnesses, and the Zaxonlite book build.
 
-+ `zaxon serve` hosts a node behind TCP: peer handshake with version,
-  database-identity, and configuration checks; framed wire protocol;
-  per-peer senders with bounded queues, reconnect, and protocol repair;
-+ payload-before-vote gating: payloads are pushed ahead of accepts on
-  the same ordered stream, receivers hold and re-request when bytes are
-  missing, and never step an accept or commit without durable payload
-  bytes (bounded hold queues; retransmission recovers drops);
-+ followers apply committed payloads offline; leadership changes discard
-  speculative WAL frames and resync the image from the decided log;
-+ cross-epoch catch-up via snapshot transfer (manifest + chunked image,
-  digest-verified install), plus in-epoch catch-up through the core
-  protocol; epoch fencing on every envelope frame;
-+ `serve`, `status`, `leader`, and `wait` operate over supported client
-  RPC — the integration controller uses no test-only back door;
-+ `zig build test-cluster` runs the mandatory scenario (elections,
-  writes through all endpoints, follower stop/catch-up, digest
-  comparison, leader SIGKILL failpoint with exactly-once session retry,
-  rollover with a stopped member, image rebuild, total restart) with
-  `-Dcluster-runs=N` for CI stress.
+Deferred stress and portability work, not blockers for this first release:
 
-Phase 3 — consistency and client behavior: client RPC and CLI client
-mode with leader-redirect following; read levels `any`/`leader`/
-`linearizable`; the quorum read fence (host-level ballot-equality
-probes; no log append, no disk sync per read) with the committed
-`read_barrier` retained as the reference path; session expiry over a
-replicated activity window; stable error semantics and exit codes under
-`test-cli`.
++ 10,000 seeded crash schedules and 100 consecutive cluster runs, explicitly
+  deferred by the release owner;
++ a 1 GiB recovery gate (the current release gate is 1 MiB), long-duration
+  overload measurements, and publication of hardware-specific dqlite numbers;
++ Windows remains unsupported. The explicit first-release matrix in
+  `docs/zaxonlite-format.typ` is POSIX-only because parent-directory sync is
+  required and is not silently weakened.
 
-Phase 4 — snapshots and operations: online cluster checkpoints decided
-as stop signs, follower generations built deterministically from the
-offline image and digest-verified, snapshot transfer for lagging
-members, `backup`, `integrity-check`, `contentHash`, and the
-status/monitoring surface.
-
-Phase 5 — performance and release: seeded property fuzzing (decoders,
-journal damage, end-to-end random SQL with crash injection and a
-rebuild-convergence oracle), a soak harness with live invariants,
-write/read/recovery benchmarks (ReleaseFast), the C ABI
-(`libzaxonlite.a` + `include/zaxonlite.h` + smoke test), and the
-Zaxonlite book (`zig build book-zaxonlite`).
-
-Remaining engineering headroom (tracked, not blocking): pipelined and
-batched writes under one chosen value, group fsync, packet-level fault
-schedules (drop/duplicate/reorder) beyond process kills and restarts,
-the 10,000-schedule crash-matrix gate and 100-run CI stress as release
-gates, dqlite comparison runs, `serve` configuration files, and dynamic
-membership beyond the fixed three-voter configuration.
+Pipelined dependent WAL writes, group sync, automatic runtime voter
+reconfiguration, discovery-provider integrations, and sharding remain roadmap
+work. Static configured voters are not mislabeled dynamic; runtime-sized
+learners and gateways provide read/routing scale without quorum inflation.
 
 == Phase 0 — prove the risky boundary
 
@@ -1631,7 +1740,7 @@ states plus recent logs when it fails.
     old complete or new complete snapshot, never the temporary one.],
 )
 
-Run the matrix in one-node and three-node modes. In cluster mode, vary whether
+Run the matrix in one-node and three-voter modes. In cluster mode, vary whether
 the killed process is leader, quorum follower, or lagging follower. Add packet
 drop, duplicate, reorder, reconnect, partial frame, and slow-disk schedules.
 
@@ -1646,8 +1755,9 @@ schedules:
 + a permitted session sequence affects SQLite at most once;
 + duplicate, gap, old, and expired session sequences never execute SQL outside
   the one permitted next-sequence transition;
-+ an `accept` delivered before `payload_stored` is rejected without increasing
-  a queue beyond its configured object/byte bounds;
++ a value-bearing envelope delivered before `payload_stored` is never stepped;
+  it is retained only within the configured object/byte bounds (or dropped for
+  retransmission), and Phase-1 promises obey the same rule;
 + an accepted payload is never garbage-collected because of age or ballot
   change alone, and becomes collectible only after durable reference removal;
 + a quorum read fence never completes for an old ballot after a higher-ballot
@@ -1797,7 +1907,13 @@ src/                         # existing Paxos library remains independent
 zaxonlite/
   build.zig                  # package build: library, zaxon CLI, tests
   build.zig.zon              # paxos (path) + sqlite amalgamation (pinned)
-  src/root.zig               # public embedded API
+  src/root.zig               # public embedded API and exports
+  src/embedded.zig           # transport-owning runtime-role facade
+  src/capi.zig               # local and transport-owning C facades
+  src/server.zig             # authenticated peer/client transport host
+  src/client.zig             # redirecting RPC client and streamed backup
+  src/gateway.zig            # stateless client stream router
+  src/roles.zig              # node-role capability matrix
   src/node.zig               # host: lifecycle, write path, recovery,
                              #   sessions, snapshots, epoch rollover, GC
   src/main.zig               # zaxon CLI: shell, exec, query, status, ops
@@ -1807,16 +1923,20 @@ zaxonlite/
   src/types.zig              # the shared ReplicatedLog instantiation
   src/journal.zig            # framed, checksummed protocol journal
   src/payload_store.zig      # content-addressed immutable payloads
-  src/integration_test.zig   # single-process durability suite
+  src/durability.zig         # parent-directory sync after link/rename
+  src/integration_test.zig   # single-process durability/recovery suite
+  src/cluster_test.zig       # three-process failover and catch-up suite
+  src/role_cluster_test.zig  # voter, witness, standby, replica suite
+  src/fault_cluster_test.zig # adverse transport/storage schedules
+  benchmarks/                # reproducible rqlite and pinned dqlite comparisons
 docs/zaxonlite-product-plan.typ
-docs/zaxonlite-format.typ    # planned: frozen on-disk/wire format spec
+docs/zaxonlite-format.typ    # frozen on-disk/wire format contract
 ```
 
-Modules planned for the cluster milestones keep their reserved names:
-`transport.zig`, `client.zig`, `admin_protocol.zig`, and
-`integration/three_process_test.zig` with its spawned fixture. The plan's
-`state_machine.zig`/`snapshot.zig` responsibilities currently live inside
-`node.zig` and split out when the follower apply path lands.
+The state-machine and snapshot lifecycle remain together in `node.zig` because
+they share the image-rebuild invariants. Wire encoding, transport authentication,
+durability primitives, payload storage, prepared bindings, and configuration
+loading are separate narrow modules.
 
 Keep the consensus package free of SQLite, filesystem, sockets, threads, and
 allocators. Product-specific host code consumes its effects. If a core change is
@@ -1826,7 +1946,8 @@ protocol tests.
 = Definition of done
 
 The product is ready for a first stable release when an application can link one
-library, use the same API in one-node or three-node mode, execute ordinary
+library, use the same API in one-node or runtime-role cluster mode, execute
+ordinary
 SQLite transactions, lose any one voter, and recover every acknowledged write
 after restart. It can also run the reference process, SQL shell, and operations
 commands from one documented CLI. The repository contains a reproducible real three-process test,
@@ -1853,6 +1974,16 @@ read scale, and independent-shard write scale.
   #link("https://discourse.dqlite.io/t/replication/28")[official replication notes].
 + dqlite consistency model and its documented stale-read behavior:
   #link("https://discourse.dqlite.io/t/consistency-model/29")[official consistency notes].
++ rqlite feature overview:
+  #link("https://rqlite.io/docs/features/")[official features].
++ rqlite read-only/non-voting nodes and freshness controls:
+  #link("https://rqlite.io/docs/clustering/read-only-nodes/")[official read-only node guide].
++ rqlite cluster sizing and failed-node operations:
+  #link("https://rqlite.io/docs/clustering/general-guidelines/")[official clustering guidelines].
++ rqlite automatic discovery and bootstrap:
+  #link("https://rqlite.io/docs/clustering/automatic-clustering/")[official automatic clustering guide].
++ rqlite linearizable, strong, and local read semantics:
+  #link("https://rqlite.io/docs/api/read-consistency/")[official read-consistency guide].
 + SQLite VFS interface: #link("https://www.sqlite.org/c3ref/vfs.html")[SQLite VFS reference].
 + SQLite WAL format and concurrency:
   #link("https://www.sqlite.org/wal.html")[SQLite WAL documentation].

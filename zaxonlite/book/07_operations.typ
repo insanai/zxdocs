@@ -20,11 +20,14 @@ endpoint:
 
 ```sh
 zaxon serve --data /d/n1 --node 1 --listen 10.0.0.1:9901 \
-    --peer 2@10.0.0.2:9901 --peer 3@10.0.0.3:9901
+    --peer 2@10.0.0.2:9901/data-voter \
+    --peer 3@10.0.0.3:9901/data-voter
 zaxon serve --data /d/n2 --node 2 --listen 10.0.0.2:9901 \
-    --peer 1@10.0.0.1:9901 --peer 3@10.0.0.3:9901
+    --peer 1@10.0.0.1:9901/data-voter \
+    --peer 3@10.0.0.3:9901/data-voter
 zaxon serve --data /d/n3 --node 3 --listen 10.0.0.3:9901 \
-    --peer 1@10.0.0.1:9901 --peer 2@10.0.0.2:9901
+    --peer 1@10.0.0.1:9901/data-voter \
+    --peer 2@10.0.0.2:9901/data-voter
 ```
 
 The shared database identity derives from the member ids (add
@@ -36,6 +39,15 @@ zaxon wait --connect 10.0.0.1:9901 --leader --timeout-ms 10000
 zaxon leader --connect 10.0.0.1:9901
 ```
 
+== Non-voting and routing nodes
+
+Every storage node receives the same bootstrap registry. A read replica uses
+`--role read-replica`, and each voter lists it as
+`--peer 4@10.0.0.4:9901/read-replica`. Use `standby` for a
+promotion-eligible copy, `witness` for a voting non-SQL failure domain, and
+`gateway` for a stateless client endpoint. An existing data directory pins its
+role; changing the CLI role without a controlled migration is rejected.
+
 == The command surface
 
 #table(
@@ -45,11 +57,12 @@ zaxon leader --connect 10.0.0.1:9901
     route to query, everything else to exec.],
   [`exec`], [One replicated write transaction; `--session`/`--sequence`
     makes it idempotent.],
-  [`query`], [Read-only; `--level any|leader|linearizable`; `--json`.],
+  [`query`], [Read-only; `--level any|leader|linearizable`; defaults to
+    `linearizable`; local learners accept `--freshness-ms`; `--json`.],
   [`session`], [Open a replicated retry session.],
   [`expire-sessions`], [Delete sessions idle beyond `--retain` recent
     session writes.],
-  [`status`], [Node id, role, leader, ballot, decided/applied slots,
+  [`status`], [Node id, node type, Paxos role, leader, ballot, decided/applied slots,
     configuration, chain, snapshot.],
   [`wait`], [Block until `--applied <slot>` and/or `--leader`.],
   [`snapshot`], [Materialize, seal the epoch, roll to the next one.],
@@ -76,7 +89,8 @@ members and ignore leadership entirely.
     remaining two. Restart the member; it catches up automatically
     (journal suffix, or snapshot transfer across a sealed epoch).],
   [Two members down], [No quorum: writes and fenced reads refuse;
-    `--level any` reads still serve locally. Restore a member.],
+    `--level any` reads still serve locally. Add `--freshness-ms` to reject a
+    disconnected or lagging learner instead. Restore a member.],
   [`current.db` lost or restored from an old copy], [Delete it (or
     leave the stale copy); the node rebuilds from snapshot plus journal
     and validates the batch marker. No operator action beyond restart.],
@@ -91,7 +105,9 @@ members and ignore leadership entirely.
 
 == Monitoring
 
-`status --json` is the machine surface: role, current leader, ballot,
+`status --json` is the machine surface: `node_type`, Paxos `role`, current leader, ballot,
 `decided_slot` versus `applied_slot` (lag), journal record count, epoch
 capacity, chain hash (compare across members: equality means identical
 applied history), and the installed snapshot generation.
+`members --json` returns the runtime registry with role, voter/campaign/read/
+write/promotion capabilities, self identity, and the current leader hint.

@@ -46,11 +46,17 @@ value.
 == Identity file
 
 ```text
-format=1
+format=2
 node_id=<decimal>
 database_id=<32 hex>
 configuration_id=<decimal>
+role=<data-voter|witness|standby|read-replica>
 ```
+
+Format 1 omitted `role` and is read as `data-voter`; a later identity write
+upgrades it to format 2. Opening a directory under another role is rejected.
+This prevents a restart from silently changing a voter into a learner or the
+reverse. Gateways have no identity file.
 
 == Wire frames
 
@@ -67,7 +73,8 @@ Bodies over 64 MiB are protocol errors.
   [3], [`payload_data`], [`hash:[32]u8`, payload bytes (receiver
     verifies the hash)],
   [4], [`payload_request`], [`hash:[32]u8`],
-  [5], [`fence_request`], [`ballot (u64,u32,u32), fence_id:u64`],
+  [5], [`fence_request`], [`ballot (u64,u32,u32), fence_id:u64,
+    fence_slot:u32`],
   [6], [`fence_ack`], [`fence_id:u64, ok:u8, promised ballot`],
   [7], [`snapshot_request`], [empty],
   [8], [`snapshot_begin`], [`configuration_id:u64, name:[16]u8,
@@ -75,7 +82,28 @@ Bodies over 64 MiB are protocol errors.
   [9], [`snapshot_chunk`], [`offset:u64`, image bytes],
   [10], [`snapshot_end`], [empty],
   [11 / 12], [`rpc_request` / `rpc_response`], [one JSON object],
+  [13], [`payload_stored`], [`hash:[32]u8`; emitted only after verified
+    durable installation],
+  [14 / 15], [`auth_challenge` / `auth_response`], [fresh nonce and mutual
+    HMAC-SHA256 proofs],
+  [16], [`backup_begin`], [`size:u64, sha256:[32]u8`],
+  [17], [`backup_chunk`], [`offset:u64`, backup bytes],
+  [18], [`backup_end`], [empty],
+  [19], [`learner_commit`], [`configuration_id:u64, slot:u32`, then one
+    canonical chosen entry; accepted only from a configured voter],
+  [20], [`learner_heartbeat`], [`configuration_id:u64, decided_through:u32`;
+    drives bounded-staleness checks but carries no vote],
 )
+
+The current hello version is 4. Version 2 added the storage-ACK gate and applied
+payload materialization to value-bearing Phase-1 promises. Version 3 added
+mutual authentication and backup streaming. Version 4 adds durable,
+voter-certified chosen-entry delivery and freshness heartbeats to non-voting
+learners. After
+authentication, every
+application body is wrapped as `sequence:u64 || body || hmac:[32]u8`; exact
+next-sequence validation rejects replay. Older versions are rejected rather
+than silently downgraded.
 
 Envelope message tags: prepare 0, promise 1, promise_done 2, accept 3,
 accepted 4, commit 5, learn 6, nack 7, heartbeat 8 — carrying exactly
