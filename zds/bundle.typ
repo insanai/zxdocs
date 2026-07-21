@@ -61,3 +61,16 @@
 #document("pdf/zds-0004-zaxonlite-format.pdf")[
   #include "records/0004-zaxonlite-format.typ"
 ]
+
+#document(
+  "zds/0005-zaxon-interactive-shell.html",
+  title: [ZDS 0005: A Rich Interactive Shell for the zaxon CLI],
+  author: ("Zaxon Contributors",),
+  description: [Plans the rich zaxon interactive shell on the libvaxis terminal library: grapheme-aware cursor line editing, ctrl+r incremental history search, comptime-driven dot-command dispatch and SQL keyword highlighting, width-aware colored tables with expanded and paged views, first-class Windows support, and the extraction of all CLI presentation code out of main.zig.],
+)[
+  #include "records/0005-zaxon-interactive-shell.typ"
+]
+
+#document("pdf/zds-0005-zaxon-interactive-shell.pdf")[
+  #include "records/0005-zaxon-interactive-shell.typ"
+]
