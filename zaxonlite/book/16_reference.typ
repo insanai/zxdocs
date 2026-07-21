@@ -285,6 +285,9 @@ produces.
     Exits 4.],
   [`-- NO REACHABLE LEADER --`], [No endpoint completed a leader-only
     request. Exits 4.],
+  [`-- LEADER REDIRECT REFUSED --`], [A leader was advertised, but the
+    transport cannot authenticate the redirect target (PSK or plaintext)
+    and the address is not in `--connect`. Exits 4.],
   [`-- MALFORMED RESPONSE --`], [A peer answered outside the JSON
     contract. Exits 4.],
   [`-- BACKUP INTERRUPTED --`], [The streaming backup lost its server.

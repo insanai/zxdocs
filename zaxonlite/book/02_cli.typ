@@ -74,10 +74,11 @@ the seed list: the client follows it only when the new connection presents
 `zaxon-node-<advertised-id>` from the trusted CA. Under PSK-only development
 transport, a shared secret cannot prove that per-node binding, so hints are
 followed only when they exactly match a configured endpoint; supply every
-member in `--connect`. When no endpoint or authenticated redirect completes a
-leader-only request, the client prints one `-- NO REACHABLE LEADER --`
-diagnostic and exits 4. Its hint covers voter quorum, credentials, and the
-PSK seed-list rule.
+member in `--connect`. When the cluster did advertise a leader but policy
+forbade following it, the client prints `-- LEADER REDIRECT REFUSED --`
+naming the advertised address and the fix: add it to `--connect` or switch
+to mTLS. When no endpoint answered at all, the client prints one
+`-- NO REACHABLE LEADER --` diagnostic instead. Both exit 4.
 
 When the servers require mutual TLS, client mode takes the same three
 certificate flags as `serve`: `--tls-cert`, `--tls-key`, and `--tls-ca`.
