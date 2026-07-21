@@ -27,8 +27,8 @@ restart and recovery. `cluster_test.zig` drives three real
 door. The role, fault, and gateway suites cover the remaining
 topologies, and `fuzz.zig` attacks decoders, journal files, and
 whole-node schedules. In the clause column, "Format §_n_" names a
-numbered section of `docs/zaxonlite-format.typ`, and "plan" names a
-section of `docs/zaxonlite-product-plan.typ`. Where no automated
+numbered section of `docs/zds/records/0004-zaxonlite-format.typ`, and "plan" names a
+section of `docs/zds/records/0002-zaxonlite-product-plan.typ`. Where no automated
 oracle exists, the row says so directly. An unchecked guarantee is a
 claim, not evidence, and we would rather you know which rows are
 which.

@@ -390,7 +390,7 @@ does not claim online consensus membership management.
   1 MiB of SQL text, and a 10-million SQLite VM-instruction budget. Zaxonlite
   does not require separate operator credentials: the application is the
   one database authority. Follow the release gates in
-  `docs/zaxonlite-security-remediation-plan.typ`.
+  `docs/zds/records/0003-zaxonlite-security-remediation-plan.typ`.
 ]
 
 #callout(title: [Plaintext at rest], tone: "warning")[

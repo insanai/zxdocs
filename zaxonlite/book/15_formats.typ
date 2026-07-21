@@ -159,7 +159,7 @@ issuer, only for connection kind 2, and only for this single request. The
 opaque owner-only `ZXET` bundle binds the random token to the CA, endpoint,
 issuer, database, target node, and expiry; the issuer's `ZXER` record stores
 only its domain-separated hash. Chapter 13 gives the operational contract and
-`docs/zaxonlite-format.typ` freezes both version-1 encodings.
+`docs/zds/records/0004-zaxonlite-format.typ` freezes both version-1 encodings.
 
 After authentication, every application body is wrapped as
 `sequence:u64 || body || hmac:[32]u8`. The receiver requires the exact next

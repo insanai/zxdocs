@@ -234,7 +234,7 @@ its own.
 
 == What the facade does not provide
 
-Stated directly, per the release limits in `docs/zaxonlite-format.typ`:
+Stated directly, per the release limits in `docs/zds/records/0004-zaxonlite-format.typ`:
 
 + *No automatic membership change.* The voter set is fixed at open.
   Replacing a failed voter is an operator procedure, not an API call.

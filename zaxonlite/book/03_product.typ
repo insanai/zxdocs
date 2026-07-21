@@ -57,7 +57,7 @@ documents every command.
   loadable SQLite extensions are compiled out. The guard protects
   replication invariants for a trusted application; it is not a sandbox or
   multi-user RBAC. The detailed security plan is in
-  `docs/zaxonlite-security-remediation-plan.typ`.
+  `docs/zds/records/0003-zaxonlite-security-remediation-plan.typ`.
 ]
 
 == The one idea
