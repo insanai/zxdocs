@@ -84,6 +84,24 @@ facts on top of it.
     leader.],
 )
 
+== The shell history file
+
+The interactive `zaxon sql` shell records executed statements so `ctrl+r`
+search survives restarts, and statements routinely contain material an
+operator would not commit to disk knowingly — tokens pasted into inserts,
+credentials in `pragma` or setup statements. Four controls bound the
+exposure; runbooks that handle secrets should name which one they rely on.
+
+- The file is written with owner-only permissions (`0600`). In embedded
+  mode it lives inside the data directory as `.zaxon_history`, so the
+  protections already required for the data directory cover it. In client
+  mode nothing is persisted unless `ZAXON_HISTORY` names a path.
+- `--no-history` disables persistence for one session; `.history off`
+  disables it from inside the shell; `.history clear` empties it.
+- A statement typed with a leading space is never recorded — the standard
+  escape hatch for one sensitive statement.
+- Scripted (non-terminal) invocations never read or write history at all.
+
 == Configuration: flags, environment, file
 
 Every option can come from three places. The precedence is strict:

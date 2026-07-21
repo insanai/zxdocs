@@ -161,19 +161,51 @@ the crash semantics.
 
 == Data commands: `sql`, `exec`, `query`
 
-`sql` opens the interactive shell in either embedded or client mode. The
-prompt is `zaxon>`. A line starting with `select`, `with`, `values`, or
-`explain` runs as a read; every other statement runs as a replicated write.
-Dot commands: `.status` prints node status, `.tables` lists user tables
-(embedded shell only), and `.quit` or `.exit` leaves.
+`sql` opens the interactive shell in either embedded or client mode. A
+statement starting with `select`, `with`, `values`, or `explain` runs as a
+read; every other statement runs as a replicated write.
+
+On a terminal the shell is a rich REPL (ZDS 0005): statements end with `;`
+and may span lines under a `...>` continuation prompt, the input line is
+edited in place with readline keys (`ctrl+a`/`ctrl+e`, word movement,
+`ctrl+w`/`ctrl+u`/`ctrl+k`), SQL keywords highlight as you type, the
+up/down arrows walk history, and `ctrl+r` is reverse incremental history
+search. Results render as aligned tables with `NULL` shown dimmed; results
+taller than the screen open in a pager (arrows scroll, `q` returns).
 
 ```console
 $ zaxon sql --data ./mydb
-zaxon> select count(*) as n from notes
-n
+zaxonlite unreleased — interactive shell
+Statements end with ';'. Type .help for commands and keys.
+zaxon> select id, author from notes where id < 3;
+┌────┬────────┐
+│ id │ author │
+├────┼────────┤
+│  1 │ vik    │
+│  2 │ NULL   │
+└────┴────────┘
+(2 rows)
+zaxon> .quit
+```
+
+`.help` lists the dot commands, which include `.tables`, `.schema [name]`,
+`.status`, `.members`, `.mode table|expanded|auto|json|csv` (`expanded`
+prints one block per record for wide rows; `auto` switches to it when a
+table would overflow the terminal), `.timer on|off`, and
+`.history [off|clear]`. `ctrl+c` cancels the statement being typed;
+`ctrl+d` on an empty line leaves. `--no-color`, `NO_COLOR`, or `TERM=dumb`
+disable styling.
+
+When stdin or stdout is not a terminal — pipes, scripts, CI — the shell
+keeps its historical plain form, byte for byte: a bare `zaxon> ` prompt,
+one statement per line with no `;` requirement, dot commands `.status`,
+`.tables` (embedded only), and `.quit`/`.exit`, and header-width tables:
+
+```console
+$ echo "select count(*) as n from notes" | zaxon sql --data ./mydb
+zaxon> n
 -
 1
-zaxon> .quit
 ```
 
 `exec` runs one write and prints how many rows it changed, in the
