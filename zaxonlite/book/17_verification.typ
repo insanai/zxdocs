@@ -58,7 +58,8 @@ tail. So we keep both, and everything between.
     loss, duplication, reordering, seven-byte fragmentation, and
     delayed durable sync?], [`zig build test-fault-network`],
   [CLI contract], [Do exit codes, JSON shapes, session flags, the
-    scripted shell, locking, and the mutual-TLS service match the
+    scripted shell, locking, loopback-only development PSK, startup/leader
+    logs, enrollment/revocation, and single-seed mTLS redirects match the
     reference?],
     [`zig build test-cli`],
   [C ABI], [Does every exported function work, including locking and
@@ -71,8 +72,8 @@ tail. So we keep both, and everything between.
   [Benchmark], [What do writes, reads, recovery, and rebuild cost in
     ReleaseFast on this machine?], [`zig build benchmark`],
   [Cluster benchmark], [What do replicated writes and reads cost across
-    three real server processes, in plaintext, PSK, and mTLS transport
-    modes?], [`zig build bench-cluster`],
+    three real server processes, in test-only plaintext, development PSK,
+    and mTLS transport modes?], [`zig build bench-cluster`],
 )
 
 `zig build test-cluster -Dcluster-runs=N` repeats the whole cluster
@@ -186,7 +187,7 @@ benchmarks/results/transport-latest.json`, so every run replaces its
 mode-and-sync row in that file, and the table below is read from it
 when this book compiles — the same contract as the rqlite dashboard:
 the compiled book always shows the last recorded runs, never a number
-copied into prose.
+copied into prose. The current write row uses a fixed 256-byte value.
 
 #transport_bench_table()
 
@@ -201,8 +202,11 @@ write row moves by more than an order of magnitude: `full` issues one
 to the drive and the journal sync is the single drive-cache barrier
 that makes both power-loss durable — while `os` trusts `fsync(2)` and
 the drive cache. The write latency under `full` is therefore two
-barriers in sequence, the leader's and a quorum follower's, which is
-the price of surviving power loss on that platform. Reads never touch
+barriers overlap: an ordered stream queues `payload_data` immediately before
+the phase-two accept, the receiver installs it before stepping the accept,
+and the leader holds its node mutex until its own vote barrier completes.
+Thus neither a volatile local vote nor an unstored payload can count, while
+the two devices do useful work concurrently. Reads never touch
 the journal, so their rows are indifferent to the sync mode. Sustained
 `full`-mode
 writes can also stall the leader's tick loop long enough to move
@@ -217,7 +221,7 @@ states its scope before it shows a number.
 
 #bench_boxes()
 
-Every number in the two tables below is read from the recorded result
+Every number in the two tables below is read from recorded result
 files under `zaxonlite/benchmarks/results/` when the book is built.
 We never copy a measured number into prose. If prose and table ever
 disagreed, the table would be right.
@@ -256,17 +260,20 @@ storage layouts differ by design, and the table cannot attribute its
 gap to any single one of them. It is not evidence about Paxos versus
 Raft, and it is not evidence about languages.
 
-The recorded run also pins the sync contract: both systems flush the
+The recorded baseline pins the sync contract: both systems flush the
 drive's cache on every acknowledged write — Zaxonlite's default `full`
 mode issues `F_FULLFSYNC` on macOS, exactly as Go's file sync does for
 rqlite. Group fsync already consolidates Zaxonlite's per-write flushes
 to one barrier per node per commit point (the journal sync; payload
 installs ride it — see chapter 6). The gap that remains is ordering:
-Zaxonlite's sync-before-send contract runs the leader's barrier and
-then a follower's barrier in sequence, while rqlite's Raft
-implementation overlaps the leader's log fsync with the followers'.
-Overlapping them is protocol pipelining work, not storage work, and
-this table is the honest record until it is done. A development
+Protocol v6 retains the v5 barrier overlap. Only phase-two accept requests are
+released before the leader barrier; promises, accepted replies, recovered
+values, commit delivery, and client replies remain behind durable evidence.
+A commit-only local marker is derived from an already durable accepting quorum
+and is reconstructed through phase one after a crash instead of forcing a
+second full barrier. The table combines the current Zaxonlite mTLS/full row
+with the pinned rqlite v10.2.7 baseline and labels them as separate executions
+on the same host. A development
 `--sync os` run on the same machine reverses the ranking at roughly a
 tenfold lower write latency, but at the price of power-loss
 durability; chapter 13 states when that trade is acceptable, and

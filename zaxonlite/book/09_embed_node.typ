@@ -161,7 +161,7 @@ call repairs it automatically.
 
 One more refusal matters here. A sealed epoch returns
 `error.LogSealed`. A one-member node avoids it by checkpointing
-automatically as its 256-slot epoch fills.
+automatically as its 2,048-slot epoch fills.
 
 == Prepared statements: `execPrepared`
 
@@ -308,7 +308,7 @@ definition current, so every read is linearizable.
   [`status() Status`], [A point-in-time view returned by value: node
     and database identity, configuration id, protocol role and product
     node type, leader, ballot, decided and applied slots, journal
-    record count, the 256-slot epoch capacity, chain hash, page size,
+    record count, the 2,048-slot epoch capacity, chain hash, page size,
     and installed snapshot name. The `role` and `node_type` strings are
     static.],
 )

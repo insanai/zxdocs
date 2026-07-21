@@ -53,7 +53,7 @@
         grid(
           columns: (1fr, auto),
           text(size: 8pt, fill: gray)[Zaxonlite product plan],
-          text(size: 8pt, fill: gray)[Working draft · 2026-07-19],
+          text(size: 8pt, fill: gray)[Reviewed · 2026-07-21],
         )
         line(length: 100%, stroke: 0.4pt + rule)
       }
@@ -106,7 +106,7 @@
     database daemon.
   ]
   #v(34mm)
-  #text(size: 9pt, fill: gray)[Implementation specification · 20 July 2026]
+  #text(size: 9pt, fill: gray)[Implementation specification · 21 July 2026]
 ]
 
 #pagebreak()
@@ -183,15 +183,16 @@ The first production-shaped release includes:
 + implicit and explicit SQLite transactions with one writer at a time;
 + exact transaction-effect replication using captured WAL frames;
 + a maximum encoded transaction payload of 64 MiB minus 73 bytes of hash and
-  authenticated wire framing in protocol v4; larger transactions fail without
+  authenticated wire framing in protocol v6; larger transactions fail without
   entering Paxos;
 + linearizable leader reads using a Paxos quorum read fence, with a committed
   barrier as the bring-up/fallback path, and opt-in bounded-stale local reads;
 + idempotent write retry using bounded, replicated client sessions and monotonic
   request sequence numbers;
 + crash-safe journal recovery, snapshots, catch-up, and checksummed files;
-+ authenticated, integrity-protected transport before any non-loopback use,
-  plus an encrypted tunnel when SQL confidentiality is required;
++ mutual TLS 1.3 on every production TCP storage connection, including
+  loopback, with canonical per-node certificate identities; optional PSK/HMAC
+  runs inside TLS, while a local single-node service may use an owner-only UDS;
 + health, leader, applied-slot, snapshot, and integrity inspection APIs.
 
 == Explicit non-goals for the first release
@@ -396,24 +397,23 @@ per slot and database transactions can be large.
 
 == External payload transfer protocol
 
-Normal Phase 2 uses an explicit per-peer gate:
+Normal Phase 2 uses ordered prestaging plus a receiver-side gate:
 
-1. Send `payload_offer(hash, bytes, format)` before the Paxos `accept`.
-2. The receiver reserves space under configured per-peer and global byte/object
-   limits, streams into a temporary file, verifies length and digest, syncs and
-   atomically installs it, then returns `payload_stored(hash)`.
-3. Only after that ACK may the sender release the matching `accept` envelope to
-   that peer. A reconnect repeats the offer; content addressing makes it
-   idempotent.
-4. An early `accept` is rejected with bounded `payload_required(hash)` feedback
-   or the connection is failed as a protocol violation. It is never retained in
-   an unbounded memory queue and never stepped into the Paxos core.
+1. Queue `payload_data(hash, bytes)` immediately before the Paxos `accept` on
+   the same ordered TCP/TLS stream.
+2. The receiver reserves bounded space, verifies the digest, syncs and
+   atomically installs the object before its read loop reaches the next frame.
+3. `payload_stored(hash)` caches readiness for later sends; the normal adjacent
+   accept does not wait for that round trip. Reconnects remain idempotent because
+   payloads are content-addressed.
+4. A reordered or separately arriving `accept` is retained only in the bounded
+   missing-payload gate and is never stepped into Paxos until the object exists.
 
-`Node.append` currently emits local durable writes and peer `accept` envelopes
-in one `Effects` batch. The host therefore journals the local effects normally
-but holds each outbound envelope behind the peer's storage ACK; `resendTo`
-provides a bounded way to regenerate protocol traffic. Every queue has explicit
-object and byte limits, applies transport backpressure, and reports overload.
+`Node.append` emits local durable writes and peer `accept` envelopes in one
+`Effects` batch. The host appends the local effects, releases only the accept
+requests classified by `preDurableMessages`, then runs its local barrier. The
+host mutex prevents an accepted reply from re-entering the core until that
+barrier completes. Every queue has explicit object and byte limits.
 
 Phase-1 recovery has a stricter integration issue. In the current code,
 `onPromise` stores each reported descriptor and `maybeBecomeLeader` can emit
@@ -445,14 +445,15 @@ limit for a durable application value.
    each commit boundary without publishing it to the canonical state machine.
 3. Encode, checksum, and sync the payload in the leader's payload store.
 4. Call `ReplicatedLog.append(command, &effects)`.
-5. Append `effects.writesSlice()` to the protocol journal and sync. Then call
-   `effects.confirmWritesDurable()` and send `effects.messagesSlice()`.
-6. For each follower, complete the offer/stream/storage-ACK gate before sending
-   the matching `accept`. The follower then journals and syncs the Paxos writes
-   emitted by `step` before sending `accepted`.
-7. When a quorum chooses the slot, journal and sync the commit effect. Apply
-   `committedSlice()` strictly in contiguous slot order to the canonical SQLite
-   image and durable client-session table.
+5. Append `effects.writesSlice()`. Release only classified phase-two accept
+   requests while the leader barrier runs; then call `confirmWritesDurable()`
+   and send all durability-bearing messages.
+6. For each follower, queue the payload immediately before its accept. The
+   follower stores it before reading the accept, then journals and syncs its vote
+   before sending `accepted`.
+7. When a quorum chooses the slot, treat the local commit marker as derived
+   state: do not pay a second barrier. Apply `committedSlice()` strictly in
+   contiguous slot order. Phase one reconstructs the choice after a crash.
 8. Reply to each transaction only after the leader has applied the whole slot.
    Atomically retain the bounded result for each session's latest sequence so an
    ambiguous retry returns the same outcome.
@@ -1012,7 +1013,7 @@ remain host concerns and should not enter `src/protocol.zig`.
 == Incorporation sequence
 
 1. Add `sqlite/command.zig` with a tiny fixed descriptor and fuzzed codec.
-2. Build `sqlite/journal.zig` around `Effects` and test sync-before-send with an
+2. Build `sqlite/journal.zig` around `Effects` and test durable-claim-before-send with an
    injectable disk and send trace.
 3. Restore `ReplicatedLog` exclusively by replay through `DurableState.apply`;
    never serialize raw Zig struct memory.
@@ -1450,9 +1451,14 @@ official feature, clustering, and read-only-node documentation.
   [Hot backup], [Implemented as authenticated, digest-verified streaming to an
     atomically installed plain SQLite file.], [Cloud scheduling and restoring an
     external SQLite image into a live cluster remain separate product work.],
-  [TLS and authorization], [PSK mutual authentication, replay protection, and
-    HMAC integrity are implemented.], [Traffic is not encrypted and there is no
-    per-user authorization; use an encrypted tunnel in this release.],
+  [TLS and authorization], [Mutual TLS 1.3, per-node certificate binding,
+    node-ID-pinned mTLS redirects, seed-only PSK redirects, and optional
+    in-TLS PSK/HMAC are
+    implemented.], [A deliberately configured issuer automates short-lived,
+    single-use token/CSR enrollment for nodes already in the static registry;
+    initial CA and issuer credentials remain operator-provisioned. Revocation
+    is a node-ID denylist. There are intentionally no database-user/RPC roles:
+    the embedding application is the one authority.],
   [HTTP, CDC, cloud backup], [Not required for the embedded first release.],
     [The Zig/C APIs and compact TCP JSON protocol remain the supported surface.],
 )
@@ -1505,7 +1511,7 @@ The product should differentiate only where tests establish a real property.
 
 = Delivery plan
 
-== Implementation status (20 July 2026, first-release audit)
+== Implementation status (21 July 2026, first-release audit)
 
 #callout([Status: first-release scope implemented], [
   The one-node product, runtime-role cluster, transport-owning Zig and C
@@ -1528,9 +1534,10 @@ Implemented and covered by the current automated suites:
 + journal-authoritative recovery that always discards the working image,
   restores a digest-verified snapshot, replays the suffix, and resumes both
   interrupted checkpoint rollover and interrupted snapshot installation;
-+ bounded per-peer payload gates with an explicit durable `payload_stored` ACK;
-  value-bearing Phase-1 `promise` as well as `accept` and `commit` are held
-  before `ReplicatedLog.step`, closing the same-transition recovery hazard;
++ bounded per-peer payload gates; a payload is queued immediately before its
+  dependent envelope on the ordered TCP/TLS stream and drive-flushed before
+  the receiver reads that envelope. Reordered/missing values remain gated, and
+  `payload_stored` is a readiness cache rather than a serial round trip;
 + one writer, dependency-before-proposal, bounded replicated retry sessions,
   follower offline apply, leader-change resynchronization, and fatal stop on
   journal/payload durability failure;
@@ -1542,9 +1549,11 @@ Implemented and covered by the current automated suites:
 + default-linearizable reads using fresh host-level fence IDs, captured slots,
   exact-ballot replies, and distinct-member quorum counting; explicit `leader`
   and `any` modes remain available;
-+ mutually authenticated PSK challenge-response, connection-unique session
-  keys, monotonically sequenced HMAC protection of every post-handshake frame,
-  hard downgrade rejection, and unauthenticated loopback-only fallback;
++ mandatory mutual TLS 1.3 for production TCP, exact `zaxon-node-<id>` peer
+  certificate binding, node-principal server-certificate validation by clients,
+  optional in-TLS PSK/HMAC, an explicit PSK-only development mode restricted
+  to numeric loopback, hard downgrade rejection, and a failpoint-gated insecure
+  transport used only by deterministic repository tests;
 + prepared bindings and bounded explicit multi-call transaction builders in
   both Zig and C, plus restart/integrity and compiled C smoke coverage;
 + a transport-owning embedded facade and matching C API; runtime role registry;
@@ -1566,9 +1575,10 @@ Implemented and covered by the current automated suites:
 + a three-voter rqlite comparison harness using the system `rqlited` and
   `rqlite` tools, equal one-row autocommits, no queued writes, CLI membership
   evidence, strong exact-payload verification, percentiles, and JSON output;
-  the recorded v10.2.7 Darwin-arm64 run observed 474.6 Zaxonlite writes/s
-  versus 45.0 rqlite writes/s (p50 1.69 ms versus 21.96 ms), explicitly a
-  host-specific end-to-end observation rather than a Paxos-versus-Raft theorem;
+  the latest TLS/full-sync transport run observed 63 Zaxonlite writes/s at
+  p50 15.94 ms, while the separately recorded same-host rqlite v10.2.7 baseline
+  observed 44.5 writes/s at p50 21.95 ms. These are host-specific executions,
+  not a paired statistical trial or a Paxos-versus-Raft theorem;
 + a deterministic four-client order-processing comparison with 70%
   linearizable reads, 30% idempotent writes, abrupt follower and leader loss,
   per-node catch-up, total-cluster restart, accounting/inventory invariants and
@@ -1732,8 +1742,9 @@ states plus recent logs when it fails.
     available to a later leader.],
   [After quorum choice, before commit marker], [Unknown.], [Election recovery
     must preserve and eventually commit the chosen value.],
-  [After commit sync, before SQLite apply], [Unknown or delayed.], [Replay
-    applies the transaction exactly once.],
+  [After chosen, before SQLite apply], [Unknown or delayed.], [Phase-one
+    recovery reconstructs the choice from durable accepts; replay applies the
+    transaction exactly once.],
   [After SQLite apply, before reply], [Unknown.], [The same live-session sequence
     returns the stored bounded result and does not apply twice.],
   [During snapshot install], [Existing traffic follows policy.], [Restart picks
@@ -1820,9 +1831,10 @@ the general safety claim.
 + Representative majority and flexible-quorum TLA+ configurations complete
   without violating agreement, and the proof-obligation table contains no
   unowned stable-release requirement.
-+ Every three-process trace satisfies payload-storage-ACK-before-accept,
-  payload-before-vote, sync-before-send, commit-before-apply, contiguous-apply,
-  and acknowledge-after-session-update ordering.
++ Every three-process trace satisfies payload-data-before-dependent-accept on
+  each ordered stream, payload-before-vote, durable-claim-before-send (except
+  the explicitly classified local accept pipeline), chosen-before-apply,
+  contiguous-apply, and acknowledge-after-session-update ordering.
 + One million sequential writes across bounded session churn leave storage
   proportional to active sessions plus the configured result window, not total
   historical requests.
@@ -1951,7 +1963,7 @@ ordinary
 SQLite transactions, lose any one voter, and recover every acknowledged write
 after restart. It can also run the reference process, SQL shell, and operations
 commands from one documented CLI. The repository contains a reproducible real three-process test,
-crash-point tests that enforce sync-before-send, format/version documentation,
+crash-point tests that enforce durable-claim-before-send, format/version documentation,
 an operator recovery guide, and fair benchmark evidence.
 The proof-obligation matrix must identify evidence for consensus agreement,
 host durability, payload availability, SQLite state agreement, barrier and

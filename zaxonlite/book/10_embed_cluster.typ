@@ -36,8 +36,11 @@ Every member passes the same registry: a slice of
 `address` in `host:port` text, and a `role` that defaults to
 `.data_voter`. `OpenOptions` adds `directory` and `node_id`, which say
 which member this process is. It also takes an optional `cluster_id`,
-an optional `auth_secret`, and `startup_timeout_ms` with a default of
-10,000.
+an optional `tls` provider-path identity, an optional defense-in-depth
+`auth_secret`, and `startup_timeout_ms` with a default of 10,000. Production
+TCP requires `tls`; the plaintext switch exists only for failpoint-gated tests.
+The CLI's loopback-only `--dev-psk` convenience is deliberately not exposed by
+this production embedding facade.
 
 There is no `database_id` field here. The database identity is derived
 from the member registry plus `cluster_id`. Agreeing on the registry is
@@ -130,21 +133,20 @@ the JSON body. For those, use `call` and parse the response yourself.
 Idempotent sessions in particular are reached through `call`. The
 facade adds no session helper.
 
-When `auth_secret` is set, every connection the facade makes or
-accepts runs the pre-shared-key transport authentication. That covers
-peer and client connections alike. All members must carry the same
-secret. The secret proves shared possession and provides frame integrity,
-not unique node identity or secrecy. The mutual TLS transport that adds
-both is a `zaxon serve` capability (chapter 13); the embedded facade
-speaks only the PSK today.
+When `tls` is set, every connection the facade makes or accepts runs mutual
+TLS 1.3. The facade copies the three provider paths, creates separate server
+and client TLS contexts, binds peer certificate common names to configured
+node IDs, and keeps one client connection open across calls. `auth_secret`,
+when also set, adds the sequenced PSK/HMAC exchange inside TLS. It is not a
+substitute for TLS. Each member supplies its own node certificate; applications
+may use the same identity for the facade's internal client calls because the
+application is the single database authority.
 
 == Walkthrough: three voters in one process
 
 This is the shape of `zaxonlite/src/role_cluster_test.zig`, reduced to
 three data voters. A deployed cluster normally uses three processes on
-three machines; production TCP additionally requires the mutual TLS
-transport of the `zaxon serve` process (chapter 13). The API shape is
-otherwise identical. First we write the
+three machines; production TCP uses the facade's mutual TLS option. First we write the
 registry. Every
 member will pass this same slice:
 
@@ -169,7 +171,11 @@ for (&nodes, 0..) |*node, index| {
         .node_id = @intCast(index + 1),
         .members = &members,
         .cluster_id = "example",
-        .auth_secret = "example-cluster-secret-32-bytes!",
+        .tls = .{
+            .cert_path = certificate_paths[index],
+            .key_path = private_key_paths[index],
+            .ca_path = "./pki/ca.crt",
+        },
     });
 }
 defer for (nodes) |node| node.close();
@@ -201,7 +207,7 @@ Mixed roles use the same registry. The six-member test adds a
 role is `.gateway` runs the stateless gateway loop instead of a node.
 It keeps no data directory contents and no Paxos state. It routes
 bytes, unmodified, to the members whose roles serve reads or writes,
-behind the same `auth_secret` gate.
+with TLS remaining end-to-end to a storage backend.
 
 #book_figure([
   One registry can describe every role at once. Voters replicate, the
@@ -235,10 +241,12 @@ Stated directly, per the release limits in `docs/zaxonlite-format.typ`:
 + *No dynamic registry.* Adding even a read replica means restarting
   members with the new registry, keeping the same voters and the same
   `cluster_id`.
-+ *No mutual TLS in the facade.* `auth_secret` proves shared
-  possession and integrity; it does not bind a unique node or encrypt.
-  The mutual TLS transport is currently a `zaxon serve` capability
-  (chapter 13), not a facade option.
++ *No dynamic identity platform.* `OpenOptions.enrollment_ca_key` can expose
+  the same narrow one-time token/CSR issuer used by `zaxon serve`, while
+  `enrollment.zig` supplies the join-side primitives. It does not add members,
+  rotate certificates, escrow keys, or replace the host's operator workflow.
+  The node-ID denylist is an operational option rather than an online
+  membership-change API.
 + *No session sugar and no read-level knob.* `exec` is leader-routed
   and `query` is linearizable. Every other combination goes through
   `call`.

@@ -16,8 +16,8 @@ durability layer until equivalent directory durability is implemented.
 
 = Compatibility policy
 
-+ Wire compatibility is exact-major: protocol version 4 accepts only version
-  4. A rolling upgrade that changes the wire version requires an explicitly
++ Wire compatibility is exact-major: protocol version 6 accepts only version
+  6. A rolling upgrade that changes the wire version requires an explicitly
   dual-version bridge release; there is no automatic downgrade.
 + Durable formats are versioned independently. Readers must reject a newer
   identity, journal, payload, descriptor, or snapshot format before voting.
@@ -31,14 +31,16 @@ durability layer until equivalent directory durability is implemented.
   A downgrade is supported only when the older binary declares every installed
   format and wire version compatible.
 
-= Network protocol v4
+= Network protocol v6
 
 Every plain frame begins with little-endian `u32 total_after_length`, followed
 by `u8 kind` and a body. The bound is 64 MiB and zero-length frames are invalid.
 The first frame is an unprotected `hello` containing version, connection kind,
 node ID, database ID, and configuration ID.
 
-When an authentication provider is configured, the responder sends a fresh
+The production profile carries these frames inside a TLS 1.3
+mutual-authentication channel. An optional PSK provider adds a responder
+challenge with a fresh
 32-byte nonce and `HMAC-SHA256(secret, domain || hello || nonce)`. The initiator
 verifies it and returns the corresponding client-domain proof. Both derive a
 connection key using a third domain. Every later body is:
@@ -49,18 +51,62 @@ u64 sequence_le || application_body || hmac_sha256
 
 The MAC covers a frame domain, frame kind, sequence, and body. Each direction
 starts at sequence zero and accepts exactly the next sequence. A mismatch,
-invalid tag, missing proof, or older peer closes the connection. This authenticates
-and integrity-protects traffic but does not encrypt it; use an encrypted tunnel
-where SQL confidentiality is required.
+invalid tag, missing proof, or older peer closes the connection. The optional
+PSK layer itself supplies authentication and integrity, not encryption. The
+production TLS channel supplies confidentiality and per-node identity. The
+explicit development profile may omit TLS only with a PSK provider and only
+when the listener and every peer use numeric loopback; leader redirects in that
+profile remain confined to caller-supplied seeds.
 
-Protocol v4 retains the payload-storage-ACK invariant. A value-bearing
-Promise, Accept, or Commit cannot enter the receiver's Paxos transition until
-the referenced content object is verified and durably stored. Backup streaming
-uses begin, ordered chunk, and end frames with an end-to-end SHA-256. Version 4
-adds `learner_commit`: a configured voter certifies one chosen slot to a
+Protocol v6 retains the receiver-side payload-storage invariant. A sender queues
+`payload_data` immediately before a dependent envelope on the ordered stream;
+the receiver cannot enter Paxos until the object is verified and stored, and
+independently gates reordered/missing-payload envelopes. Backup streaming uses
+begin, ordered chunk, and end frames with an end-to-end SHA-256. Version 4 added
+`learner_commit`: a configured voter certifies one chosen slot to a
 non-voting learner after that learner has durably acknowledged the payload.
 `learner_heartbeat` carries the leader's decided slot for bounded-staleness
-checks and is never treated as a promise, accepted vote, or commit.
+checks and is never treated as a promise, accepted vote, or commit. Version 5
+adds the retained checkpoint proof and voter-digest probe/reply used before a
+cross-epoch snapshot install. Version 6 adds the bounded enrollment connection
+kind and its one-request token/CSR exchange.
+
+== Enrollment records and exchange
+
+Enrollment is a narrow bootstrap for a node already present in the static
+registry. It does not add a member or grant a database role. An issuer is a
+normal mTLS node explicitly started with an owner-only CA private-key file.
+Creating a token remains an ordinary authenticated client RPC, so an
+unauthenticated caller cannot mint credentials.
+
+The opaque `ZXET` version 1 bundle contains the target node ID, issuer node ID,
+database ID, expiry time, a random 256-bit secret, the issuer endpoint, and the
+complete cluster CA certificate. The file is owner-only and is a bearer secret.
+Its maximum encoded size is 128 KiB; the endpoint is at most 512 bytes and the
+CA PEM at most 64 KiB. The issuer persists only a domain-separated SHA-256 hash
+of the secret in an owner-only `ZXER` version 1 record under
+`enrollment-tokens/`, together with the three identity bindings and expiry.
+
+The joiner pins the bundled CA and the exact issuer common name, generates a
+P-256 private key and signed CSR locally for `zaxon-node-<target-id>`, and sends
+one `enrollment_request`: 32-byte secret, target node ID, database ID, CSR
+length, and at most 16 KiB of CSR PEM. This is the sole production TLS path on
+which the server may accept a connection without a client certificate. The
+application frame must be an enrollment hello followed by exactly that one
+request; all other connection kinds still require a verified client
+certificate. The response is a one-byte status and, on success, at most 64 KiB
+of certificate PEM.
+
+Before signing, the issuer verifies the request/hello identity, database,
+static registry, revocation state, CSR signature, and exact common name. It
+then atomically renames the token record from `.pending` to `.used` and syncs
+the token directory. Signing happens only after that durable consumption. A
+crash can therefore consume a token without delivering a certificate, but can
+never reuse it; the operator issues a new token after any ambiguous failure.
+The joiner verifies the returned certificate's signature against the pinned CA,
+its public key against the local private key, and its canonical common name,
+then installs `node.key`, `node.crt`, and `ca.crt` with
+one synced directory rename. Existing identity directories are never replaced.
 
 = Transaction descriptor and payload
 
@@ -123,7 +169,9 @@ as newer evidence than Paxos state.
   result; an ambiguous timeout must be retried with the same live session and
   sequence;
 + no cross-database transaction and no automatic sharding;
-+ authenticated PSK transport supplies integrity/authentication, not secrecy;
++ every production TCP channel uses per-node mTLS; PSK-only TCP requires the
+  explicit numeric-loopback development profile, while plaintext TCP is
+  available solely behind the failpoint-gated test switch;
 + POSIX durability only for this release candidate.
 
 = Operator upgrade procedure

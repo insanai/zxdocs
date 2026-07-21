@@ -35,30 +35,41 @@ to one or two commands.
     `linearizable` (the default).],
   [`--freshness-ms <n>`], [Maximum age for a local learner read. Valid
     only with level `any`.],
-  [`--to <path>`], [Backup destination for `backup`. Client mode refuses
-    an existing destination.],
+  [`--to <path>`], [Backup destination for `backup`, or owner-only token-bundle
+    destination for `enroll-token`. Existing destinations are refused.],
   [`--retain <n>`], [Activity window for `expire-sessions`: keep sessions
     inside the `n` most recent session-write activities. Required.],
   [`--applied <slot>`], [Slot that `wait` waits for. The default is 0.],
   [`--leader`], [Make `wait` also wait for a known leader.],
   [`--timeout-ms <n>`], [Deadline for `wait`. The default is 10000.],
-  [`--node <id>`], [This server's node ID. Required by `serve`.],
+  [`--node <id>`], [This server's node ID for `serve`, or the configured target
+    node for `enroll-token`.],
   [`--listen <endpoint>`], [This server's endpoint: `host:port`, or
     `unix:<path>` for owner-only single-node local service. Required by
     `serve`.],
   [`--role <role>`], [`data-voter` (the default), `witness`, `standby`,
-    or `read-replica`.],
+    `read-replica`, or `gateway`.],
   [`--peer <spec>`], [One peer as `id@host:port[/role]`. Repeat the flag
     once per peer (`serve`).],
   [`--cluster-id <text>`], [Extra entropy for the derived database
     identity.],
   [`--auth-file <path>`], [Transport secret provider, or `ZAXON_AUTH_FILE`.
     Never a literal key on the command line.],
+  [`--dev-psk`], [Allow PSK-only TCP for a local development cluster. Requires
+    an owner-only `--auth-file`; listener and peers must use numeric loopback.],
   [`--tls-cert <path>`], [Node certificate PEM for mutual TLS (`serve`
     and client mode). All three TLS flags go together.],
   [`--tls-key <path>`], [Node private key PEM for mutual TLS.],
   [`--tls-ca <path>`], [Cluster CA PEM that every peer certificate must
     chain to.],
+  [`--enrollment-ca-key <path>`], [Owner-only CA private key enabling the
+    narrow token/CSR issuer on `serve`; omit it on ordinary nodes.],
+  [`--token-file <path>`], [Owner-only opaque bearer bundle consumed by
+    `enroll`.],
+  [`--identity-dir <path>`], [New directory atomically receiving `node.key`,
+    `node.crt`, and `ca.crt` from `enroll`.],
+  [`--ttl-seconds <n>`], [Enrollment lifetime: 600 by default, at most 86400.],
+  [`--revocation-file <path>`], [Reloaded node-ID denylist for `serve`.],
   [`--sync <mode>`], [Durability sync mode, any command: `full` (the
     default; `F_FULLFSYNC` on macOS, survives power loss) or `os`
     (plain `fsync`, development only on macOS). Any other value is a
@@ -72,6 +83,8 @@ variables, then the `--config`/`ZAXON_CONFIG` JSON file. The environment
 names are `ZAXON_DATA`, `ZAXON_CONNECT`, `ZAXON_LISTEN`, `ZAXON_NODE`,
 `ZAXON_ROLE`, `ZAXON_PEERS`, `ZAXON_CLUSTER_ID`, `ZAXON_AUTH_FILE`,
 `ZAXON_TLS_CERT`, `ZAXON_TLS_KEY`, `ZAXON_TLS_CA`, and `ZAXON_SYNC`.
+Server provider paths also have `ZAXON_ENROLLMENT_CA_KEY` and
+`ZAXON_REVOCATION_FILE`.
 
 == Exit codes
 
@@ -115,6 +128,9 @@ only ever added, so additive change stays compatible.
     `chain_ok`, `payloads_ok`],
   [`hash`], [none], [`chain`, `content`, `applied_slot`],
   [`expire-sessions`], [`retain`], [`expired`],
+  [`issue-enrollment-token`], [`node_id`; optional `ttl_seconds`],
+    [`node_id`, `issuer_node_id`, `database_id`, `expires_unix_seconds`,
+    `token`. Issuer-only; the caller already passed normal mTLS.],
   [`backup`], [none], [Not JSON: a `backup_begin` frame (size and
     SHA-256), ordered `backup_chunk` frames, `backup_end`. A JSON error
     means the request was rejected.],
@@ -254,8 +270,9 @@ produces.
     directory. Exits 4.],
   [`-- NODE OPEN FAILED --`], [Identity, journal, payload, or filesystem
     verification failed on open. Exits 4.],
-  [`-- AUTHENTICATION REQUIRED --`], [A non-loopback listener or peer was
-    configured without a transport secret or TLS identity. Exits 4.],
+  [`-- MUTUAL TLS REQUIRED --`], [A TCP storage listener was configured without
+    a complete TLS identity and without explicit loopback-only `--dev-psk`.
+    Exits 4.],
   [`-- TLS IDENTITY FAILED --`], [The TLS certificate, key, or CA cannot
     be loaded, or the key does not match the certificate. Exits 4 from
     `serve`, 2 from client mode.],
@@ -289,7 +306,7 @@ produces.
   table.header([*Limit*], [*Value*], [*Source*]),
   [Voters per consensus group, witnesses included], [1--9],
     [`types.zig`],
-  [Epoch capacity], [256 slots, 4 reserved for the stop sign],
+  [Epoch capacity], [2,048 slots, 4 reserved for the stop sign],
     [`types.zig`, `node.zig`],
   [Protocol append batch], [16 entries], [`types.zig`],
   [Stop-sign metadata], [256 bytes], [`types.zig`],
@@ -301,6 +318,9 @@ produces.
   [Handshake completion deadline], [10 000 ms default, 0 disables],
     [`server.zig`],
   [Mutual TLS protocol version], [TLS 1.3 minimum], [`tls.zig`],
+  [Zaxon wire protocol version], [6, exact match], [`wire.zig`],
+  [Enrollment token lifetime], [600 s default; 86400 s maximum],
+    [`enrollment.zig`],
   [Peer certificate common name], [`zaxon-node-<id>`, under 64 bytes],
     [`tls.zig`],
   [C ABI cluster registry], [36 members, at most 9 voters],
@@ -333,7 +353,7 @@ produces.
     authoritative state from which everything else rebuilds.],
   [Materialized image], [`current.db`, a rebuildable projection of the
     decided history. It is never accepted as evidence over Paxos state.],
-  [Epoch], [One bounded configuration of the replicated log: at most 256
+  [Epoch], [One bounded configuration of the replicated log: at most 2,048
     slots under one configuration ID, sealed by a stop sign.],
   [Generation], [One installed snapshot, manifest plus database image.
     The newest fully installed one is named by `CURRENT`.],

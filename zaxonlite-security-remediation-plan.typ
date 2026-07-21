@@ -120,9 +120,9 @@
     align: (left, center, left),
     [*Joining node*], [], [*Existing member*],
     [Generate key pair and CSR], [→], [Create a short-lived, single-use token],
-    [Verify cluster certificate fingerprint], [←], [Token carries fingerprint, addresses, intended identity],
+    [Pin bundled CA and issuer node identity], [←], [Bundle carries CA, issuer endpoint, database and target IDs],
     [Present token, intended node ID, and CSR], [→], [Check configured membership, expiry, and unused token],
-    [Persist certificate and CA], [←], [Atomically consume token and sign node certificate],
+    [Atomically install key, certificate, and CA], [←], [Sync token as used, then sign node certificate],
     [Reconnect with node certificate], [⇄], [TLS 1.3 mutual authentication for all later traffic],
   )
 ]
@@ -190,12 +190,14 @@
   )[
     #text(weight: "bold", fill: amber)[Release position]
     #linebreak()
-    The storage and consensus core has substantial crash-safety coverage. The
-    current TCP protocol still uses a shared PSK and cross-epoch snapshot
-    transfer does not yet carry the Paxos-decided stop-sign proof, so protocol
-    v4 remains a development interface. The
-    production target is deliberately small: application-level authorization,
-    Unix-domain sockets for local service, and simple per-node mTLS for clusters.
+    The reviewed implementation now uses protocol v6, requires mutual TLS for
+    every production TCP listener, carries and quorum-confirms the existing
+    Paxos stop-sign proof during snapshot transfer, guards SQLite invariants,
+    and bounds network/query work. Local service uses a Unix-domain socket.
+    A configured issuer now supports short-lived, single-use token bundles and
+    locally generated CSRs; ordinary traffic then uses the issued per-node mTLS
+    identity. The base data format remains plaintext and relies on OS disk
+    encryption for media-at-rest protection.
   ]
   #v(31mm)
   #text(size: 9pt, fill: gray)[Repository assessment · 21 July 2026]
@@ -218,11 +220,13 @@ This changes the earlier analysis in important ways:
 + Internal role-based access control, separate reader/writer/admin identities,
   and a database user catalogue are not product requirements.
 + Local service should use a Unix-domain socket protected by owner/group/mode
-  rather than a loopback TCP socket. If TCP is used, including loopback TCP, it
-  must use mutual TLS.
+  rather than a loopback TCP socket. Production TCP uses mutual TLS. The CLI's
+  explicit `--dev-psk` exception is confined to numeric loopback for a
+  one-machine quickstart and does not claim confidentiality or node identity.
 + Cluster enrollment should be a simple, one-time token exchange followed by
-  per-node mTLS. It should resemble Incus enrollment, without introducing a
-  certificate authority service or dynamic policy system.
+  per-node mTLS. It should resemble Incus enrollment: one explicitly configured
+  issuer signs a bounded CSR with the operator's CA key, without introducing
+  dynamic membership, database users, or a general identity-policy system.
 + SQL containment is not a hostile-tenant sandbox. A narrow SQLite authorizer is
   still needed to preserve Zaxonlite's outer transaction, WAL-capture settings,
   and reserved metadata when a trusted application has a bug or SQL-injection
@@ -234,12 +238,69 @@ This changes the earlier analysis in important ways:
 #deployment-diagram()
 
 #callout([Security status], [
-  Do not expose the current shared-PSK TCP service as a production boundary.
-  An embedded deployment that protects the host and an explicitly controlled
-  local development deployment have a smaller risk surface. Production network
-  release requires P0.2 mTLS and P1.1 enrollment; production snapshot recovery
-  requires the P1.4 transferred checkpoint proof.
-], fill: amber-light, stroke: amber)
+  Production TCP is fail-closed mTLS. PSK-only TCP requires explicit
+  `--dev-psk`, an owner-only provider, and numeric loopback for the listener and
+  every peer; plaintext TCP remains solely failpoint-gated. Automated
+  enrollment is intentionally small and static-membership-aware: an existing
+  mTLS principal requests a bundle for one configured node, that node creates
+  its key and CSR locally, and the issuer consumes the token durably before
+  signing. Operators still distribute the node-ID revocation file out of band.
+], fill: green-light, stroke: green)
+
+== Post-implementation review · 21 July 2026
+
+#table(
+  columns: (auto, auto, 2.2fr),
+  table.header([*Finding*], [*State*], [*Reviewed implementation*]),
+  [SEC-001], [Closed for production], [TLS 1.3 mutual authentication is
+    mandatory for production TCP; peer CN is bound to configured node ID and
+    clients reject a server certificate that is not a canonical node principal.
+    The Zig and C cluster facades accept the same provider-file TLS identity.
+    The CLI-only `--dev-psk` exception is numeric-loopback-only and explicitly
+    disclaims confidentiality and unique node identity.],
+  [SEC-002], [Closed], [`ZXP1` retains the already-chosen stop sign. Snapshot
+    activation requires matching reports from a voter read quorum plus exact
+    manifest and image hashes; no file signatures or second consensus phase.],
+  [SEC-003], [Closed], [Global and per-peer admission caps, handshake and idle
+    deadlines, shutdown cancellation, and immediate node-ID revocation
+    teardown bound established storage sockets. The raw TLS-passthrough gateway
+    separately caps concurrent connections at 128.],
+  [SEC-004], [Bounded], [Frames, sender queues, held envelopes, explicit
+    transaction input, and snapshot/backup transfers have checked limits.
+    Larger aggregate stress campaigns remain release evidence rather than a
+    new scheduler.],
+  [SEC-005], [Closed], [`sqlite3_set_authorizer` protects transaction ownership,
+    attached databases, `__zaxon_*`, and capture-changing pragmas; the capture
+    contract is rechecked and loadable extensions are compiled out.],
+  [SEC-006], [Closed pragmatically], [Remote SQL is limited to 1 MiB, 10,000
+    rows, 16 MiB of copied result data, and 10 million SQLite VM instructions
+    by default. Results remain bounded materialized JSON rather than adding a
+    streaming query protocol. Embedded callers remain unlimited by default.],
+  [SEC-007], [Closed], [Single-node local service uses an owner-only 0600
+    Unix-domain socket. Production TCP uses mTLS; the disclosed `--dev-psk`
+    exception is numeric-loopback-only and intended for local development.],
+  [SEC-008], [Closed pragmatically], [`enrollment.zig` persists only a
+    domain-separated token hash, binds the bundle to database, issuer, and
+    configured node ID, enforces a finite expiry, and consumes it through a
+    synced `pending` to `used` rename before signing. The joiner generates a
+    P-256 key and signed CSR locally; the issuer discards CSR extensions and
+    returns a one-year client/server TLS certificate. Replay, expiry, identity,
+    permissions, and end-to-end mTLS tests pass.],
+  [SEC-009], [Substantially closed], [Data roots are narrowed to 0700; PSK and
+    private-key providers must be regular non-symlink 0600 files; atomic
+    replacement and directory durability remain centralized.],
+  [SEC-010], [Closed], [The C ABI remains small, exposes provider-path TLS for
+    the cluster facade, and checks counts, lengths, partial TLS configuration,
+    conversions, initialized outputs, and ownership without adding safeclib.],
+  [SEC-011], [Closed pragmatically], [PSK-only redirects resolve only to caller
+    seeds. Under mTLS an advertised address may leave the seed list, but the
+    new connection must present the cluster-CA certificate
+    `zaxon-node-<advertised-id>` before the request is replayed; redirect depth
+    remains bounded.],
+  [SEC-013], [Disclosed profile], [The base format is plaintext at rest. Direct
+    WAL/page I/O is not advertised as SQLCipher/VFS composable; platform disk
+    encryption is the supported practical mitigation.],
+)
 
 The unused `.woodpecker.yml` and `.github/workflows/docs.yml` files have been
 removed. The plan specifies a reproducible local release command and evidence
@@ -385,8 +446,8 @@ database tenants or a compromised host.
     secret-file validation require a single documented policy.], [P3.1],
   [SEC-010], [Medium], [The C ABI validates some lengths only after converting
     pointers to slices or starting allocations.], [P3.2],
-  [SEC-011], [Medium], [Client redirects need authenticated identity and
-    configured-address validation.], [P1.1],
+  [SEC-011], [Medium], [Client redirects need authenticated target identity;
+    non-mTLS clients must remain confined to configured seeds.], [P1.1],
   [SEC-012], [Deferred], [Release checks are manual until the project adopts an
     actual CI system.], [P0.3 + P4.1],
   [SEC-013], [Profile gap], [The base build stores plaintext and direct WAL/page
@@ -395,6 +456,11 @@ database tenants or a compromised host.
 )
 
 == Code evidence map
+
+The map below records the original audit observation for traceability. The
+post-implementation table in the executive section is authoritative for the
+current tree; remediation evidence is summarized there and in the acceptance
+matrix.
 
 #table(
   columns: (auto, 1.3fr, 1.8fr),
@@ -426,9 +492,12 @@ database tenants or a compromised host.
   [SEC-007], [listener construction in `server.zig`; address validation in
     CLI/configuration paths], [Only IP/TCP listeners exist; no Unix-domain
     socket path or filesystem permission policy is implemented.],
-  [SEC-008], [No production enrollment module exists.],
-    [The current implementation loads a long-lived provider-file PSK; token
-    issuance, consumption, CSR signing, and rotation are planned work.],
+  [SEC-008], [`enrollment.zig`; enrollment frames in `wire.zig`; issuer paths
+    in `server.zig`; `enroll-token` and `enroll` in `main.zig`],
+    [The baseline had no enrollment module. Protocol v6 now carries one bounded
+    CSR exchange over server-authenticated TLS. Token issuance itself requires
+    an existing mTLS client and a server explicitly configured with the 0600 CA
+    private-key provider.],
   [SEC-009], [path operations throughout `node.zig`, `journal.zig`,
     `payload_store.zig`, and configuration secret loading],
     [Durability helpers exist, but one enforced policy for data roots, links,
@@ -454,7 +523,11 @@ replication invariants. An internal authorization server, RBAC policy language,
 telemetry pipeline, generalized untrusted-SQL sandbox, and a second snapshot
 consensus protocol are intentionally absent.
 
-= Focused findings
+= Baseline focused findings (pre-remediation)
+
+The findings below preserve the original audit wording and exit criteria. They
+are not a second current-status report; the post-implementation review and
+acceptance matrix are authoritative for the tree reviewed on 21 July 2026.
 
 #finding(
   [SEC-001],
@@ -659,8 +732,8 @@ consensus protocol are intentionally absent.
     widen the bind address.],
   [Add Unix-domain-socket transport with configurable path, owner, group, and
     mode; reject an unsafe pre-existing path and remove the socket on orderly
-    shutdown. Any TCP listener, including loopback TCP, uses the same mTLS
-    requirement as other network transport.],
+    shutdown. Production TCP uses mTLS. If a local-development exception is
+    retained, make it explicit, PSK-authenticated, and numeric-loopback-only.],
   [Permission tests cover owner-only and group access, unsafe existing paths,
     symlink behavior, restart cleanup, and refusal to start plaintext TCP in a
     production configuration.],
@@ -671,18 +744,23 @@ consensus protocol are intentionally absent.
   [Medium],
   [Enrollment token lifecycle must be explicit],
   [Initial node admission.],
-  [A one-time token flow is the chosen design, but its fields and atomic
-    consumption are not implemented. A reusable bearer token would merely
-    replace the current long-lived PSK with another shared secret.],
+  [The baseline had no one-time token implementation. A reusable bearer token
+    would merely have replaced the former long-lived PSK with another shared
+    secret.],
   [A copied, replayed, or misdirected token could enroll the wrong node or
     remain useful after the intended join.],
-  [Bind the short-lived token to cluster ID, intended node ID/role, configured
-    addresses, a cluster-certificate fingerprint, random secret of at least
-    256 bits, token ID, format version, and expiry. Consume it atomically when
-    signing the node CSR; never use it as an ongoing traffic key.],
-  [Replay, expiry, wrong identity, wrong cluster, bad fingerprint, concurrent
-    redemption, and crash-between-sign-and-consume tests cannot create two
-    valid enrollments.],
+  [Implemented in `enrollment.zig`: the opaque versioned bundle carries the
+    issuer endpoint, full cluster CA certificate, database ID, issuer and target
+    node IDs, 256-bit random secret, and expiry. The server confirms the target
+    is a configured non-revoked member, verifies the CSR signature and exact
+    node common name, atomically renames and syncs the token record to `used`,
+    and only then signs. The token is never a traffic key.],
+  [Unit tests cover the exact expiry boundary, node/database identity binding,
+    truncation, replay, and two concurrent redemptions with exactly one winner. The CLI
+    integration issues a token through an existing mTLS client, enrolls a
+    locally generated key/CSR, authenticates with the result, and rejects a
+    copied-token replay. A crash after consumption may require a replacement
+    token but cannot reuse the old token or create a second issuance.],
 )
 
 #finding(
@@ -727,15 +805,16 @@ consensus protocol are intentionally absent.
 #finding(
   [SEC-011],
   [Medium],
-  [Redirects need authenticated configured targets],
+  [Redirects need authenticated node targets],
   [Client routing within a small static cluster.],
   [A redirect can influence where a client connects. With the present PSK,
     the endpoint is not bound to a unique certificate identity.],
   [A stale, malformed, or manipulated redirect can send a client outside its
     expected cluster or cause persistent routing loops.],
-  [After mTLS, accept redirects only from an authenticated cluster member,
-    resolve them to the configured member registry, require the target
-    certificate to match that member, cap redirect depth, and detect loops.],
+  [After mTLS, accept an advertised address only from an authenticated seed,
+    require the new target certificate to be exactly
+    `zaxon-node-<advertised-id>` under the cluster CA, and cap redirect depth.
+    Without mTLS, rotate only through caller-supplied endpoints.],
   [Unknown address, wrong certificate, cross-cluster target, repeated member,
     and redirect-depth tests fail closed while a valid leader move succeeds.],
 )
@@ -764,16 +843,19 @@ the token.
   [Version], [Allows the token encoding to evolve and rejects unknown
     security-critical semantics.],
   [Cluster/database ID], [Prevents cross-cluster enrollment.],
-  [Intended node ID and role], [Must match an already configured member; the
-    initial release normally uses voter or learner only as consensus roles,
-    not user authorization roles.],
-  [Configured addresses], [Advisory discovery data and an additional
-    consistency check, never a substitute for certificate verification.],
-  [Cluster certificate fingerprint], [Lets the joining node pin the expected
-    cluster endpoint before revealing the bearer secret.],
+  [Issuer and intended node ID], [Both are fixed in the bundle. The issuer
+    accepts the target only when that ID is already present and non-revoked in
+    its static role registry; roles remain consensus capabilities, not user
+    authorization roles.],
+  [Issuer endpoint], [Names the one node allowed to redeem this bundle. The
+    certificate common name must equal the bundled issuer node ID.],
+  [Cluster CA certificate], [Pins the TLS trust root before the bearer secret
+    is revealed. It is copied into the installed identity only after the
+    authenticated exchange succeeds.],
   [Random secret], [At least 256 bits from the operating-system CSPRNG.],
-  [Token ID and expiry], [Supports atomic one-time use, audit diagnostics, and
-    short exposure. Expiry is configurable and finite by default.],
+  [Derived token ID and expiry], [The domain-separated SHA-256 of the secret
+    names the persisted record without storing the bearer value. Expiry defaults
+    to ten minutes and is capped at 24 hours.],
   [Node certificate], [Contains or maps unambiguously to cluster ID and node ID,
     uses an appropriate EKU, and has a bounded validity period.],
 )
@@ -781,26 +863,28 @@ the token.
 Enrollment is allowed only through a dedicated bootstrap path. The member
 validates the token, configured identity, certificate request, and expiry;
 atomically records consumption; signs the node certificate; and returns the
-minimum CA chain and membership data needed to reconnect. A crash-safe
-implementation must define whether consumption precedes issuance and ensure an
-ambiguous retry cannot create a second identity. A small idempotent result
-record keyed by token ID is preferable to making the token reusable.
+leaf certificate. The implemented order is deliberately fail-closed:
+`pending` is renamed to `used` and the token directory is synced before
+signing. A crash after that boundary may require the operator to issue a new
+token, but an ambiguous retry cannot create a second certificate from the old
+one. This avoids a reusable token or a more complicated certificate-result
+cache.
 
-After enrollment, every TCP channel verifies the chain, cluster binding,
+After enrollment, every node-credential TCP channel verifies the chain, cluster binding,
 certificate validity, revocation state supported by the release, configured
 node identity, and hello/certificate agreement. Certificate rotation uses an
 already authenticated node channel or a new operator-issued one-time token.
 
 == Eviction without an identity platform
 
-A valid certificate is necessary but never sufficient for transport admission.
+A valid certificate is necessary but never sufficient for node transport admission.
 The effective rule is:
 
 #callout([Transport admission], [
   valid TLS chain and time #h(3pt) *and* #h(3pt)
   certificate cluster/node identity matches the hello #h(3pt) *and* #h(3pt)
   node ID is in the active runtime member registry #h(3pt) *and* #h(3pt)
-  node ID and certificate serial are not locally revoked.
+  node ID is not locally revoked.
 ], fill: blue-light, stroke: blue)
 
 The initial product has operator-configured static membership. It does not yet
@@ -808,9 +892,8 @@ expose the replicated log's general reconfiguration primitive as an online
 membership-management API. The practical first-release eviction procedure is
 therefore explicit:
 
-+ add the node ID and current certificate serial to a small persisted revocation
-  file on every surviving member through the normal configuration-management
-  channel;
++ add the node ID to a small persisted revocation file on every surviving
+  member through the normal configuration-management channel;
 + reload that file atomically, reject new handshakes, and immediately close all
   active sockets whose authenticated identity matches the revoked node;
 + rotate any enrollment material the node could read, issue replacement
@@ -938,10 +1021,10 @@ The public header should define a compact rule set:
 #milestone(
   [P0.2 · Safe transport defaults],
   [Implement Unix-domain sockets for local service and TLS 1.3 mutual
-    authentication for every TCP listener, including loopback. Keep a clearly
-    labelled development-only compatibility mode only if required during
-    migration, and make production configuration fail closed when plaintext or
-    shared-PSK transport is selected.],
+    authentication for production TCP. Keep the clearly labelled PSK-only
+    development mode explicit and numeric-loopback-only, and make production
+    configuration fail closed when plaintext or shared-PSK transport is
+    selected.],
   [Local-mode permission tests pass; TCP refuses unknown or mismatched
     certificates; packet capture exposes no application data; a production
     configuration cannot silently fall back to PSK or plaintext.],
@@ -967,13 +1050,16 @@ The public header should define a compact rule set:
     preconfigure a member, create one short-lived token, and deliver it to the
     joining node. The joining node pins the cluster certificate, generates its
     own key and CSR, redeems the token once, and thereafter uses its per-node
-    certificate. Redirects are accepted only for configured authenticated
-    members. Transport admission also requires the node to remain in the active
-    registry and outside the persisted node-ID/certificate-serial denylist.
+    certificate. Peer admission requires configured identity. Client redirects
+    may leave the seed list only under mTLS and only when the target certificate
+    matches the advertised node ID; PSK-only clients remain seed-confined.
+    Transport admission also requires the node to remain in the active registry
+    and outside the persisted node-ID denylist.
     Reloading revocation state closes matching live sockets immediately.],
-  [All enrollment replay and mismatch tests pass; the shared cluster PSK is
-    absent from production traffic; every peer connection cryptographically
-    binds cluster ID and configured node ID; certificate rotation succeeds
+  [All enrollment replay and mismatch tests pass; any shared PSK is only an
+    optional inner TLS layer and never the production identity boundary; every
+    peer connection cryptographically binds cluster ID and configured node ID;
+    certificate rotation succeeds
     without changing database authorization semantics; and revoking an enrolled
     node rejects new connections and closes existing ones before certificate
     expiry. The initial release documents operator-distributed revocation and
@@ -1219,10 +1305,10 @@ failure becomes a permanent deterministic regression case before closure.
   [TCP access], [TLS 1.3 mutual authentication],
     [Unknown CA, wrong cluster/node, expired certificate, hello mismatch,
     plaintext, and downgrade fail.], [P0.2 / P1.1],
-  [Enrollment], [Pinned cluster fingerprint and single-use token],
+  [Enrollment], [Pinned cluster CA/issuer and single-use token],
     [Replay, expiry, copied token for a different member, concurrency, and
     issuance crash cannot create a second identity.], [P1.1],
-  [Node eviction], [Active registry plus node/serial revocation],
+  [Node eviction], [Active registry plus node-ID revocation],
     [A revoked but unexpired certificate cannot reconnect; existing matching
     sockets close on atomic reload. Static release procedures do not claim
     online consensus reconfiguration.], [P1.1],
@@ -1253,9 +1339,9 @@ failure becomes a permanent deterministic regression case before closure.
   [C ABI], [Early validation, checked casts, explicit ownership],
     [Malformed valid-to-present boundary values fail consistently across
     supported build modes and C toolchains.], [P3.2],
-  [Redirect], [Authenticated configured member target],
-    [Unknown, cross-cluster, wrong-certificate, loop, and excessive-depth
-    redirects fail closed.], [P1.1],
+  [Redirect], [Seed-only under PSK; advertised node-ID pinning under mTLS],
+    [Unknown, wrong-certificate, malformed, and excessive-depth redirects fail
+    closed; a valid single-seed mTLS redirect succeeds.], [P1.1],
   [Release evidence], [Reproducible local target and recorded campaigns],
     [A clean reviewer checkout reproduces the declared release result without a
     vendor-specific CI workflow.], [P0.3 / P4.1],
@@ -1269,18 +1355,27 @@ following are true:
 + The deployment documentation states that the application is the only database
   principal and owns all end-user authentication and authorization. No
   Zaxonlite RBAC or multi-tenant isolation is claimed.
-+ Local service defaults to a Unix-domain socket with tested owner/group/mode.
-  Every enabled TCP listener, including loopback, requires TLS 1.3 mutual
-  authentication and has no silent PSK or plaintext fallback.
-+ A new configured node joins with a short-lived single-use token, pins the
-  cluster certificate, creates its private key locally, and receives a
-  cluster/node-bound certificate. Replay and ambiguous crash cases fail closed
-  or return the one idempotently recorded enrollment result.
-+ A certificate identity, protocol hello, configured membership entry, and
-  redirect target must all agree. Unknown and cross-cluster identities cannot
-  open peer channels. An atomically reloaded node-ID/certificate-serial
-  revocation closes existing matching sockets and blocks new handshakes even
-  before certificate expiry. The static release documents offline voter
++ The documented local-service profile uses a Unix-domain socket with tested
+  owner/mode.
+  Production TCP requires TLS 1.3 mutual authentication and has no silent PSK
+  or plaintext fallback. The explicit development PSK mode requires an
+  owner-only provider and numeric loopback for listener and every peer; its
+  lack of confidentiality and unique node identity is prominent.
++ The configured issuer uses `--enrollment-ca-key` only on a TLS TCP listener.
+  An existing mTLS principal creates a short-lived opaque bundle with
+  `enroll-token`; `enroll` pins its bundled CA and issuer identity, generates
+  the node key and CSR locally, redeems it once, atomically installs
+  `node.key`, `node.crt`, and `ca.crt`, and removes the consumed bundle.
+  Replay, expiry, wrong-node/wrong-cluster, malformed CSR, unsafe permissions,
+  and ambiguous post-consumption failures fail closed. The target must already
+  exist in static membership; enrollment does not reconfigure Paxos.
++ A peer certificate identity, protocol hello, and configured membership entry
+  must agree. An mTLS redirect target's certificate must match its advertised
+  node ID; PSK-only redirects cannot leave the supplied seeds. Unknown and
+  cross-cluster identities cannot open peer channels. The reloaded node-ID
+  revocation file closes existing
+  matching sockets and blocks new handshakes before certificate expiry. The
+  static release documents offline voter
   replacement and does not claim online consensus membership management.
 + Application SQL cannot terminate Zaxonlite's outer transaction, attach or
   detach a database, access `__zaxon_*` state, or replace/change the WAL
@@ -1296,12 +1391,13 @@ following are true:
 + Connection, thread, deadline, frame, message, result, transfer, disk, and
   aggregate budgets are documented, configurable where stated, checked before
   expensive work, and exercised at and beyond their boundaries.
-+ Remote queries stream results and support configured row/byte caps and
-  optional cancellation. The exit criterion is compatibility with SQLite's
-  legitimate long-running behavior when an authorized operator disables the
-  deadline—not mandatory termination of every long query.
-+ Managed files and keys obey the documented root, ownership, permission,
-  symlink, staging, fsync, and replacement rules under an unprivileged account.
++ Remote queries have configured SQL-text, row, copied-byte, and SQLite VM-step
+  caps. Bounded materialization is accepted for this small SQLite-shaped API;
+  a new streaming protocol is not a release gate. The exit criterion is
+  compatibility with legitimate SQLite work when an authorized operator sets
+  the VM budget to zero—not PostgreSQL-style workload governance.
++ Managed files and keys obey the documented root, permission, symlink,
+  staging, fsync, and replacement rules under an unprivileged account.
   Base documentation states that files, payloads, snapshots, and backups are
   plaintext and does not claim survival of host/root compromise or offline
   media theft. Platform disk encryption is the supported practical mitigation.

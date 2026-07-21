@@ -175,10 +175,13 @@ while the fence is outstanding.
 == The crash matrix
 
 Chapter 4 gave a write fixed stations: store the payload, append the
-accept, sync the journal, send the vote, reach quorum choice, sync the
-commit, apply, reply. Now pull the power cord between each pair of
-stations and ask two questions. What does the client see? And what does
-recovery do with the pieces?
+accept, release the accept request while the local journal sync runs,
+make a quorum of votes durable, reach quorum choice, apply, reply. The
+leader does not sync a separate commit marker: a durable accepting
+quorum is the recovery proof, and the materialized SQLite file is
+rebuildable state. Now pull the power cord between each pair of stations
+and ask two questions. What does the client see? And what does recovery
+do with the pieces?
 
 Three answers repeat across the matrix, so learn them once:
 
@@ -203,15 +206,19 @@ The full matrix pins each boundary:
     leaves no partial object.],
   [After payload sync, before accept append], [unknown], [The payload may
     be orphaned garbage. GC collects it. Nothing infers it was chosen.],
-  [After accept append, before journal sync], [unknown], [The torn tail
-    is truncated. The vote never claimed to survive.],
-  [After accept sync, before send], [unknown], [The vote survives replay
-    and is available to a later leader.],
+  [After accept append, while the local barrier runs], [unknown], [The local
+    torn tail is truncated. A pipelined phase-two request may already have made
+    another acceptor's vote durable; phase one preserves it if a quorum chose
+    it. No client success has been returned.],
+  [After accept sync, before a durability-bearing reply], [unknown], [The local
+    vote survives replay and is available to a later leader. Promise evidence
+    and accepted replies never leave before this point.],
   [After quorum choice, before client reply], [unknown], [Election
     recovery preserves and commits the chosen value. The session retry
     replays the recorded result.],
-  [After commit sync, before apply], [unknown or delayed], [Contiguous
-    replay applies the value exactly once.],
+  [After chosen, before apply], [unknown or delayed], [The local commit marker
+    is derived rather than separately synced. Phase-one recovery reconstructs
+    the choice from durable accepts and contiguous replay applies it once.],
   [After apply, before reply], [unknown], [The same sequence returns the
     stored result. It never applies twice.],
   [During snapshot install], [existing traffic unaffected], [Restart

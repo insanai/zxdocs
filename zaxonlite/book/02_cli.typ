@@ -69,13 +69,15 @@ the redirect the follower sends back. You never need to know who leads.
 
 Commands that do not need the leader, such as `status`, `members`, `wait`,
 and `stop`, are answered by whichever endpoint you reached. So is a
-`query --level any` read. A leader hint is followed only when it names one
-of the endpoints you configured; a hint pointing anywhere else falls back
-to round-robin over your list, so a redirect can never send the client
-outside the cluster it was told about. When no endpoint can complete a
+`query --level any` read. Under mTLS, a leader hint may name a node outside
+the seed list: the client follows it only when the new connection presents
+`zaxon-node-<advertised-id>` from the trusted CA. Under PSK-only development
+transport, a shared secret cannot prove that per-node binding, so hints are
+followed only when they exactly match a configured endpoint; supply every
+member in `--connect`. When no endpoint or authenticated redirect completes a
 leader-only request, the client prints one `-- NO REACHABLE LEADER --`
-diagnostic and exits 4. Its hint states the two causes worth checking: a
-lost voter quorum, or wrong `--connect` addresses and credentials.
+diagnostic and exits 4. Its hint covers voter quorum, credentials, and the
+PSK seed-list rule.
 
 When the servers require mutual TLS, client mode takes the same three
 certificate flags as `serve`: `--tls-cert`, `--tls-key`, and `--tls-ca`.
@@ -87,9 +89,17 @@ Chapter 13 covers provisioning.
 Peers are optional; without them you get a single-voter cluster.
 
 ```console
+$ openssl rand -hex 32 > demo.psk && chmod 600 demo.psk
 $ zaxon serve --data ./n1 --node 1 --listen 127.0.0.1:7001 \
-    --peer 2@127.0.0.1:7002 --peer 3@127.0.0.1:7003
+    --peer 2@127.0.0.1:7002 --peer 3@127.0.0.1:7003 \
+    --auth-file ./demo.psk --dev-psk
 ```
+
+After binding, `serve` writes a compact startup card to stderr: node and role,
+data and listen paths, transport, member count, configuration, and durability.
+It then reports peer connections and only stable leader changes. A terminal
+that shows `writes are ready` is ready for leader-only client work; a leader
+loss says explicitly that the node is waiting for voter quorum.
 
 Each `--peer` is `id@host:port[/role]`. A peer whose ID equals `--node` is
 ignored, so all members can share one peer list. The optional role suffix
@@ -124,21 +134,29 @@ both are configured, the PSK handshake runs inside the TLS channel.
 Chapter 13 covers certificate provisioning and the identity rules;
 chapter 7 states what each transport mode proves.
 
-#callout(title: [Non-loopback requires a transport credential], tone: "warning")[
-  Without `--auth-file` or a TLS identity, every listen and peer address
-  must be loopback. A public address is refused at startup, exit 4:
-  "A non-loopback listener cannot start without a transport secret or TLS
-  identity." The diagnostic's hint names the ways out: provide
-  `--auth-file` or `--tls-cert`/`--tls-key`/`--tls-ca`, bind a loopback
-  address, or serve locally through `--listen unix:<path>`. Both
-  credential flags take file paths, never literal secrets, so keys stay
-  out of shell history and process listings. A PSK alone still does not
-  make protocol v4 a production transport; chapter 13 states the exact
-  boundary of each mode.
+`--dev-psk` is the one explicit PSK-only mode. It requires `--auth-file` and
+refuses startup unless the listener and every peer use numeric loopback. It
+exists for the one-machine quickstart and local development: it has frame
+authentication and integrity, but neither confidentiality nor distinct node
+identity. It cannot be set on a gateway or combined with mTLS.
+
+#callout(title: [TCP transport boundary], tone: "warning")[
+  Every non-loopback TCP listener requires mTLS. Loopback also defaults to
+  mTLS unless the operator explicitly selects `--dev-psk` with an owner-only
+  PSK provider. A single local node can instead use `unix:<path>`. Credential
+  flags take file paths, never literal secrets, so keys stay out of shell
+  history and process listings. PSK-only protocol v6 remains a local
+  development transport, not a production trust boundary.
 ]
 
 `--enable-failpoints` makes the server honor fault-injection RPCs. It exists
 for test controllers only. Never set it in production.
+
+`--enrollment-ca-key <path>` deliberately turns a storage node into a
+certificate issuer. The file must be a regular, non-symlink, owner-only CA
+private key matching `--tls-ca`; most nodes should omit it. It does not enable
+dynamic membership. Chapter 13 gives the two-command enrollment procedure and
+the crash semantics.
 
 == Data commands: `sql`, `exec`, `query`
 
@@ -245,6 +263,33 @@ between "start the cluster" and "first write". `stop` asks one served node
 to shut down cleanly and prints the bare acknowledgement `{"ok":true}`. It
 stops one process, not the cluster.
 
+== Identity bootstrap: `enroll-token`, `enroll`
+
+`enroll-token` is a client-mode operator command. It uses an existing mTLS
+identity to ask one configured issuer for a token bound to `--node`, then
+writes an owner-only opaque bundle to `--to`. `--ttl-seconds` defaults to 600
+and cannot exceed 86400:
+
+```console
+$ zaxon enroll-token --connect 10.0.0.1:9901 --node 2 --to node2.token \
+    --tls-cert operator.crt --tls-key operator.key --tls-ca ca.crt
+```
+
+Transfer that bearer file securely to node 2. There, `enroll` pins the bundled
+CA and issuer identity, creates the node key and CSR locally, redeems the token
+once, verifies the certificate, and installs a new identity directory with one
+atomic rename:
+
+```console
+$ zaxon enroll --token-file node2.token --identity-dir /etc/zaxon/node2
+```
+
+The new directory contains `node.key`, `node.crt`, and `ca.crt`; its private
+key and directory are owner-only. An existing destination is never replaced,
+and the bundle is removed after success. The issuer consumes the token before
+signing, so a lost response or installation failure is deliberately
+fail-closed: issue a new token rather than retrying the old one.
+
 == Maintenance: `snapshot`, `backup`, `integrity-check`, `recover`
 
 `snapshot` compacts: it installs a verified snapshot and seals the current
@@ -306,6 +351,9 @@ each optional:
   [`tls_cert`], [Node certificate PEM for mutual TLS.],
   [`tls_key`], [Node private key PEM for mutual TLS.],
   [`tls_ca`], [Cluster CA PEM that peer certificates must chain to.],
+  [`enrollment_ca_key`], [Owner-only CA private key enabling token/CSR
+    issuance on this server. Omit it on ordinary nodes.],
+  [`revocation_file`], [Node-ID denylist reloaded by a serving node.],
   [`sync`], [Durability sync mode, as for `--sync`: `full` (the
     default) or `os`.],
 )
@@ -317,6 +365,8 @@ Each field also has an environment variable: `ZAXON_DATA`, `ZAXON_CONNECT`,
 `ZAXON_NODE`, `ZAXON_ROLE`, `ZAXON_LISTEN`, `ZAXON_PEERS` (comma
 separated), `ZAXON_CLUSTER_ID`, `ZAXON_AUTH_FILE`, `ZAXON_TLS_CERT`,
 `ZAXON_TLS_KEY`, `ZAXON_TLS_CA`, and `ZAXON_SYNC`.
+`ZAXON_ENROLLMENT_CA_KEY` and `ZAXON_REVOCATION_FILE` name the two additional
+server-only provider paths.
 
 Precedence is fixed: a command-line flag beats an environment variable,
 and an environment variable beats the file. A complete node config:
@@ -329,7 +379,10 @@ and an environment variable beats the file. A complete node config:
   "listen": "10.0.0.2:7001",
   "peers": ["1@10.0.0.1:7001", "3@10.0.0.3:7001"],
   "cluster_id": "orders-prod",
-  "auth_file": "/etc/zaxon/psk"
+  "auth_file": "/etc/zaxon/psk",
+  "tls_cert": "/etc/zaxon/node.crt",
+  "tls_key": "/etc/zaxon/node.key",
+  "tls_ca": "/etc/zaxon/ca.crt"
 }
 ```
 
@@ -355,7 +408,7 @@ $ zaxon status --data ./mydb --json
 {"node_id":1,"database_id":"a13f203d26d80813d0834ff231269878",
  "configuration_id":1,"role":"leader","node_type":"data-voter","leader":1,
  "decided_slot":7,"applied_slot":7,"journal_records":31,
- "epoch_capacity":256,"chain":"8f6a...94f8f","page_size":4096,
+ "epoch_capacity":2048,"chain":"8f6a...94f8f","page_size":4096,
  "snapshot":null}
 ```
 

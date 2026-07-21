@@ -66,55 +66,148 @@ materialized image, copies the last verified snapshot, and replays the
 committed journal suffix. The journal is the truth. The `.db` file is a cache
 of it. Chapter 6 walks through this recovery in detail.
 
-== Three voters on one machine
+== Three voters on one machine: PSK first
 
 A real cluster needs one `serve` process per node. Open three terminals, or
 background each command. Each node gets its own directory, ID, and port. Each
-`--peer` flag names one other member.
+`--peer` flag names one other member. Start with the deliberately small local
+development transport: one owner-only pre-shared key (PSK), restricted by
+`--dev-psk` to numeric loopback addresses.
+
+Create the provider file, then define two Bash conveniences for the client
+commands below:
+
+```console
+$ openssl rand -hex 32 > demo.psk
+$ chmod 600 demo.psk
+$ cluster=127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003
+$ zc() { zaxon "$@" --auth-file ./demo.psk; }
+```
+
+Start one command in each of three terminals:
 
 ```console
 $ zaxon serve --data ./n1 --node 1 --listen 127.0.0.1:7001 \
-    --peer 2@127.0.0.1:7002 --peer 3@127.0.0.1:7003
+    --peer 2@127.0.0.1:7002 --peer 3@127.0.0.1:7003 \
+    --auth-file ./demo.psk --dev-psk
 $ zaxon serve --data ./n2 --node 2 --listen 127.0.0.1:7002 \
-    --peer 1@127.0.0.1:7001 --peer 3@127.0.0.1:7003
+    --peer 1@127.0.0.1:7001 --peer 3@127.0.0.1:7003 \
+    --auth-file ./demo.psk --dev-psk
 $ zaxon serve --data ./n3 --node 3 --listen 127.0.0.1:7003 \
-    --peer 1@127.0.0.1:7001 --peer 2@127.0.0.1:7002
+    --peer 1@127.0.0.1:7001 --peer 2@127.0.0.1:7002 \
+    --auth-file ./demo.psk --dev-psk
 ```
 
-#callout(title: [Loopback development cluster], tone: "warning")[
-  These nodes listen on `127.0.0.1`, so `zaxon` lets them run without
-  a transport credential. A non-loopback listen address is refused until
-  you supply `--auth-file` or a mutual-TLS identity
-  (`--tls-cert`/`--tls-key`/`--tls-ca`); the shared key alone is still
-  only a development transport. A single local node can serve over an
-  owner-only Unix-domain socket instead (`--listen unix:<path>`).
-  Chapter 13 states the exact boundary of each mode.
+Each terminal immediately prints the node ID, role, data directory, listen
+address, transport, durability mode, peer connections, and the stable leader.
+There is no silent-daemon guessing step.
+
+#callout(title: [Development boundary], tone: "warning")[
+  `--dev-psk` is a quickstart convenience, not production transport. It is
+  refused unless the listener and every peer are `127.0.0.1` or `::1`. The
+  PSK authenticates one shared secret and protects frame integrity, but does
+  not encrypt traffic or give nodes distinct identities. Use mTLS for any
+  cluster that leaves one machine.
 ]
 
-Now wait for the cluster to elect a leader, from a fourth terminal:
+Wait for election, write, and read. In PSK-only mode give leader-only commands
+the whole endpoint list: a shared key cannot safely authenticate an advertised
+node ID, so the client rotates only through seeds you supplied.
 
 ```console
-$ zaxon wait --connect 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003 --leader
-$ zaxon leader --connect 127.0.0.1:7001
-```
-
-Client mode takes a comma-separated endpoint list and follows leader
-redirects on its own. You can point it at any member. Write through the
-cluster, then read back:
-
-```console
-$ zaxon exec --connect 127.0.0.1:7001 \
+$ zc wait --connect "$cluster" --leader
+applied 0, leader 3
+$ zc leader --connect "$cluster"
+leader: node 3 at 127.0.0.1:7003
+$ zc exec --connect "$cluster" \
     --sql "create table orders(id integer primary key, item text)"
-$ zaxon exec --connect 127.0.0.1:7002 \
+0 row(s) changed
+$ zc exec --connect "$cluster" \
     --sql "insert into orders(item) values ('espresso machine')"
-$ zaxon query --connect 127.0.0.1:7003 --sql "select * from orders"
+1 row(s) changed
+$ zc query --connect "$cluster" --sql "select * from orders"
 id | item
 ---+-----
 1 | espresso machine
 ```
 
-The second command went to a follower. The follower redirected the client to
-the leader. The default read level is `linearizable`: before answering, the
+== Move the same cluster to mTLS
+
+Stop all three nodes with Ctrl-C. Their data stays in `n1`, `n2`, and `n3`;
+we are changing only the transport. Production TCP uses a small cluster CA,
+one identity per node, and an operator/client identity. Create them now:
+
+```console
+$ mkdir -p demo-pki
+$ openssl ecparam -name prime256v1 -genkey -noout -out demo-pki/ca.key
+$ chmod 600 demo-pki/ca.key
+$ openssl req -new -x509 -key demo-pki/ca.key -sha256 -days 1 \
+    -subj /CN=zaxon-demo-ca -addext basicConstraints=critical,CA:TRUE \
+    -addext keyUsage=critical,keyCertSign,cRLSign -out demo-pki/ca.crt
+$ for n in 1 2 3; do \
+    openssl ecparam -name prime256v1 -genkey -noout -out demo-pki/n$n.key; \
+    chmod 600 demo-pki/n$n.key; \
+    openssl req -new -key demo-pki/n$n.key -subj /CN=zaxon-node-$n \
+      -out demo-pki/n$n.csr; \
+    openssl x509 -req -in demo-pki/n$n.csr -CA demo-pki/ca.crt \
+      -CAkey demo-pki/ca.key -CAcreateserial -days 1 -sha256 \
+      -out demo-pki/n$n.crt; \
+  done
+$ openssl ecparam -name prime256v1 -genkey -noout -out demo-pki/client.key
+$ chmod 600 demo-pki/client.key
+$ openssl req -new -key demo-pki/client.key -subj /CN=zaxon-client \
+    -out demo-pki/client.csr
+$ openssl x509 -req -in demo-pki/client.csr -CA demo-pki/ca.crt \
+    -CAkey demo-pki/ca.key -CAcreateserial -days 1 -sha256 \
+    -out demo-pki/client.crt
+```
+
+The server certificates' canonical common names bind their configured node
+IDs. Redefine the Bash helper for mTLS client commands:
+
+```console
+$ zc() { zaxon "$@" --tls-cert demo-pki/client.crt \
+    --tls-key demo-pki/client.key --tls-ca demo-pki/ca.crt; }
+```
+
+```console
+$ zaxon serve --data ./n1 --node 1 --listen 127.0.0.1:7001 \
+    --peer 2@127.0.0.1:7002 --peer 3@127.0.0.1:7003 \
+    --tls-cert demo-pki/n1.crt --tls-key demo-pki/n1.key --tls-ca demo-pki/ca.crt
+$ zaxon serve --data ./n2 --node 2 --listen 127.0.0.1:7002 \
+    --peer 1@127.0.0.1:7001 --peer 3@127.0.0.1:7003 \
+    --tls-cert demo-pki/n2.crt --tls-key demo-pki/n2.key --tls-ca demo-pki/ca.crt
+$ zaxon serve --data ./n3 --node 3 --listen 127.0.0.1:7003 \
+    --peer 1@127.0.0.1:7001 --peer 2@127.0.0.1:7002 \
+    --tls-cert demo-pki/n3.crt --tls-key demo-pki/n3.key --tls-ca demo-pki/ca.crt
+```
+
+Now wait for the restarted cluster to elect a leader, from a fourth terminal:
+
+```console
+$ zc wait --connect 127.0.0.1:7001,127.0.0.1:7002,127.0.0.1:7003 --leader
+$ zc leader --connect 127.0.0.1:7001
+```
+
+Client mode takes a comma-separated endpoint list and follows leader
+redirects on its own. Under mTLS you can point it at any member: the client
+accepts the advertised address only when the new server certificate names the
+advertised node ID. Send a write to node 1 even if node 3 is leader, then read
+through node 2:
+
+```console
+$ zc exec --connect 127.0.0.1:7001 \
+    --sql "insert into orders(item) values ('mTLS redirect')"
+1 row(s) changed
+$ zc query --connect 127.0.0.1:7002 --sql "select * from orders"
+id | item
+---+-----
+1 | espresso machine
+2 | mTLS redirect
+```
+
+Both commands may begin at followers. A follower redirects the authenticated
+client to the leader. The default read level is `linearizable`: before answering, the
 leader proves to a quorum that it is still the leader. You never read stale
 data by accident.
 
@@ -130,15 +223,15 @@ Time to earn the word "replicated". Find the leader, press Ctrl-C in that
 node's terminal, and immediately write again:
 
 ```console
-$ zaxon leader --connect 127.0.0.1:7001
+$ zc leader --connect 127.0.0.1:7001
 leader: node 1 at 127.0.0.1:7001
-$ zaxon exec --connect 127.0.0.1:7002,127.0.0.1:7003 \
+$ zc exec --connect 127.0.0.1:7002,127.0.0.1:7003 \
     --sql "insert into orders(item) values ('written during failover')"
 1 row(s) changed
-$ zaxon query --connect 127.0.0.1:7002 --sql "select count(*) from orders"
+$ zc query --connect 127.0.0.1:7002 --sql "select count(*) from orders"
 count(*)
 --------
-2
+3
 ```
 
 The two survivors elect a new leader and the write lands. Restart the killed
@@ -165,9 +258,9 @@ write but before answering you, a blind retry would insert the row twice.
 Sessions close that hole. Open one, then give every write a sequence number:
 
 ```console
-$ zaxon session --connect 127.0.0.1:7001
+$ zc session --connect 127.0.0.1:7001
 session 4211843370881911185
-$ zaxon exec --connect 127.0.0.1:7001 --session 4211843370881911185 \
+$ zc exec --connect 127.0.0.1:7001 --session 4211843370881911185 \
     --sequence 1 --sql "insert into orders(item) values ('exactly once')"
 ```
 
@@ -179,7 +272,7 @@ rule to remember is: same session, same sequence, same statement.
 == Snapshot and backup
 
 ```console
-$ zaxon backup --connect 127.0.0.1:7001 --to ./orders-backup.db
+$ zc backup --connect 127.0.0.1:7001 --to ./orders-backup.db
 $ zaxon integrity-check --data ./n1
 ```
 

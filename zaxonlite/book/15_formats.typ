@@ -69,12 +69,13 @@ The stop-sign metadata is the string `zx1 <snapshot-name-16hex>
 <manifest-sha256>`. During normal local rollover,
 `completeClusterRollover` requires the manifest to hash to this decided
 value. Followers reproduce the physical file from the same decided WAL page
-frames and require the identical manifest digest. The network
-snapshot-install path does not yet carry or confirm that decided stop-sign
-evidence before accepting a self-consistent future manifest. The planned
-`CheckpointProofV1` packages the existing stop-sign tuple and requires an
-mTLS read quorum to confirm its digest before activation; it does not add
-snapshot signatures or another Paxos phase.
+frames and require the identical manifest digest. The network install carries
+a canonical `ZXP1` proof containing the database ID, sealed and next
+configurations, stop/applied slots, chain, manifest digest, voter set, and exact
+stop metadata. The receiver validates those bindings and requires matching
+proof-digest reports from a voter read quorum over mTLS before activation. This
+adds neither snapshot signatures nor another Paxos phase; it confirms the stop
+sign Paxos already chose.
 
 == Identity file
 
@@ -107,7 +108,7 @@ default on backup downloads.
 #table(
   columns: (auto, auto, 1fr),
   table.header([*Kind*], [*Name*], [*Body*]),
-  [1], [`hello`], [`version:u16`, `kind:u8` (0 peer, 1 client),
+  [1], [`hello`], [`version:u16`, `kind:u8` (0 peer, 1 client, 2 enrollment),
     `node_id:u32`, `database_id:u128`, `configuration_id:u64`.],
   [2], [`envelope`], [`configuration_id:u64`, then the encoded Paxos
     envelope: `from:u32`, `to:u32`, `tag:u8`, message fields.],
@@ -119,7 +120,8 @@ default on backup downloads.
   [6], [`fence_ack`], [`fence_id:u64`, `ok:u8`, the promised ballot.],
   [7], [`snapshot_request`], [Empty.],
   [8], [`snapshot_begin`], [`configuration_id:u64`, `name:[16]u8`,
-    `db_size:u64`, `manifest_len:u32`, the manifest.],
+    `db_size:u64`, `manifest_len:u32`, the manifest, `proof_len:u16`, and
+    the bounded `ZXP1` proof.],
   [9], [`snapshot_chunk`], [`offset:u64`, then image bytes.],
   [10], [`snapshot_end`], [Empty.],
   [11, 12], [`rpc_request`, `rpc_response`], [One JSON object.],
@@ -135,14 +137,29 @@ default on backup downloads.
   [20], [`learner_heartbeat`], [`configuration_id:u64`,
     `decided_through:u32`. Drives bounded-staleness checks. Carries no
     vote.],
+  [21, 22], [`checkpoint_proof_request`, `checkpoint_proof_reply`],
+    [`nonce:u64`, `sealed_configuration_id:u64`, `proof_sha256:[32]u8`.
+    Matching configured-voter replies form the install read quorum.],
+  [23], [`enrollment_request`], [`secret:[32]u8`, `node_id:u32`,
+    `database_id:u128`, `csr_len:u32`, then at most 16 KiB of CSR PEM.],
+  [24], [`enrollment_response`], [`status:u8`, then on success at most
+    64 KiB of certificate PEM.],
 )
 
-The current `hello` version is 4. Older versions are rejected outright,
+The current `hello` version is 6. Older versions are rejected outright,
 never silently downgraded. Version 2 added the storage-ACK gate and applied
 payload materialization to value-bearing phase-one promises. Version 3
 added mutual authentication and backup streaming. Version 4 added durable
 voter-certified chosen-entry delivery and freshness heartbeats for
-non-voting learners.
+non-voting learners. Version 5 added checkpoint-proof transfer and quorum
+confirmation.
+Version 6 added the bounded one-time token/CSR enrollment exchange. A
+certificate-less TLS connection is accepted only by a deliberately configured
+issuer, only for connection kind 2, and only for this single request. The
+opaque owner-only `ZXET` bundle binds the random token to the CA, endpoint,
+issuer, database, target node, and expiry; the issuer's `ZXER` record stores
+only its domain-separated hash. Chapter 13 gives the operational contract and
+`docs/zaxonlite-format.typ` freezes both version-1 encodings.
 
 After authentication, every application body is wrapped as
 `sequence:u64 || body || hmac:[32]u8`. The receiver requires the exact next

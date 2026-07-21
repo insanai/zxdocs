@@ -40,18 +40,21 @@ The host enforces five write-ordering rules, and the crash tests exist
 to catch any violation. Each rule exists to protect one invariant, so we
 state them as pairs.
 
-+ *Payload before vote.* A payload is fsynced, and the receiving peer
-  has acknowledged it with `payload_stored`, before any value-bearing
-  promise, accept, or commit is released to that peer. The invariant:
++ *Payload before vote.* A sender queues payload bytes immediately before a
+  dependent voter envelope on one ordered TCP/TLS stream. The receiver verifies
+  and fsyncs the object before reading the next frame; its bounded missing-value
+  gate covers reordering and reconnects. `payload_stored` caches readiness for
+  later sends rather than serializing the normal accept. The invariant:
   every vote that can count toward a quorum is backed by a payload that
   is durable on the voter that cast it. A committed slot can therefore
   always be materialized. This is safety.
-+ *Sync before send.* The journal append is fsynced and confirmed
-  before any dependent message leaves the process. This is guaranteed
-  structurally: `consumeEffects` journals before it fills the outbox.
-  The invariant: a node never tells a peer anything it could forget in
-  a crash. A forgotten promise would let two quorums stop
-  intersecting, so this rule is safety too.
++ *Sync before durable claim.* Promise evidence, accepted replies, recovered
+  values, commits, and client replies remain behind the journal barrier. The
+  sole early class is a phase-two `accept` request: it asks another voter to
+  persist a vote but does not claim the sender's own vote is durable. The host
+  stays serialized until its barrier completes. The invariant: a node never
+  claims durable state it could forget in a crash. A forgotten promise would
+  let two quorums stop intersecting, so this rule is safety too.
 + *Name with the bytes.* The parent directory is synced after every
   authoritative create, link, or rename. The invariant: an
   authoritative file survives a crash together with its directory
@@ -102,11 +105,24 @@ covers every block already handed to the drive: a payload install
 flushes its object and directory entries with plain `fsync` — into the
 drive, not yet to stable media — and the journal sync that follows is
 the single full barrier that lands both together. That journal barrier
-precedes every vote, recovered value, and client acknowledgement (the
-sync-before-send rule above), so every counted vote still implies
+precedes every vote acknowledgement, recovered value, and client
+acknowledgement (the sync-before-durable-claim rule above), so every counted vote still implies
 durable payload bytes at its consumer. Rarer transitions that create
 their own commit points — snapshot generations, epoch installs, the
 `CURRENT` pointer, backups — keep their own full barriers.
+
+The steady-state cluster path overlaps those per-node barriers. The sender
+queues an immutable payload immediately before its phase-two accept. TCP order
+means the follower finishes the payload file and shard-directory fsyncs before
+it reads the accept; the receiver's bounded missing-payload gate covers
+reordering and reconnect races. Meanwhile the leader performs its own journal
+barrier. The leader mutex prevents accepted replies from entering Paxos until
+that barrier completes. Only an `accept` request is eligible for this early
+release: promises and accepted replies assert durable facts and remain behind
+the barrier. A later commit-only journal marker is derived from the durable
+accepting quorum and is omitted; phase one reconstructs it after a crash. The
+materialized follower database is likewise a rebuildable cache, so page apply
+does not add another full barrier.
 
 == The recovery sequence
 
@@ -157,7 +173,7 @@ this check is provably the image the log describes.
 
 == Snapshots and epoch rollover
 
-The journal cannot grow forever. An epoch holds at most 256 slots, and
+The journal cannot grow forever. An epoch holds at most 2,048 slots, and
 the host checkpoints before the bound, reserving four slots so the stop
 sign always fits. A snapshot is not a local maintenance action here. It
 is a *decided* object, agreed through the same log it seals.

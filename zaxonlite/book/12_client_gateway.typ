@@ -39,16 +39,17 @@ protocol error. The first frame on any connection must be a `hello`:
 )
 
 The encoded hello is 31 bytes. The server answers nothing on success.
-After the hello, and after the handshake below when one is configured,
-it waits for `rpc_request` frames and replies one `rpc_response` per
-request.
+After a peer or client hello, and after the handshake below when one is
+configured, it waits for the frames appropriate to that connection. An
+enrollment hello is the narrow exception described below: it permits exactly
+one bounded `enrollment_request`, not arbitrary RPC.
 
 == Authentication: the PSK handshake and per-frame protection
 
 When the server is configured with a pre-shared secret, the client's
 `hello` is immediately followed by a challenge-response handshake. The
 implementation is `zaxonlite/src/transport_auth.zig`, specified in the
-format contract under Network protocol v4. From the client's
+format contract under Network protocol v6. From the client's
 perspective:
 
 + Read one `auth_challenge` frame. It carries a fresh 32-byte nonce and
@@ -81,11 +82,11 @@ reorder, and truncation within a connection.
   every body crosses the network in the clear. Zaxonlite intentionally
   treats an admitted application caller as having full database authority;
   end-user permissions belong in that application, not in this RPC
-  protocol. Without a transport credential, non-loopback listeners are
-  refused, but loopback remains reachable by other local processes. A
-  single local node can serve over an owner-only Unix-domain socket
-  instead of TCP (chapter 2); for TCP, the mutual TLS transport below
-  adds per-node identity and confidentiality.
+  protocol. Production TCP never relies on this PSK alone. The CLI permits
+  it only with explicit `--dev-psk`, and then only when the listener and all
+  peers are numeric loopback. A single local node can serve over an owner-only
+  Unix-domain socket instead of TCP (chapter 2); for production TCP, the
+  mutual TLS transport below adds per-node identity and confidentiality.
 ]
 
 == Mutual TLS
@@ -102,6 +103,16 @@ name must be exactly `zaxon-node-<id>` for the node id its hello claims
 the same hello, the same optional PSK handshake, the same frames. A
 plaintext client dialing a TLS listener fails the handshake and never
 reaches the frame protocol.
+
+The sole exception bootstraps that missing node certificate. A server
+explicitly configured with `--enrollment-ca-key` may complete TLS without a
+client certificate, but the first frame must be an enrollment hello bound to a
+configured target and the next and only frame must be an `enrollment_request`.
+The joiner pins the CA carried in its owner-only bundle and requires the exact
+issuer common name, so this exception does not weaken ordinary peer or client
+connections. The request contains a one-time secret, the database and target
+bindings, and a signed CSR; it cannot execute SQL or any RPC. Chapter 13
+describes token issuance and failure recovery.
 
 == The RPC contract
 
@@ -125,6 +136,9 @@ fields are compatible, so ignore fields you do not use. The dispatch in
   [`integrity`], [Verifies the image, chain, and payload store.],
   [`hash`], [Reports the state hashes for cross-node comparison.],
   [`expire-sessions`], [Deletes idle sessions.],
+  [`issue-enrollment-token`], [Issuer-only: creates a short-lived bundle secret
+    for one non-revoked configured peer. The caller is already authenticated by
+    normal mTLS.],
   [`failpoint`], [Arms a named fault. Test builds only.],
   [`stop`], [Requests a graceful shutdown.],
   [`backup`], [Streams a verified copy of the database. Not an
@@ -134,7 +148,7 @@ fields are compatible, so ignore fields you do not use. The dispatch in
 The subsections that follow give each op's request fields and success
 response. A field not marked optional is required.
 
-Protocol v4 applies no permission matrix to this list. That matches the
+Protocol v6 applies no permission matrix to this list. That matches the
 single-application design: possession of the embedded handle or access to the
 service means full database authority. An application that serves unrelated
 users must authenticate them and expose only its own permitted operations.
@@ -242,11 +256,12 @@ with `leader:null` when no leader is known. The reference client
 (`callCluster`) tries endpoints round-robin, follows the embedded leader
 hint, sleeps 150 ms between attempts, and gives up after 12 attempts
 with `NoLeaderReachable`. A hint is followed only when it names one of
-the caller's configured endpoints: a redirect must not send the client
-outside its known cluster, so an unmatched hint falls back to
-round-robin over the configured list. With `require_leader = false` the
-first reachable node's answer is returned as-is. That is how you
-`status` a follower.
+the caller's configured endpoints under PSK-only transport. With mTLS, an
+unmatched numeric address can become a target, but only after its certificate
+common name proves the advertised node ID under the trusted cluster CA. A
+wrong name fails before the request is replayed. With `require_leader = false`
+the first reachable node's answer is returned as-is. That is how you `status`
+a follower.
 
 `query` takes three levels. `any` is a local read with no leadership
 required. `leader` reads the leader's applied state. `linearizable`, the
@@ -323,29 +338,30 @@ one backend, chosen round-robin with failover to the next backend when a
 dial fails, and copied in both directions until either side closes.
 Five consequences are worth stating directly.
 
-- *Authentication is end-to-end.* The hello, the PSK handshake, and
-  every HMAC-protected frame pass through unmodified. The client
-  authenticates the storage node itself. A compromised gateway can drop
-  or delay traffic, but it cannot forge, replay, or tamper without
-  detection.
+- *Authentication and encryption are end-to-end.* The TLS handshake, hello,
+  optional PSK exchange, and protected frames pass through unmodified. The
+  client authenticates the storage node itself. A compromised gateway can drop
+  or delay traffic, but cannot read, forge, replay, or alter it undetected.
 - *Redirects still happen.* A gateway does not track the leader. If it
   routes your write to a follower you receive `not_leader` with the
   leader's real address, and the reference client then dials that
   address directly.
 - *Backup streams need no special path.* They are bytes like everything
   else.
-- *The unauthenticated fallback is loopback-only.* A gateway configured
-  without authenticated transport refuses to listen on anything but
-  `127.*` or `::1`. The check is deliberately narrow, so `localhost` is
-  not accepted. Non-loopback deployment requires the authenticated
-  transport, and confidentiality still requires a tunnel.
-- *Gateway mode does not support `--tls` yet.* Starting a gateway with
-  the TLS flags is a usage error, exit 2: the gateway holds no
-  certificate to present and no CA to verify against. Gateway
-  deployments use the PSK transport or external TLS termination.
+- *TLS is passthrough, not terminated.* The gateway does not take its own TLS
+  identity. A client starts TLS with the selected storage node through the
+  raw proxy; that backend still requires a CA-valid client certificate, and
+  the client still requires a canonical `zaxon-node-<id>` server certificate.
+  Passing `--tls-*` to the gateway itself is therefore a usage error. A PSK,
+  when configured, also remains inside the end-to-end TLS stream.
+- *Admission is bounded.* At most 128 raw connections are proxied at once.
+  Storage backends independently enforce their global and per-peer limits and
+  handshake/idle deadlines. The gateway never turns into an unbounded list of
+  sockets while a client stalls its TLS handshake.
 
 To deploy against one, list the gateway's `host:port` as an endpoint and
-keep the same secret you would use against storage nodes. Restarting a
+give the client the same TLS CA and client identity it uses when dialing a
+storage node directly. Restarting a
 gateway costs only open connections. In the role registry a gateway is
 `ZAXONLITE_GATEWAY` (`gateway` on the wire). The embedded facade starts
 one automatically when the local member has that role, backending onto

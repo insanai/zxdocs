@@ -35,7 +35,9 @@ This design gives the host application complete freedom:
 + Tests can control message delivery and reconstruct nodes from selected
   durable writes. The repository's unit-test harness is deterministic; it is
   not yet a general seeded crash simulator.
-+ The critical "write before send" invariant is explicitly enforced and visible at the host call site.
++ The critical "persist before durable claim" invariant is explicit at the
+  host call site; the core separately classifies the narrow request-only class
+  a host may pipeline while its barrier runs.
 
 == Defining the Protocol Configuration
 

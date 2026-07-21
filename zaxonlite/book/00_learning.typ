@@ -99,10 +99,12 @@ directly.
   they may issue.
 + *A production transport.* Use the embedded API in process, the
   owner-only Unix-domain socket (`--listen unix:<path>`) for local
-  service, or mutual TLS with operator-provisioned per-node
-  certificates for TCP clusters. The PSK mode proves only shared
-  secret possession and does not encrypt, and the one-time enrollment
-  flow that would automate certificate issuance is still future work.
+  service, or mutual TLS with per-node certificates for TCP clusters.
+  Bootstrap the CA and one issuer identity out of band; an authenticated
+  operator can then issue a short-lived one-time bundle so a configured node
+  generates its key and CSR locally. The PSK mode proves only shared secret
+  possession and does not encrypt; `--dev-psk` confines that tradeoff to a
+  numeric-loopback local development cluster.
 + *Monitoring and alerting.* The node reports status; nothing in the
   repository watches it. After a fatal storage error the host must stop
   voting and serving. Something of yours must notice and page a human.
@@ -113,7 +115,8 @@ directly.
 #callout(title: "Scope is part of correctness", tone: "warning")[
   The guarantees in this book are conditional on that boundary.
   "Acknowledged means durable and decided" holds on POSIX filesystems with
-  working fsync. Confidentiality holds only inside your tunnel.
+  working fsync. Wire confidentiality holds only inside TLS, and offline-media
+  confidentiality depends on OS disk or filesystem encryption.
   Availability after a voter loss holds only if your orchestration
   replaces the voter.
 ]

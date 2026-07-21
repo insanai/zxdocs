@@ -170,29 +170,37 @@
 )
 
 #let bench_write_table() = {
-  let data = json("../../../zaxonlite/benchmarks/results/latest.json")
-  let row(run) = (
-    [#run.system],
-    [#calc.round(run.operations_per_second, digits: 1)],
-    [#calc.round(run.latency_ms.p50, digits: 2)],
-    [#calc.round(run.latency_ms.p95, digits: 2)],
-    [#calc.round(run.latency_ms.p99, digits: 2)],
-    [#calc.round(run.latency_ms.max, digits: 1)],
-  )
+  let historical = json("../../../zaxonlite/benchmarks/results/latest.json")
+  let transport = json("../../../zaxonlite/benchmarks/results/transport-latest.json")
+  let zx = transport.runs.find(run => run.mode == "tls" and run.sync == "full")
+  let rq = historical.results.find(run => run.system == "rqlite")
   [
-    #bench_stamp(data)
+    #text(size: 8pt, fill: gray)[Current Zaxonlite transport run plus the
+      recorded rqlite v10.2.7 baseline from #historical.run_at_utc.]
     #v(4pt)
     #table(
       columns: (1.2fr, auto, auto, auto, auto, auto),
       table.header(
         [*System*], [*writes/s*], [*p50 ms*], [*p95 ms*], [*p99 ms*], [*max ms*],
       ),
-      ..data.results.map(row).flatten(),
+      [Zaxonlite], [#zx.write_ops_s],
+        [#calc.round(zx.write_p50_us / 1000, digits: 2)],
+        [#calc.round(zx.at("write_p95_us", default: zx.write_p99_us) / 1000,
+          digits: 2)],
+        [#calc.round(zx.write_p99_us / 1000, digits: 2)],
+        [#calc.round(zx.at("write_max_us", default: zx.write_p99_us) / 1000,
+          digits: 2)],
+      [rqlite], [#calc.round(rq.operations_per_second, digits: 1)],
+        [#calc.round(rq.latency_ms.p50, digits: 2)],
+        [#calc.round(rq.latency_ms.p95, digits: 2)],
+        [#calc.round(rq.latency_ms.p99, digits: 2)],
+        [#calc.round(rq.latency_ms.max, digits: 1)],
     )
     #text(size: 8pt, fill: gray)[
-      #data.results.at(0).operations single-row durable autocommit writes,
-      #data.results.at(0).payload_bytes bytes each, one sequential connection,
-      warmup excluded, verified by strong count and exact-payload predicate.
+      1,000 single-row durable autocommit writes, 256 payload bytes each,
+      three loopback voters and one sequential persistent connection. The runs
+      are separate executions on the same host, so treat this as a reproducible
+      baseline rather than a paired statistical trial.
     ]
   ]
 }

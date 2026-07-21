@@ -12,8 +12,8 @@
 #objectives([
   By the end of this chapter you should be able to configure a member from a
   file instead of a pile of flags, state the exact limitations of the
-  protocol-v4 pre-shared key, read `status` and `members` as monitoring
-  signals, act on
+  legacy pre-shared key, execute one-time certificate enrollment, read
+  `status` and `members` as monitoring signals, act on
   the failure playbook without improvising, run the backup and disaster
   recovery runbooks, and roll a new binary through a live cluster.
 ])
@@ -27,14 +27,15 @@
 
 == What changes off the laptop
 
-The quickstart ran everything on `127.0.0.1`. The current implementation is
-not ready for a production network: the security plan's remaining gates
-must be completed first. A realistic deployment would change at least
-these four things.
+The quickstart ran everything on `127.0.0.1`. Production TCP now fails closed
+unless mutual TLS is configured. Automated token enrollment is available for
+members already in the static registry; it is bootstrap, not a hidden shared
+secret or a membership protocol. A realistic deployment
+changes at least these four things.
 
 + Listen and peer addresses become real network addresses, and `zaxon` then
-  refuses to start until you configure a transport credential: a PSK
-  provider file, a mutual-TLS identity, or both.
+  refuses to start until you configure the mutual-TLS identity. A PSK may be
+  layered inside TLS but cannot replace it.
 + Each `--peer` may carry a role suffix, as in `2@10.0.0.2:9901/data-voter`,
   and every storage node must receive the same registry.
 + Two clusters whose members use the same ids would derive the same database
@@ -119,6 +120,11 @@ code 2 instead of being silently ignored. Every field is optional.
     PEM.],
   [`tls_ca`], [`--tls-ca`, `ZAXON_TLS_CA`], [The cluster CA PEM that
     every peer certificate must chain to.],
+  [`enrollment_ca_key`], [`--enrollment-ca-key`,
+    `ZAXON_ENROLLMENT_CA_KEY`], [Owner-only CA key enabling the deliberately
+    configured token/CSR issuer. Omit on ordinary nodes.],
+  [`revocation_file`], [`--revocation-file`, `ZAXON_REVOCATION_FILE`],
+    [Reloaded configured-node-ID denylist.],
   [`sync`], [`--sync`, `ZAXON_SYNC`], [Durability sync mode: `full`
     (the default) or `os` (development only on macOS).],
 )
@@ -134,7 +140,10 @@ A complete member configuration looks like this:
   "listen": "10.0.0.1:9901",
   "peers": ["2@10.0.0.2:9901/data-voter", "3@10.0.0.3:9901/data-voter"],
   "cluster_id": "prod-eu-1",
-  "auth_file": "/etc/zaxon/psk"
+  "auth_file": "/etc/zaxon/psk",
+  "tls_cert": "/etc/zaxon/node.crt",
+  "tls_key": "/etc/zaxon/node.key",
+  "tls_ca": "/etc/zaxon/ca.crt"
 }
 ```
 ]
@@ -157,21 +166,21 @@ a data-loss preference. On Linux plain `fsync` already reaches stable
 media, the two modes are equivalent, and this section changes nothing.
 
 The safety has a measured price on macOS. Each replicated write pays
-one full flush per node at its commit point — the journal barrier,
-which the payload install rides (chapter 6) — and the leader's and a
-quorum follower's barriers run in sequence. On Apple silicon that
-moves a three-voter loopback cluster's writes from roughly 2 ms p50
-and a few hundred per second under `os` to roughly 33 ms p50 and
-about 29 per second under `full`; chapter 17's benchmark table
-records both configurations. Reads are untouched. Sustained full-mode write load can also stall the leader's
+one full flush per voting node at its commit point — the journal barrier,
+which the payload install rides (chapter 6). Protocol v6 queues the payload
+and phase-two accept before the leader barrier, so follower storage and flush
+overlap it without allowing an accepted reply into the core early. On this
+Apple-silicon host the current 256-byte, three-voter mTLS run records roughly
+15.94 ms p50 and 63 writes per second under `full`; chapter 17 reads the exact
+row from JSON. Reads are untouched. Sustained full-mode write load can also stall the leader's
 tick loop long enough for leadership to move, visible as occasional
 large latency maxima. Use `--sync os` only for development loops and
 benchmarks on macOS, never for a directory whose votes you intend to
 keep.
 
-== The PSK transport boundary
+== The PSK layer
 
-The first transport mode authenticates with a pre-shared key. Both sides prove
+The optional inner layer authenticates with a pre-shared key. Both sides prove
 possession of the secret in a challenge-response handshake. The responder
 contributes a fresh 32-byte random nonce, so an earlier handshake cannot be
 replayed. After the handshake, every frame carries an HMAC-SHA256 tag over
@@ -193,14 +202,18 @@ Know exactly what that buys—and what it does not.
   backups travel in cleartext.
 
 An encrypted tunnel can hide bytes from the network, but it does not bind the
-PSK holder to a configured node identity. PSK-only TCP is therefore a
-development interface even when placed behind a tunnel. Local single-node
-service already has its production form: a Unix-domain socket protected by
-filesystem permissions, described below. For TCP, the mutual TLS transport
-in the next section supplies both per-node identity and confidentiality;
-the one-time enrollment flow that would automate certificate issuance
-remains future work. Application authorization stays outside Zaxonlite;
-see the security remediation plan.
+PSK holder to a configured node identity. Production startup therefore refuses
+PSK-only TCP. The explicit `--dev-psk` exception is restricted to numeric
+loopback for the one-machine quickstart and local development; it requires an
+owner-only provider and cannot be combined with mTLS or gateway mode. Because
+leader advertisements cannot be identity-bound in this mode, clients supply
+every member in `--connect` and rotate only through that seed list. Local
+single-node service already has its production form: a Unix-domain socket
+protected by filesystem permissions, described below. For production TCP, the
+mutual TLS transport in the next section supplies both per-node identity and
+confidentiality; the one-time enrollment flow below automates certificate
+issuance after initial CA and issuer bootstrap. Application authorization
+stays outside Zaxonlite; see the security remediation plan.
 
 The secret comes only from a provider file, named by `--auth-file <path>`,
 by `ZAXON_AUTH_FILE`, or by the `auth_file` configuration field. The file
@@ -213,21 +226,19 @@ node and every client of one cluster must present the same secret.
   There is no flag that accepts a literal key, and there never will be:
   command lines leak through process listings and shell history. Give the
   provider file tight permissions, readable by the service user only. The
-  loader does not currently verify owner/mode or reject symlinks. The CLI
+  loader requires a regular non-symlink file with no group/world permission
+  bits (mode 0600). The CLI
   loader zeroes its original allocation, but embedded mode keeps an arena copy
   that is not explicitly wiped on close.
 ]
 
-Unauthenticated operation is confined to loopback addresses. `serve` refuses to
-start, with exit code 4, when the listen address or any peer address is
-non-loopback and neither a secret nor a TLS identity is configured. Loopback
-means `127.0.0.0/8` or `::1`. Binding `0.0.0.0` counts as non-loopback even
-on a single-host cluster. This is a startup check, not a warning, and there
-is no flag to opt out of authentication on a network address. Loopback is
-not an authentication boundary: any process or user sharing the host or
-network namespace may invoke the service, including administrative
-operations. The refusal diagnostic's hint names the alternative for local
-service: `--listen unix:<path>`.
+Every production TCP listener requires the complete TLS identity and exits 4
+otherwise. There is no silent fallback to PSK or plaintext. `--dev-psk` is an
+explicit opt-in and accepts only the exact numeric loopback hosts `127.0.0.1`
+and `::1` for the listener and every peer. The internal
+`--insecure-test-tcp` escape hatch is rejected unless failpoints are enabled;
+it exists only for deterministic fault harnesses. The refusal diagnostic names
+the Unix-socket and local-development alternatives.
 
 == The mutual TLS transport
 
@@ -251,21 +262,37 @@ mode never did, and the two modes compose: when both are configured, the
 PSK challenge-response runs inside the TLS channel. Gateway mode does
 not support `--tls` yet and rejects the flags with a usage error.
 
-Certificates are operator-provisioned; the one-time enrollment and token
-flow from the security plan is not implemented yet. The `openssl` CLI is
-enough. Create the cluster CA once, then issue each node its
-`zaxon-node-<id>` certificate and each client any name that suits your
-inventory:
+Bootstrap is deliberately small. Create the cluster CA once, then use it out
+of band to issue one initial `zaxon-node-<id>` identity for the issuer and one
+operator client identity. The issuer automates all later configured-node
+certificates through short-lived, one-time token/CSR enrollment. The `openssl`
+CLI is sufficient for that initial step:
 
 ```console
 $ openssl ecparam -name prime256v1 -genkey -noout -out ca.key
-$ openssl req -x509 -new -key ca.key -out ca.crt -days 365 \
-    -subj '/CN=zaxon-cluster-ca'
+$ chmod 600 ca.key
+$ openssl req -new -x509 -key ca.key -sha256 -days 365 \
+    -subj '/CN=zaxon-cluster-ca' \
+    -addext basicConstraints=critical,CA:TRUE \
+    -addext keyUsage=critical,keyCertSign,cRLSign -out ca.crt
 $ openssl ecparam -name prime256v1 -genkey -noout -out n1.key
+$ chmod 600 n1.key
 $ openssl req -new -key n1.key -out n1.csr -subj '/CN=zaxon-node-1'
+$ printf '%s\n' \
+    'basicConstraints=critical,CA:FALSE' \
+    'keyUsage=critical,digitalSignature' \
+    'subjectAltName=DNS:zaxon-node-1' \
+    'extendedKeyUsage=serverAuth,clientAuth' > n1.ext
 $ openssl x509 -req -in n1.csr -CA ca.crt -CAkey ca.key \
-    -CAcreateserial -out n1.crt -days 365
+    -CAcreateserial -sha256 -extfile n1.ext -out n1.crt -days 365
 ```
+
+Issue the operator client certificate the same way with a distinct common name such as
+`zaxon-client`; it needs `clientAuth` and, because the same reference identity
+may serve embedded members, may also carry `serverAuth`. A Zaxon client refuses
+a server certificate whose common name is not the canonical
+`zaxon-node-<positive-id>` shape, so a CA-issued client principal cannot be
+reused as a storage endpoint identity.
 
 With one such identity per node, the member from the configuration file
 above starts as:
@@ -274,8 +301,53 @@ above starts as:
 $ zaxon serve --data /var/lib/app/n1 --node 1 --listen 10.0.0.1:9901 \
     --peer 2@10.0.0.2:9901 --peer 3@10.0.0.3:9901 \
     --tls-cert /etc/zaxon/n1.crt --tls-key /etc/zaxon/n1.key \
-    --tls-ca /etc/zaxon/ca.crt
+    --tls-ca /etc/zaxon/ca.crt \
+    --enrollment-ca-key /etc/zaxon/ca.key
 ```
+
+The enrollment CA key must be a regular, non-symlink file with no group or
+world permissions and must match `--tls-ca`. It is not needed for consensus or
+normal mTLS, so keep it on as few designated issuer nodes as your availability
+needs require. Issuance is not a membership operation: the target must already
+appear in the issuer's static peer registry and must not be denied by the
+node-ID revocation file.
+
+An operator who already has a valid client identity creates an owner-only
+bearer bundle for node 2:
+
+```console
+$ zaxon enroll-token --connect 10.0.0.1:9901 --node 2 \
+    --to node2.token --ttl-seconds 600 \
+    --tls-cert operator.crt --tls-key operator.key --tls-ca ca.crt
+```
+
+The bundle contains the issuer endpoint, full CA certificate, database and
+node bindings, expiry, and a random 256-bit secret. The issuer stores only a
+domain-separated hash of that secret. Transfer the file through an
+authenticated operational channel and keep mode 0600; possession is sufficient
+to redeem it until expiry. On node 2:
+
+```console
+$ zaxon enroll --token-file node2.token --identity-dir /etc/zaxon/node2
+$ zaxon serve --data /var/lib/app/n2 --node 2 --listen 10.0.0.2:9901 \
+    --peer 1@10.0.0.1:9901 --peer 3@10.0.0.3:9901 \
+    --tls-cert /etc/zaxon/node2/node.crt \
+    --tls-key /etc/zaxon/node2/node.key \
+    --tls-ca /etc/zaxon/node2/ca.crt
+```
+
+`enroll` pins the bundled CA and exact issuer common name, generates the P-256
+private key and signed CSR locally, and accepts only a pinned-CA-signed
+certificate matching that key and `zaxon-node-2`. It atomically installs
+`node.key`, `node.crt`, and
+`ca.crt` into a new owner-only directory and removes the token bundle after
+success. The private key never crosses the network.
+
+The issuer verifies the CSR and every binding, atomically moves its token
+record from pending to used, syncs that directory, and only then signs. Thus a
+crash after consumption can lose the response but cannot issue twice. Treat
+any ambiguous enrollment failure as consumed and request a new token; the
+issuer intentionally keeps no result cache or retry protocol.
 
 and a client reaches it with the client certificate:
 
@@ -284,7 +356,8 @@ $ zaxon status --connect 10.0.0.1:9901 --tls-cert client.crt \
     --tls-key client.key --tls-ca ca.crt
 ```
 
-An unreadable certificate, a key that does not match, or a missing CA
+An unreadable certificate, a key that does not match, a private-key symlink or
+broad private-key mode, or a missing CA
 file fails startup with `-- TLS IDENTITY FAILED --`. Keep the key files
 readable by the service user only; like the PSK, they are named by path
 and never by value. The implementation links the system OpenSSL 3
@@ -292,22 +365,29 @@ libraries rather than bundling a TLS stack; the build defaults to the
 Homebrew `openssl@3` prefix and takes `-Dopenssl-prefix` for other
 installations.
 
-There is no certificate revocation in this release: a certificate
-remains valid until it expires or the operator replaces the cluster CA
-and redeploys every identity. The security plan's eviction design — an
-active-registry check plus a persisted node-ID/certificate-serial
-denylist whose reload closes matching live sockets — remains future
-work. The initial release has static membership, so removing a voter
+`--revocation-file <path>` (or `ZAXON_REVOCATION_FILE`) supplies the simple
+static-membership revocation override: one configured node ID per line, with
+`#` comments. The server reloads it once per second, rejects new handshakes,
+and closes matching live inbound and outbound sockets immediately. A malformed
+reload retains the last valid set. Revocation is by node ID, not certificate
+serial. A canonical `zaxon-node-<id>` certificate is checked even when used on
+a client connection; unrelated operator-client common names remain the single
+application authority described above. Admitting a replacement under a denied
+node ID requires the operator to
+remove it from the denylist after replacing credentials. Removing a voter
 remains an operator-controlled offline replacement procedure; the book
 does not claim online consensus membership management.
 
 #callout(title: [Current release restriction], tone: "danger")[
   Do not treat PSK-only TCP as the production trust boundary: it has no
-  per-node identity and no confidentiality. The mutual TLS transport
-  supplies both, but certificate issuance, rotation, and revocation are
-  manual, and the service still has no idle deadlines or query
-  work/result budgets. Connection admission is capped and handshakes
-  carry a deadline (chapter 7), but nothing else is bounded. Zaxonlite
+  per-node identity and no confidentiality. `--dev-psk` merely confines that
+  tradeoff to one host. The mutual TLS transport supplies both properties.
+  One-time issuance is automated only for a configured target;
+  initial CA/issuer provisioning and later rotation remain operator work. The
+  node-ID denylist provides immediate revocation. Admission is globally
+  and per-peer capped, handshakes and established idle sockets have deadlines,
+  transfers are bounded, and remote queries default to 10,000 rows, 16 MiB,
+  1 MiB of SQL text, and a 10-million SQLite VM-instruction budget. Zaxonlite
   does not require separate operator credentials: the application is the
   one database authority. Follow the release gates in
   `docs/zaxonlite-security-remediation-plan.typ`.
@@ -465,8 +545,8 @@ If any step fails, stop that node and diagnose. Never delete or rewrite a
 journal to force a member to join.
 
 #callout(title: [Wire-version bridge], tone: "warning")[
-  Wire compatibility is exact-major: protocol version 4 speaks only to
-  version 4. A release that changes the wire version cannot use this rolling
+  Wire compatibility is exact-major: protocol version 6 speaks only to
+  version 6. A release that changes the wire version cannot use this rolling
   procedure. It requires an explicitly dual-version bridge release, and
   there is no automatic downgrade. Downgrading is supported only when the
   older binary declares every installed durable format and wire version

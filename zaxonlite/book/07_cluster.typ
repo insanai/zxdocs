@@ -56,8 +56,9 @@ plus sixteen by default, sized for a small cluster; an over-limit
 connection is closed at accept, and admission is refused during
 shutdown. An accepted connection must complete hello and authentication
 within a handshake deadline, 10 seconds by default, or the tick loop
-closes it. Established connections still carry no idle deadline or
-per-query work budget.
+closes it. Established connections have a five-minute idle deadline and each
+peer is capped at two overlapping inbound connections. Remote SQL additionally
+has the row, byte, text, and VM-step budgets described in chapter 13.
 
 == Registry, voter membership, and scale
 
@@ -115,17 +116,19 @@ On the normal path, the sender enforces the rule:
 #transcript((
   [1], [Leader], [Builds an `accept` for slot 40 that names payload hash
     `h`. It holds no storage ACK for `h` from voter 2 yet.],
-  [2], [Leader], [Sends `payload_data` carrying `h` and the bytes. Parks
-    the `accept` frame in a bounded per-peer gate keyed by `h`.],
+  [2], [Leader], [Queues `payload_data` carrying `h` and then the dependent
+    `accept` on the same ordered stream. Its own journal barrier runs in
+    parallel.],
   [3], [Voter 2], [Recomputes the digest over the received bytes. On a
     match it fsyncs and atomically installs the object in its payload
     store.],
-  [4], [Voter 2], [Only now replies `payload_stored` for `h`. The ACK
-    means the bytes will survive a crash.],
-  [5], [Leader], [The ACK releases every gated frame for `h`. The `accept`
-    finally goes out.],
-  [6], [Voter 2], [Receives the `accept`, verifies `h` against its store,
-    and votes. The vote cannot outrun the bytes.],
+  [4], [Voter 2], [Only after storage completes does its read loop reach the
+    adjacent `accept`. It may also return `payload_stored` to cache readiness.],
+  [5], [Voter 2], [Verifies `h` against its store, journals the accept, crosses
+    its own barrier, and only then returns `accepted`. The vote cannot outrun
+    the bytes.],
+  [6], [Leader], [Processes `accepted` only after the leader's own barrier has
+    completed, so no volatile local vote can count toward the quorum.],
 ))
 
 Races can still deliver an envelope early. A reconnect or a dropped frame
@@ -150,8 +153,8 @@ a write quorum. Recovery can always fetch the payload by digest from some
 surviving voter. And a node missing a payload for a committed slot refuses
 to serve rather than invent state.
 
-#callout(title: [Two transport modes: PSK possession, or mTLS identity], tone: "warning")[
-  Protocol v4 authenticates possession of a provider-file PSK with a
+#callout(title: [Production TCP is mTLS], tone: "warning")[
+  Protocol v6 can authenticate possession of a provider-file PSK with a
   challenge-response: a fresh nonce, a connection-unique session key, and a
   monotonically sequenced HMAC on every post-handshake frame. A wrong
   proof, a replay, tampering, or a version downgrade closes the stream.
@@ -163,13 +166,22 @@ to serve rather than invent state.
   client — runs TLS 1.3 with certificates verified against the cluster CA
   in both directions, and a peer connection's certificate common name must
   be exactly `zaxon-node-<id>` for the node id its hello claims, checked
-  on the accepting and the dialing side alike. The two modes compose:
+  on the accepting and the dialing side alike. The mechanisms compose:
   when both are configured, the PSK challenge runs inside the TLS
-  channel. Without either credential, the server refuses non-loopback
-  addresses; loopback is not a durable local-access policy, and local
-  single-node service can avoid TCP entirely through the owner-only
-  Unix-domain socket (chapter 2).
+  channel. Production startup rejects every TCP listener without TLS. The
+  narrow `--dev-psk` exception is explicit and numeric-loopback-only; it is
+  useful for the one-machine quickstart but retains the PSK's identity and
+  confidentiality limits. Plaintext TCP remains behind a failpoint-gated test
+  option. A local single-node service can use the owner-only Unix-domain socket
+  instead (chapter 2).
 ]
+
+Certificate bootstrap is intentionally smaller than cluster membership.
+An existing mTLS operator may request a one-time token for a non-revoked node
+already named in this registry. That node creates its key and CSR locally, and
+the configured issuer signs only the exact `zaxon-node-<id>` identity. The
+exchange neither changes the voter set nor grants a new role. Chapter 13 gives
+the operational sequence.
 
 == How a learner learns
 
@@ -261,15 +273,15 @@ empty, rebuilds its image from the snapshot, and catches up the remaining
 suffix normally. The cluster test exercises exactly this path: a member
 stopped across a rollover rejoins and converges to byte-identical content.
 
-#callout(title: [Snapshot transfer drops an existing proof], tone: "danger")[
+#callout(title: [Snapshot transfer confirms the existing proof], tone: "note")[
   Normal rollover already gets consensus on the physical snapshot: the
   `zx1 <name> <manifest-sha256>` metadata is the decided Paxos stop sign,
   and every caught-up member independently requires the same digest. The
-  receive path verifies the transferred manifest and image but does not carry
-  and confirm that decided stop sign before replacing state. The repair is not
-  a second consensus phase or signatures over SQLite files. Transfer the
-  retained stop-sign proof, obtain the same proof digest from a read quorum
-  over mTLS, and only then install the matching physical image.
+  receive path carries a canonical `ZXP1` encoding of that stop sign. The
+  authenticated source counts as one matching voter report, and the receiver
+  obtains enough independent matching probe replies to form a read quorum
+  before replacing state. It then verifies the manifest and physical image.
+  This is neither a second consensus phase nor signatures over SQLite files.
 ]
 
 == Failpoints

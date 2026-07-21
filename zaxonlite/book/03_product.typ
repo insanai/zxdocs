@@ -39,15 +39,16 @@ documents every command.
 #callout(title: [Security model and current status], tone: "warning")[
   Zaxonlite is a single-application database, not a multi-user SQL server.
   The application authenticates its users and decides what SQL to issue.
-  TCP now offers two transport modes. Protocol v4's shared PSK proves
-  possession of one cluster-wide secret but does not bind a configured node
-  to a unique credential or encrypt traffic, so a PSK-only TCP service
-  remains a development interface. Mutual TLS 1.3
-  (`--tls-cert`/`--tls-key`/`--tls-ca`) gives every node an
-  operator-provisioned certificate chained to one cluster CA, binds a peer
-  connection to the node id its certificate names, and encrypts the wire;
-  the one-time enrollment flow that would automate certificate issuance is
-  still future work. A single local node can instead serve over an
+  Production TCP is mutual TLS 1.3 only. Protocol v6 can still layer the
+  optional shared-PSK challenge inside TLS. An explicit PSK-only development
+  mode is restricted to numeric loopback, while plaintext TCP exists solely
+  behind the failpoint-gated test switch. Mutual TLS
+  (`--tls-cert`/`--tls-key`/`--tls-ca`) gives every node a certificate chained
+  to one cluster CA, binds a peer connection to the node id its certificate
+  names, and encrypts the wire. After the initial CA and issuer identity are
+  provisioned, the one-time token/CSR flow automates issuance for a node
+  already in the static registry without sending its private key. A single
+  local node can instead serve over an
   owner-only Unix-domain socket (`--listen unix:<path>`), where filesystem
   permissions are the boundary.
   A narrow SQLite invariant guard screens every application statement:
@@ -142,7 +143,7 @@ promise that millions of all-to-all sockets are practical.
 
 Zaxonlite does not do multi-master writes. It does not do cross-database
 transactions or SQL-visible replication controls. It does not replace a
-failed voter automatically. It bounds one epoch at 256 slots and one
+failed voter automatically. It bounds one epoch at 2,048 slots and one
 consensus group at nine voters. Both bounds are policy choices of the
 `ReplicatedLog` instantiation, not Paxos theorems.
 

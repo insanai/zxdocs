@@ -195,8 +195,9 @@ implementation quality.
     accepted value; no conflicting commit; client ambiguity resolved by ID.],
   [Minority partition], [No minority writes acknowledged; majority progress if
     its required quorums remain; returning nodes repair before voting.],
-  [Disk full or sync failure], [Node stops before sends from the failed batch;
-    no reuse of mutated memory; restart from last verified record.],
+  [Disk full or sync failure], [Node stops without publishing a durable claim
+    or client success from the failed batch. A classified request may already
+    have asked a peer to persist; recovery remains safe from verified records.],
   [Corrupt snapshot], [Hash/version rejection; no epoch activation; recovery
     from another verified source.],
 )
