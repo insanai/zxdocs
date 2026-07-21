@@ -1,3 +1,16 @@
+#let zds-number = "0002"
+#let zds-title = "Zaxonlite: Product and Delivery Plan"
+#let zds-state = "published"
+#let zds-created = "2026-07-19"
+#let zds-discussion = "Implementation specification for the Zaxonlite embedded replicated SQLite library and the zaxon CLI"
+#let zds-labels = ("architecture", "zaxonlite", "product",)
+#let zds-authors = ("paxos-zig project",)
+#let zds-category = "Architectural Specification"
+#let zds-status = "Published"
+#let zds-last-updated = "2026-07-21"
+
+#import "../../shared/zds.typ": zds-document
+
 #let ink = rgb("172033")
 #let blue = rgb("2855a6")
 #let blue-light = rgb("eaf0fb")
@@ -37,80 +50,19 @@
   *Exit criterion:* #exit
 ]
 
-#show: body => {
-  set document(
-    title: "Zaxonlite: Product and Delivery Plan",
-    author: "paxos-zig project",
-    keywords: ("Paxos", "SQLite", "Zig", "replication", "product plan"),
-  )
-  set page(
-    paper: "a4",
-    margin: (x: 22mm, top: 20mm, bottom: 22mm),
-    numbering: "1",
-    number-align: center,
-    header: context {
-      if counter(page).get().first() > 1 {
-        grid(
-          columns: (1fr, auto),
-          text(size: 8pt, fill: gray)[Zaxonlite product plan],
-          text(size: 8pt, fill: gray)[Reviewed · 2026-07-21],
-        )
-        line(length: 100%, stroke: 0.4pt + rule)
-      }
-    },
-  )
-  set text(font: "New Computer Modern", size: 10.2pt, fill: ink, lang: "en")
-  set par(justify: true, leading: 0.74em, spacing: 0.72em)
-  set heading(numbering: "1.1")
-  set raw(tab-size: 4)
-  show raw: set text(size: 8.2pt)
-  set table(stroke: 0.45pt + rule, inset: 6pt)
-  show link: set text(fill: blue)
-  show heading.where(level: 1): heading => {
-    pagebreak(weak: true)
-    block(above: 3mm, below: 5mm)[
-      #text(size: 21pt, weight: "bold", fill: ink)[#heading]
-      #line(length: 36mm, stroke: 1.4pt + blue)
-    ]
-  }
-  show heading.where(level: 2): set text(size: 14pt, fill: ink)
-  show heading.where(level: 3): set text(size: 11.5pt, fill: blue)
-  body
-}
-
-#align(center)[
-  #v(22mm)
-  #text(size: 31pt, weight: "bold", fill: ink)[Zaxonlite]
-  #v(3mm)
-  #text(size: 17pt, fill: blue)[Product and delivery plan]
-  #v(8mm)
-  #line(length: 40mm, stroke: 1.4pt + green)
-  #v(10mm)
-  #text(size: 11pt, fill: gray)[
-    A small, in-process SQL database replicated by the existing Zig
-    Multi-Paxos library
-  ]
-  #v(22mm)
-  #box(
-    width: 82%,
-    inset: 13pt,
-    radius: 5pt,
-    fill: green-light,
-    stroke: 0.6pt + green,
-  )[
-    #text(weight: "bold", fill: green)[Product promise]
-    #linebreak()
-    Link one library, open one database, and obtain a durable single-node
-    SQLite service or a highly available cluster with voters, witnesses,
-    standbys, read replicas, and gateways, without operating a separate
-    database daemon.
-  ]
-  #v(34mm)
-  #text(size: 9pt, fill: gray)[Implementation specification · 21 July 2026]
-]
-
-#pagebreak()
-#outline(title: [Contents], depth: 2)
+#show: doc => zds-document(
+  zds-number,
+  zds-title,
+  doc,
+  authors: zds-authors,
+  state: zds-state,
+  created: zds-created,
+  discussion: zds-discussion,
+  labels: zds-labels,
+  category: zds-category,
+  status: zds-status,
+  last-updated: zds-last-updated,
+)
 
 = Decision summary
 
@@ -1595,7 +1547,7 @@ Deferred stress and portability work, not blockers for this first release:
 + a 1 GiB recovery gate (the current release gate is 1 MiB), long-duration
   overload measurements, and publication of hardware-specific dqlite numbers;
 + Windows remains unsupported. The explicit first-release matrix in
-  `docs/zaxonlite-format.typ` is POSIX-only because parent-directory sync is
+  `docs/zds/records/0004-zaxonlite-format.typ` is POSIX-only because parent-directory sync is
   required and is not silently weakened.
 
 Pipelined dependent WAL writes, group sync, automatic runtime voter
@@ -1941,8 +1893,8 @@ zaxonlite/
   src/role_cluster_test.zig  # voter, witness, standby, replica suite
   src/fault_cluster_test.zig # adverse transport/storage schedules
   benchmarks/                # reproducible rqlite and pinned dqlite comparisons
-docs/zaxonlite-product-plan.typ
-docs/zaxonlite-format.typ    # frozen on-disk/wire format contract
+docs/zds/records/0002-zaxonlite-product-plan.typ
+docs/zds/records/0004-zaxonlite-format.typ  # frozen on-disk/wire format contract
 ```
 
 The state-machine and snapshot lifecycle remain together in `node.zig` because

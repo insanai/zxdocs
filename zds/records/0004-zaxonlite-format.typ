@@ -1,7 +1,29 @@
-#set document(title: "Zaxonlite Format and Compatibility Contract")
-#set page(paper: "a4", margin: 22mm)
-#set text(font: "New Computer Modern", size: 10.5pt)
-#set heading(numbering: "1.")
+#let zds-number = "0004"
+#let zds-title = "Zaxonlite Format and Compatibility Contract"
+#let zds-state = "committed"
+#let zds-created = "2026-07-20"
+#let zds-discussion = "Frozen first-release durable and wire formats, normative for upgrade checks"
+#let zds-labels = ("architecture", "zaxonlite", "formats",)
+#let zds-authors = ("paxos-zig project",)
+#let zds-category = "Format Contract"
+#let zds-status = "Normative"
+#let zds-last-updated = "2026-07-21"
+
+#import "../../shared/zds.typ": zds-document
+
+#show: doc => zds-document(
+  zds-number,
+  zds-title,
+  doc,
+  authors: zds-authors,
+  state: zds-state,
+  created: zds-created,
+  discussion: zds-discussion,
+  labels: zds-labels,
+  category: zds-category,
+  status: zds-status,
+  last-updated: zds-last-updated,
+)
 
 = Status and scope
 

@@ -1,3 +1,16 @@
+#let zds-number = "0003"
+#let zds-title = "Zaxonlite Security and Trust Plan"
+#let zds-state = "committed"
+#let zds-created = "2026-07-21"
+#let zds-discussion = "Repository security assessment, trust model, and remediation record for Zaxonlite"
+#let zds-labels = ("security", "zaxonlite",)
+#let zds-authors = ("paxos-zig project",)
+#let zds-category = "Security Assessment"
+#let zds-status = "Remediated"
+#let zds-last-updated = "2026-07-21"
+
+#import "../../shared/zds.typ": zds-document
+
 #let ink = rgb("172033")
 #let blue = rgb("2855a6")
 #let blue-light = rgb("eaf0fb")
@@ -127,84 +140,19 @@
   )
 ]
 
-#show: body => {
-  set document(
-    title: "Zaxonlite Security and Trust Plan",
-    author: "paxos-zig project",
-    keywords: ("Zaxonlite", "security", "Paxos", "SQLite", "mTLS"),
-  )
-  set page(
-    paper: "a4",
-    margin: (x: 22mm, top: 20mm, bottom: 22mm),
-    numbering: "1",
-    number-align: center,
-    header: context {
-      if counter(page).get().first() > 1 {
-        grid(
-          columns: (1fr, auto),
-          text(size: 8pt, fill: gray)[Zaxonlite security and trust plan],
-          text(size: 8pt, fill: gray)[Revised · 21 July 2026],
-        )
-        line(length: 100%, stroke: 0.4pt + rule)
-      }
-    },
-  )
-  set text(font: "New Computer Modern", size: 10.2pt, fill: ink, lang: "en")
-  set par(justify: true, leading: 0.74em, spacing: 0.72em)
-  set heading(numbering: "1.1")
-  set raw(tab-size: 4)
-  show raw: set text(size: 8.2pt)
-  set table(stroke: 0.45pt + rule, inset: 6pt)
-  show link: set text(fill: blue)
-  show heading.where(level: 1): heading => {
-    pagebreak(weak: true)
-    block(above: 3mm, below: 5mm)[
-      #text(size: 21pt, weight: "bold", fill: ink)[#heading]
-      #line(length: 36mm, stroke: 1.4pt + blue)
-    ]
-  }
-  show heading.where(level: 2): set text(size: 14pt, fill: ink)
-  show heading.where(level: 3): set text(size: 11.5pt, fill: blue)
-  body
-}
-
-#align(center)[
-  #v(22mm)
-  #text(size: 31pt, weight: "bold", fill: ink)[Zaxonlite]
-  #v(3mm)
-  #text(size: 17pt, fill: blue)[Security and trust plan]
-  #v(8mm)
-  #line(length: 40mm, stroke: 1.4pt + blue)
-  #v(10mm)
-  #text(size: 11pt, fill: gray)[
-    A SQLite-shaped security model for the embedded API,
-    local service, and trusted-network cluster
-  ]
-  #v(22mm)
-  #box(
-    width: 84%,
-    inset: 13pt,
-    radius: 5pt,
-    fill: amber-light,
-    stroke: 0.6pt + amber,
-  )[
-    #text(weight: "bold", fill: amber)[Release position]
-    #linebreak()
-    The reviewed implementation now uses protocol v6, requires mutual TLS for
-    every production TCP listener, carries and quorum-confirms the existing
-    Paxos stop-sign proof during snapshot transfer, guards SQLite invariants,
-    and bounds network/query work. Local service uses a Unix-domain socket.
-    A configured issuer now supports short-lived, single-use token bundles and
-    locally generated CSRs; ordinary traffic then uses the issued per-node mTLS
-    identity. The base data format remains plaintext and relies on OS disk
-    encryption for media-at-rest protection.
-  ]
-  #v(31mm)
-  #text(size: 9pt, fill: gray)[Repository assessment · 21 July 2026]
-]
-
-#pagebreak()
-#outline(title: [Contents], depth: 2)
+#show: doc => zds-document(
+  zds-number,
+  zds-title,
+  doc,
+  authors: zds-authors,
+  state: zds-state,
+  created: zds-created,
+  discussion: zds-discussion,
+  labels: zds-labels,
+  category: zds-category,
+  status: zds-status,
+  last-updated: zds-last-updated,
+)
 
 = Executive decision
 
