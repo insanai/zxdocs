@@ -168,10 +168,10 @@ read; every other statement runs as a replicated write.
 On a terminal the shell is a rich REPL (ZDS 0005): statements end with `;`
 and may span lines under a `...>` continuation prompt, the input line is
 edited in place with readline keys (`ctrl+a`/`ctrl+e`, word movement,
-`ctrl+w`/`ctrl+u`/`ctrl+k`), SQL keywords highlight as you type, the
-up/down arrows walk history, and `ctrl+r` is reverse incremental history
-search. Results render as aligned tables with `NULL` shown dimmed; results
-taller than the screen open in a pager (arrows scroll, `q` returns).
+`ctrl+w`/`ctrl+u`/`ctrl+k`, and `ctrl+y` yank), SQL keywords highlight as you
+type, the up/down arrows walk history, and `ctrl+r` is reverse incremental
+history search. Results render as aligned tables with `NULL` shown dimmed;
+results taller than the screen open in a pager (arrows scroll, `q` returns).
 
 ```console
 $ zaxon sql --data ./mydb
@@ -192,9 +192,11 @@ zaxon> .quit
 `.status`, `.members`, `.mode table|expanded|auto|json|csv` (`expanded`
 prints one block per record for wide rows; `auto` switches to it when a
 table would overflow the terminal), `.timer on|off`, and
-`.history [off|clear]`. `ctrl+c` cancels the statement being typed;
-`ctrl+d` on an empty line leaves. `--no-color`, `NO_COLOR`, or `TERM=dumb`
-disable styling.
+`.history [off|clear]`. `ctrl+c` cancels the statement being typed. During a
+remote statement it abandons the local wait and warns that the statement may
+still apply server-side; check its effects before retrying a write. `ctrl+d`
+on an empty line leaves. `--no-color`, `NO_COLOR`, or `TERM=dumb` disable
+styling.
 
 When stdin or stdout is not a terminal — pipes, scripts, CI — the shell
 keeps its historical plain form, byte for byte: a bare `zaxon> ` prompt,

@@ -379,9 +379,10 @@ broad private-key mode, or a missing CA
 file fails startup with `-- TLS IDENTITY FAILED --`. Keep the key files
 readable by the service user only; like the PSK, they are named by path
 and never by value. The implementation links the system OpenSSL 3
-libraries rather than bundling a TLS stack; the build defaults to the
-Homebrew `openssl@3` prefix and takes `-Dopenssl-prefix` for other
-installations.
+libraries rather than bundling a TLS stack; macOS builds default to the
+Homebrew `openssl@3` prefix. Other targets take `-Dopenssl-prefix` pointing at
+an OpenSSL 3 SDK built for that target. Windows SDKs must provide the standard
+`libssl.lib` and `libcrypto.lib` import libraries under `lib`.
 
 `--revocation-file <path>` (or `ZAXON_REVOCATION_FILE`) supplies the simple
 static-membership revocation override: one configured node ID per line, with
