@@ -1,0 +1,106 @@
+# Book and design-record build for the zxdocs repository (insanai/zxdocs).
+#
+# Staged inside docs/.github/ while the sources still live in the paxos-zig
+# monorepo; GitHub runs it once docs/ becomes its own repository.
+#
+# The books compile their benchmark tables from recorded result files in
+# the code repositories, so the job reassembles the monorepo shape:
+# paxos-zig at the workspace root, zaxonlite in zaxonlite/, and this
+# repository in docs/. Every PDF is published to GitHub Pages, which is
+# where the README links in paxos-zig and zaxonlite point:
+#   https://insanai.github.io/zxdocs/part-time-parliament.pdf
+#   https://insanai.github.io/zxdocs/zaxonlite.pdf
+name: Books
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compile books and records
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout paxos-zig (benchmark results for the paxos book)
+        uses: actions/checkout@v4
+        with:
+          repository: insanai/paxos-zig
+          path: .
+
+      - name: Checkout zaxonlite (benchmark results for the zaxonlite book)
+        uses: actions/checkout@v4
+        with:
+          repository: insanai/zaxonlite
+          path: zaxonlite
+
+      - name: Checkout zxdocs
+        uses: actions/checkout@v4
+        with:
+          path: docs
+
+      - name: Install Typst
+        uses: typst-community/setup-typst@v4
+        with:
+          typst-version: "0.15"
+
+      - name: Compile the books
+        run: |
+          set -eux
+          mkdir -p site
+          typst compile --root . docs/book.typ site/part-time-parliament.pdf
+          typst compile --root . docs/zaxonlite/book.typ site/zaxonlite.pdf
+
+      - name: Compile every design record
+        run: |
+          set -eux
+          for record in docs/zds/records/*.typ; do
+            stem="$(basename "$record" .typ)"
+            typst compile --root docs "$record" "site/zds-${stem}.pdf"
+          done
+          typst compile --root docs docs/zds/index.typ site/zds-index.pdf
+
+      - name: Write the index page
+        run: |
+          set -eu
+          {
+            echo '<!doctype html><meta charset="utf-8"><title>zxdocs</title>'
+            echo '<h1>zxdocs</h1>'
+            echo '<p>Books and design records for the insanai data projects.</p>'
+            echo '<h2>Books</h2><ul>'
+            echo '<li><a href="part-time-parliament.pdf">The Part-Time Parliament, from paper to library (paxos-zig)</a></li>'
+            echo '<li><a href="zaxonlite.pdf">The Zaxonlite book</a></li>'
+            echo '</ul><h2>Design records</h2><ul>'
+            for pdf in site/zds-*.pdf; do
+              name="$(basename "$pdf")"
+              echo "<li><a href=\"${name}\">${name%.pdf}</a></li>"
+            done
+            echo '</ul>'
+          } > site/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Publish to GitHub Pages
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
