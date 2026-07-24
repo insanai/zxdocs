@@ -75,7 +75,7 @@ jobs:
           {
             echo '<!doctype html><meta charset="utf-8"><title>zxdocs</title>'
             echo '<h1>zxdocs</h1>'
-            echo '<p>Books and design records for the insanai data projects.</p>'
+            echo '<p>Books and ZDS design records for paxos-zig and zaxonlite.</p>'
             echo '<h2>Books</h2><ul>'
             echo '<li><a href="part-time-parliament.pdf">The Part-Time Parliament, from paper to library (paxos-zig)</a></li>'
             echo '<li><a href="zaxonlite.pdf">The Zaxonlite book</a></li>'

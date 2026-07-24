@@ -1,6 +1,8 @@
 # zxdocs
 
-The books and design records behind the insanai data projects.
+The books and design records for
+[paxos-zig](https://github.com/insanai/paxos-zig) and
+[zaxonlite](https://github.com/insanai/zaxonlite).
 
 ## Why a separate repository for words
 
@@ -31,13 +33,23 @@ The two books are deliberately parallel in structure. When one grows a
 chapter, the other grows its counterpart. A reader who has learned one
 should feel at home in the other.
 
-**Design records (ZDS).** `zds/` holds the Zaxon Discussions: numbered,
-immutable design records in the RFC tradition, one Typst file each. The
-process itself is record 0001. The zaxonlite product plan and safety
-argument is 0002, the wire/disk compatibility policy is 0004, and the
-interactive shell design is 0005. Kynetica's KDS records follow the same
-process in their own repository. If you want to know why something is the
-way it is, the answer is in a record, with the alternatives that lost.
+**Design records (ZDS).** `zds/` holds the Zaxon Discussions: the design
+records for paxos-zig and zaxonlite, one Typst file each under
+`zds/records/`. The structure follows IETF RFCs and Oxide's RFD process,
+because those formats force explicit scope, status, rationale, and
+alternatives instead of relying on implicit context. A record starts as a
+placeholder draft (`XXXXX-slug.typ`), gets a permanent four-digit number
+when a maintainer promotes it (`zig build zds-promote`), and then moves
+through the lifecycle: `prediscussion`, `discussion`, `accepted`,
+`published`, `committed`, or `abandoned`. A number is never reused.
+
+The process defines itself: it is record 0001. The zaxonlite product plan
+and safety argument is 0002, the wire/disk compatibility policy is 0004,
+and the interactive shell design is 0005. Kynetica's KDS records are the
+sibling process this layout mirrors. If you want to know why something is
+the way it is, the answer is in a record, with the alternatives that lost.
+The books describe the current system; a ZDS records the decision that
+made it that way.
 
 **Source papers.** Lamport's original *The Part-Time Parliament* is kept at
 `lamport-paxos.pdf`, because you should be able to check us against it.
@@ -84,8 +96,10 @@ fixed, not the number.
 
 ## Rules of this repository
 
-- A published ZDS record is immutable. Corrections get a new record that
-  supersedes the old one.
+- A ZDS number is never reused. A superseded record moves to the
+  `abandoned` state; its replacement is a new record with a new number.
+- Lifecycle state changes are ordinary reviewed file edits: the `zds-*`
+  metadata in the record and its `registry.typ` entry move together.
 - The two books stay structurally parallel and complete. A change that
   ships a feature without its chapter is not done.
 - PDF is the archival target. The HTML bundle export is experimental.

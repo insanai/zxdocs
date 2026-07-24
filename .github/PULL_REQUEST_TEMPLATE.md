@@ -10,8 +10,10 @@
 - [ ] The two books stay structurally parallel: a chapter added or
       reshaped in one has its counterpart in the other, or the summary
       explains why not.
-- [ ] Published ZDS records are untouched. Corrections arrive as a new
-      record that supersedes the old one.
+- [ ] ZDS changes follow record 0001: numbers are never reused, lifecycle
+      state changes update the record's `zds-*` metadata and its
+      `registry.typ` entry together, and a superseding design arrives as a
+      new record while the old one moves to `abandoned`.
 - [ ] Every number in a book table comes from a recorded benchmark result
       file, not from a keyboard.
 - [ ] Prose changes that describe code behavior match the code as it is
