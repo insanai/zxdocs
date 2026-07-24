@@ -31,16 +31,21 @@ jobs:
     name: Compile books and records
     runs-on: ubuntu-latest
     steps:
+      # While the sibling repos are private, add a CROSS_REPO_TOKEN secret
+      # (fine-grained PAT with read access to them); once public, the
+      # default token fallback is enough.
       - name: Checkout paxos-zig (benchmark results for the paxos book)
         uses: actions/checkout@v4
         with:
           repository: insanai/paxos-zig
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           path: .
 
       - name: Checkout zaxonlite (benchmark results for the zaxonlite book)
         uses: actions/checkout@v4
         with:
           repository: insanai/zaxonlite
+          token: ${{ secrets.CROSS_REPO_TOKEN || github.token }}
           path: zaxonlite
 
       - name: Checkout zxdocs
