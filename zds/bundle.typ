@@ -74,3 +74,16 @@
 #document("pdf/zds-0005-zaxon-interactive-shell.pdf")[
   #include "records/0005-zaxon-interactive-shell.typ"
 ]
+
+#document(
+  "zds/0006-windows-durability.html",
+  title: [ZDS 0006: Windows Durability and the Supported Platform Floor],
+  author: ("Zaxon Contributors",),
+  description: [States how an authoritative pathname transition is made durable on Windows, where no directory sync exists: NTFS records the change in a volume-wide write-ahead log that a file flush commits, so the barrier follows the rename instead of preceding it. Sets the supported floor at Windows 10 1809 on NTFS, enforced by a startup probe rather than a version check.],
+)[
+  #include "records/0006-windows-durability.typ"
+]
+
+#document("pdf/zds-0006-windows-durability.pdf")[
+  #include "records/0006-windows-durability.typ"
+]
