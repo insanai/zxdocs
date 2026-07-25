@@ -33,8 +33,10 @@ to guess, skip an unknown durable record, or silently negotiate down to an
 unauthenticated protocol.
 
 Supported production matrix: POSIX systems whose file and parent-directory
-`fsync` semantics meet the storage contract. Windows is rejected by the
-durability layer until equivalent directory durability is implemented.
+`fsync` semantics meet the storage contract, and Windows 10 release 1809 or
+Server 2019 and newer on NTFS, under the durability model in ZDS 0006. A node
+probes the volume at startup and refuses to open where those semantics are
+missing. Unix socket listeners remain POSIX-only.
 
 = Compatibility policy
 

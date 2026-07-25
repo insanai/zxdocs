@@ -115,7 +115,8 @@ directly.
 #callout(title: "Scope is part of correctness", tone: "warning")[
   The guarantees in this book are conditional on that boundary.
   "Acknowledged means durable and decided" holds on POSIX filesystems with
-  working fsync. Wire confidentiality holds only inside TLS, and offline-media
+  working fsync, and on NTFS from Windows 10 1809 onward, which a node
+  verifies before it opens. Wire confidentiality holds only inside TLS, and offline-media
   confidentiality depends on OS disk or filesystem encryption.
   Availability after a voter loss holds only if your orchestration
   replaces the voter.

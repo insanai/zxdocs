@@ -55,12 +55,13 @@ state them as pairs.
   stays serialized until its barrier completes. The invariant: a node never
   claims durable state it could forget in a crash. A forgotten promise would
   let two quorums stop intersecting, so this rule is safety too.
-+ *Name with the bytes.* The parent directory is synced after every
-  authoritative create, link, or rename. The invariant: an
++ *Name with the bytes.* Every authoritative create, link, or rename is
+  followed by a sync that persists the new name. The invariant: an
   authoritative file survives a crash together with its directory
   entry. Without this rule, journal names, payload objects, `identity`,
   `CURRENT`, and snapshot generations could sync their contents and
-  still vanish from the directory.
+  still vanish from the directory. Which handle carries that sync is a
+  platform question, answered later in this chapter.
 + *Commit before apply.* A batch is applied only after its slot
   commits, and batches are applied contiguously in slot order. The
   invariant: the materialized image only ever reflects a decided
@@ -123,6 +124,45 @@ the barrier. A later commit-only journal marker is derived from the durable
 accepting quorum and is omitted; phase one reconstructs it after a crash. The
 materialized follower database is likewise a rebuildable cache, so page apply
 does not add another full barrier.
+
+== Where a name becomes durable
+
+Rule 3 says the name must survive with the bytes. It does not say which
+handle carries that promise, because the two platform families disagree.
+
+POSIX keeps the name in the parent directory, so the parent is what gets
+synced, and it is synced after the rename. Windows keeps it somewhere else.
+NTFS is write-ahead logged: `$LogFile` is one sequential metadata journal per
+volume, so flushing it through a given record persists every record before it,
+and flushing a file forces the log through that file's last update. Microsoft
+documents the file rather than the directory as the durable unit — the way to
+be sure a newly created empty file has reached disk is to flush the file.
+There is no directory sync on Windows and none is needed.
+
+The consequence is an ordering flip, and it is easy to get wrong. POSIX syncs
+the file, renames, then syncs the parent. Windows syncs the file, renames,
+then syncs the file again. Turning the directory sync into a no-op without
+moving the barrier leaves nothing flushed after the rename: it compiles, it
+passes the crash matrix — process death loses nothing under any sync mode —
+and it drops acknowledged writes on power loss. `syncPathnameTransition` hides
+the difference so no call site has to remember which way round it goes.
+
+A directory sync may still be skipped where a later barrier is named, which is
+the `...BeforeBarrier` contract from the previous section. Both snapshot
+renames qualify: a snapshot becomes authoritative only when the stop sign
+naming it is journaled and synced, and an installed snapshot is followed at
+once by the `CURRENT` write. Transitions with no such successor — enrollment
+tokens, published identities, backups, journal creation — take their barrier
+immediately.
+
+The model needs POSIX rename semantics and a metadata log, so Windows is
+supported from release 1809 and Server 2019 on NTFS. Rather than read a
+version number, a node probes: it creates a file, holds it open, and renames a
+second file over it. Replacing an open file is exactly what the older Windows
+rename cannot do, so one operation rejects old releases, FAT volumes, and
+network filesystems that quietly degrade. ZDS 0006 records the reasoning, and
+is candid that the log-ordering property is an inference from how NTFS is
+built rather than a documented guarantee.
 
 == The recovery sequence
 
