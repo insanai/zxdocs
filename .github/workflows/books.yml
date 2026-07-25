@@ -1,13 +1,10 @@
 # Book and design-record build for the zxdocs repository (insanai/zxdocs).
 #
-# Staged inside docs/.github/ while the sources still live in the paxos-zig
-# monorepo; GitHub runs it once docs/ becomes its own repository.
-#
-# The books compile their benchmark tables from recorded result files in
-# the code repositories, so the job reassembles the monorepo shape:
-# paxos-zig at the workspace root, zaxonlite in zaxonlite/, and this
-# repository in docs/. Every PDF is published to GitHub Pages, which is
-# where the README links in paxos-zig and zaxonlite point:
+# The books compile their benchmark tables from recorded result files that
+# live in the code repositories, so the job checks out three: paxos-zig at
+# the workspace root, zaxonlite in zaxonlite/, and this repository in
+# docs/. Every PDF is published to GitHub Pages, which is where the README
+# links in paxos-zig and zaxonlite point:
 #   https://insanai.github.io/zxdocs/part-time-parliament.pdf
 #   https://insanai.github.io/zxdocs/zaxonlite.pdf
 name: Books
