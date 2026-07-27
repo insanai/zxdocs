@@ -87,3 +87,16 @@
 #document("pdf/zds-0006-windows-durability.pdf")[
   #include "records/0006-windows-durability.typ"
 ]
+
+#document(
+  "zds/0007-paxos-zig-0-1-hardening.html",
+  title: [ZDS 0007: paxos-zig 0.1.x Safety Hardening],
+  author: ("Zaxon Contributors",),
+  description: [A focused patch release that enforces the durability boundary in every build mode],
+)[
+  #include "records/0007-paxos-zig-0-1-hardening.typ"
+]
+
+#document("pdf/zds-0007-paxos-zig-0-1-hardening.pdf")[
+  #include "records/0007-paxos-zig-0-1-hardening.typ"
+]
