@@ -216,7 +216,8 @@ You describe the cluster in a `zaxonlite_cluster_options` struct. It
 names the data directory, this process's `node_id`, and the member
 registry: an array of `zaxonlite_member { id, address, role }` with
 `host:port` addresses. It also takes an optional `cluster_id` mixed into
-the derived database identity, an optional PSK (`auth_secret` plus
+the database identity derived when a member's data directory is first
+created, an optional PSK (`auth_secret` plus
 `auth_secret_length`) for the authenticated transport, and
 `startup_timeout_ms`, where 0 selects the 10000 ms default.
 

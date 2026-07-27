@@ -105,11 +105,15 @@ replicas. Drills 3 and 4 mirror the wipe, resync, and restart steps that
 `zaxonlite/src/cluster_test.zig` runs against real `zaxon serve` processes.
 
 The lab needs a registry the quickstart cluster does not have. A witness
-votes, and the database identity is derived from the voting member ids plus
-the cluster id, so adding a witness describes a different database than the
-one your chapter 1 directories hold. That is a reconfiguration, not a
-restart with new flags. We sidestep it with fresh directories and a
-five-member registry: three data voters, one witness, one read replica.
+votes, and the database identity is derived once, at bootstrap, from the
+voting member ids plus the cluster id, so adding a witness describes a
+different database than the one your chapter 1 directories hold. Changing
+a voting set is never a restart with new flags. The one supported online
+reconfiguration is the decided one-for-one replacement of a data voter
+from chapter 13, and it changes the members, never the identity or the
+count. It does not add a witness. We sidestep the problem with fresh
+directories and a five-member registry: three data voters, one witness,
+one read replica.
 
 ```sh
 zaxon serve --data ./lab/n1 --node 1 --listen 127.0.0.1:7101 \

@@ -43,7 +43,8 @@ The CLI's loopback-only `--dev-psk` convenience is deliberately not exposed by
 this production embedding facade.
 
 There is no `database_id` field here. The database identity is derived
-from the member registry plus `cluster_id`. Agreeing on the registry is
+from the member registry plus `cluster_id` when a member's directory is
+first created; every later open checks it. Agreeing on the registry is
 agreeing on the database. Changing either later names a different
 database.
 
@@ -236,8 +237,13 @@ its own.
 
 Stated directly, per the release limits in `docs/zds/records/0004-zaxonlite-format.typ`:
 
-+ *No automatic membership change.* The voter set is fixed at open.
-  Replacing a failed voter is an operator procedure, not an API call.
++ *No online membership change.* An embedded cluster's voter set is
+  fixed at open, deliberately: the facade writes no decided registry,
+  so membership is exactly the member slice you pass. Replacing a
+  failed voter here is an operator procedure, not an API call. The
+  decided one-for-one voter replacement (`zaxon replace-voter`)
+  belongs to the network-hosted `zaxon serve` product, which does
+  persist a decided registry (chapter 7), not to this facade.
 + *No dynamic registry.* Adding even a read replica means restarting
   members with the new registry, keeping the same voters and the same
   `cluster_id`.

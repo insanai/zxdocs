@@ -109,10 +109,14 @@ and the node's own `--role` accept `data-voter`, `witness`, `standby`,
 database state at all: it only routes client traffic to members that serve
 reads or writes. Chapter 7 explains what each role may do.
 
-With more than one member, `serve` derives a database identity from the
-membership, plus `--cluster-id` when given. Two clusters with the same
-member list but different `--cluster-id` values refuse to mix. That fence
-protects safety against cross-cluster replay.
+With more than one member, a first boot of `serve` derives a database
+identity from the membership, plus `--cluster-id` when given. The
+derivation runs only at bootstrap, when the data directory holds no
+decided registry yet. From then on the durable registry carries the
+database identity and the membership; startup flags that conflict with it
+are a startup error (`RegistryMismatch`), never a re-derivation. Two
+clusters with the same member list but different `--cluster-id` values
+refuse to mix. That fence protects safety against cross-cluster replay.
 
 For a single local node that should not open a TCP port at all,
 `--listen unix:<path>` serves over a Unix-domain socket instead.
@@ -155,9 +159,17 @@ for test controllers only. Never set it in production.
 
 `--enrollment-ca-key <path>` deliberately turns a storage node into a
 certificate issuer. The file must be a regular, non-symlink, owner-only CA
-private key matching `--tls-ca`; most nodes should omit it. It does not enable
-dynamic membership. Chapter 13 gives the two-command enrollment procedure and
-the crash semantics.
+private key matching `--tls-ca`; most nodes should omit it. Enrollment adds
+no member by itself: it issues identities only for nodes the decided
+registry names, and a replacement voter can be issued a token only after
+the configuration that includes it is chosen. Chapter 13 gives the
+two-command enrollment procedure and the crash semantics.
+
+`--admin <name>`, repeatable, authorizes one administrator principal for
+the privileged membership operations below. The name authorizes the mutual
+TLS common name `zaxon-admin-<name>`, issued by the same cluster CA. A
+server with an empty allow-list refuses every membership change, and the
+development PSK transport cannot reach those operations at all.
 
 == Data commands: `sql`, `exec`, `query`
 
@@ -298,6 +310,51 @@ between "start the cluster" and "first write". `stop` asks one served node
 to shut down cleanly and prints the bare acknowledgement `{"ok":true}`. It
 stops one process, not the cluster.
 
+== Membership commands: `membership status`, `replace-voter`
+
+Both commands are client-mode only, and both target a network-hosted TCP
+cluster, which persists its membership as a decided registry: the
+consensus-decided mapping from configuration ID to node IDs, roles, and
+endpoints. A unix-socket local node keeps flag-fixed membership and
+answers with the error `no_registry`.
+
+`membership status` is read-only. It prints the server's JSON view of the
+decided registry: the database and configuration IDs, the registry digest,
+the decided nodes with roles and endpoints, the node-ID allocation fence,
+and three live fields. `phase` names the replacement lifecycle position:
+`idle`, `prepared`, `proposed`, `chosen`, `active-degraded`, `complete`,
+or `retired`. `quorum_available` is an operational observation, not an
+authorization: recently authenticated peers, including this node, satisfy
+the majority quorums. `installation_state` tracks the replacement voter's
+state transfer: `not-applicable`, `not-started`, `transferring`,
+`verifying`, `installed`, `active`, or `failed`.
+
+`replace-voter` asks the cluster to replace exactly one data voter with
+one fresh data voter through a decided configuration change:
+
+```console
+$ zaxon replace-voter --connect 10.0.0.1:9901 \
+    --operation 7 --expected-config 4 \
+    --old-node 2 --new-node 5@10.0.0.5:9901 \
+    --tls-cert admin.crt --tls-key admin.key --tls-ca ca.crt
+```
+
+All four flags are required. `--operation` is a caller-chosen `u64` that
+must exceed every previously decided operation ID; repeating a retained
+operation is an idempotent retry, and an expired one is rejected.
+`--expected-config` must name the configuration you observed, so a request
+can never race a membership change you have not seen. `--new-node` names a
+fresh node ID above the allocation fence, with the endpoint the cluster
+should dial.
+
+The command is privileged. It requires mutual TLS with an administrator
+certificate whose common name is `zaxon-admin-<name>` for a name in the
+server's allow-list (`--admin`, or the config file's `admins` field).
+Replacement also needs at least three voters, because the survivors alone
+must still satisfy the sealed configuration's read quorum. Chapter 7
+explains the replacement lifecycle; chapter 13 gives the operational
+procedure.
+
 == Identity bootstrap: `enroll-token`, `enroll`
 
 `enroll-token` is a client-mode operator command. It uses an existing mTLS
@@ -324,6 +381,12 @@ key and directory are owner-only. An existing destination is never replaced,
 and the bundle is removed after success. The issuer consumes the token before
 signing, so a lost response or installation failure is deliberately
 fail-closed: issue a new token rather than retrying the old one.
+
+On an enrolling replacement voter, run `enroll` with `--data <dir>` as
+well. It then writes a one-shot `JOIN` descriptor into the (possibly not
+yet created) data directory, recording the decided database ID, the
+configuration, and the registry digest, so the node's first start adopts
+the cluster's identity instead of deriving one from flags.
 
 == Maintenance: `snapshot`, `backup`, `integrity-check`, `recover`
 
@@ -389,6 +452,8 @@ each optional:
   [`enrollment_ca_key`], [Owner-only CA private key enabling token/CSR
     issuance on this server. Omit it on ordinary nodes.],
   [`revocation_file`], [Node-ID denylist reloaded by a serving node.],
+  [`admins`], [Array of administrator names for privileged membership
+    operations, as for repeated `--admin` flags.],
   [`sync`], [Durability sync mode, as for `--sync`: `full` (the
     default) or `os`.],
 )

@@ -39,7 +39,7 @@ documents every command.
 #callout(title: [Security model and current status], tone: "warning")[
   Zaxonlite is a single-application database, not a multi-user SQL server.
   The application authenticates its users and decides what SQL to issue.
-  Production TCP is mutual TLS 1.3 only. Protocol v6 can still layer the
+  Production TCP is mutual TLS 1.3 only. Protocol v7 can still layer the
   optional shared-PSK challenge inside TLS. An explicit PSK-only development
   mode is restricted to numeric loopback, while plaintext TCP exists solely
   behind the failpoint-gated test switch. Mutual TLS
@@ -47,7 +47,7 @@ documents every command.
   to one cluster CA, binds a peer connection to the node id its certificate
   names, and encrypts the wire. After the initial CA and issuer identity are
   provisioned, the one-time token/CSR flow automates issuance for a node
-  already in the static registry without sending its private key. A single
+  already named in the decided registry without sending its private key. A single
   local node can instead serve over an
   owner-only Unix-domain socket (`--listen unix:<path>`), where filesystem
   permissions are the boundary.
@@ -143,8 +143,10 @@ promise that millions of all-to-all sockets are practical.
 
 Zaxonlite does not do multi-master writes. It does not do cross-database
 transactions or SQL-visible replication controls. It does not replace a
-failed voter automatically. It bounds one epoch at 2,048 slots and one
-consensus group at nine voters. Both bounds are policy choices of the
+failed voter automatically; a served cluster does support
+operator-initiated one-for-one replacement of a data voter through the
+decided `zaxon replace-voter` operation (chapter 7). It bounds one epoch
+at 2,048 slots and one consensus group at nine voters. Both bounds are policy choices of the
 `ReplicatedLog` instantiation, not Paxos theorems.
 
 #teach_back([

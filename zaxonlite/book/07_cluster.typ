@@ -62,12 +62,16 @@ has the row, byte, text, and VM-step budgets described in chapter 13.
 
 == Registry, voter membership, and scale
 
-Every node is configured with the same role registry. The shared
-`database_id` is derived deterministically from the sorted voter ids, plus
-an optional `--cluster-id`. A mis-configured process therefore cannot join
-the wrong database. The `hello` handshake rejects it. Election priority is
-the node id. That gives deterministic tie-breaking and does not affect
-safety.
+Every node starts from the same role registry. At bootstrap, when no
+decided registry exists yet, the shared `database_id` is derived
+deterministically from the sorted voter ids, plus an optional
+`--cluster-id`. The derivation runs only then. Afterwards the decided
+registry carries the database identity: changed flags cannot re-derive
+it, and a conflicting startup is refused (`RegistryMismatch`). A voter
+replacement changes the voter set without ever changing the database. A
+mis-configured process therefore cannot join the wrong database. The
+`hello` handshake rejects it. Election priority is the node id. That
+gives deterministic tie-breaking and does not affect safety.
 
 Only two roles enter Paxos quorums: `data-voter` and `witness`. A data
 voter may campaign, and it materializes SQLite. A witness votes but cannot
@@ -90,6 +94,52 @@ deployment to three or nine nodes. The implementation bound is a choice. Be
 clear about what extra replicas buy you: better read placement and better
 failure placement. They do not buy write throughput. SQLite has a single
 writer. Aggregate write scale requires independent databases or shards.
+
+== The decided registry and voter replacement
+
+A network-hosted `zaxon serve` cluster persists its membership as a
+decided registry: the consensus-decided mapping from configuration ID to
+node IDs, roles, and endpoints. Bootstrap flags create configuration 1.
+From then on the durable registry is authoritative, and conflicting
+startup flags are a startup error. Embedded clusters and unix-socket
+local nodes keep flag-fixed membership and write no registry.
+
+The registry backs exactly one online membership change: replacing one
+data voter with one fresh data voter. The operation is operator-initiated
+and privileged. It requires an administrator certificate
+(`zaxon-admin-<name>`) named in the server's allow-list, and it needs at
+least three voters, because the survivors alone must still satisfy the
+sealed configuration's read quorum. Chapter 2 documents the
+`zaxon replace-voter` and `zaxon membership status` commands.
+
+The lifecycle rides the epoch machinery from chapter 6:
+
++ The old configuration's voters choose a stop sign whose `zx2` metadata
+  binds the checkpoint, the digest of the next registry, and a bounded
+  replacement seed: the operation ID, the old node, the new node, and
+  its endpoint. The next registry is therefore a pure function of the
+  current registry and the chosen stop sign.
++ Survivors rebuild the next registry deterministically from the seed,
+  verify its digest against the decided metadata, and activate it
+  through an in-process transport swap: client TCP connections stay
+  open, peer senders and admission rebuild from the registry, and
+  writes pause briefly. A crash on either side of the durable
+  `REGISTRY` pointer converges by restart.
++ The replacement voter enrolls only after the stop is chosen. It
+  fetches the decided registry blob during snapshot install, verifies it
+  against the quorum-confirmed proof digest, installs it durably, and
+  only then votes.
++ The removed voter stays permanently sealed on its final configuration.
+  Admission rejects its node ID even with a still-valid certificate, and
+  the monotonic node-ID allocation fence retires the ID forever.
+
+Retrying a replacement is idempotent while its record is retained: the
+registry keeps a fixed ring of the 32 newest replacement records, and an
+expired operation ID is rejected. While an operation runs,
+`membership status` reports the live `phase`, `quorum_available`, and
+`installation_state` fields (chapter 2). Automatic replacement remains
+out of scope: nothing detects a failed voter or chooses its successor
+for you.
 
 == Payload gating: votes never outrun bytes
 
@@ -154,7 +204,7 @@ surviving voter. And a node missing a payload for a committed slot refuses
 to serve rather than invent state.
 
 #callout(title: [Production TCP is mTLS], tone: "warning")[
-  Protocol v6 can authenticate possession of a provider-file PSK with a
+  Protocol v7 can authenticate possession of a provider-file PSK with a
   challenge-response: a fresh nonce, a connection-unique session key, and a
   monotonically sequenced HMAC on every post-handshake frame. A wrong
   proof, a replay, tampering, or a version downgrade closes the stream.
@@ -178,8 +228,10 @@ to serve rather than invent state.
 
 Certificate bootstrap is intentionally smaller than cluster membership.
 An existing mTLS operator may request a one-time token for a non-revoked node
-already named in this registry. That node creates its key and CSR locally, and
-the configured issuer signs only the exact `zaxon-node-<id>` identity. The
+already named in the decided registry. That node creates its key and CSR
+locally, and the configured issuer signs only the exact `zaxon-node-<id>`
+identity. Token issuance checks the decided registry, so a replacement voter
+can enroll only after the stop sign choosing its membership is decided. The
 exchange neither changes the voter set nor grants a new role. Chapter 13 gives
 the operational sequence.
 
@@ -275,9 +327,11 @@ stopped across a rollover rejoins and converges to byte-identical content.
 
 #callout(title: [Snapshot transfer confirms the existing proof], tone: "note")[
   Normal rollover already gets consensus on the physical snapshot: the
-  `zx1 <name> <manifest-sha256>` metadata is the decided Paxos stop sign,
-  and every caught-up member independently requires the same digest. The
-  receive path carries a canonical `ZXP1` encoding of that stop sign. The
+  versioned stop metadata (`zx1 <name> <manifest-sha256>` on a
+  registry-less host, `zx2` with the next-registry digest on a
+  registry-backed server) is the decided Paxos stop sign, and every
+  caught-up member independently requires the same digest. The receive
+  path carries a canonical `ZXP2` proof encoding of that stop sign. The
   authenticated source counts as one matching voter report, and the receiver
   obtains enough independent matching probe replies to form a read quorum
   before replacing state. It then verifies the manifest and physical image.

@@ -310,7 +310,10 @@ definition current, so every read is linearizable.
     node type, leader, ballot, decided and applied slots, journal
     record count, the 2,048-slot epoch capacity, chain hash, page size,
     and installed snapshot name. The `role` and `node_type` strings are
-    static.],
+    static. The membership fields a registry-backed `zaxon serve`
+    status adds (`phase`, `quorum_available`, `installation_state`)
+    belong to the served surface (chapter 12), not to this embedded
+    view.],
 )
 
 == Advanced: hosting the transport yourself

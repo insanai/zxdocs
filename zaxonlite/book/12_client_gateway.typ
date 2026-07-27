@@ -25,7 +25,7 @@ body, so it is never zero. The bound is 64 MiB, and anything larger is a
 protocol error. The first frame on any connection must be a `hello`:
 
 #field_table(
-  [0, 2], [`version`], [Protocol version. Must equal 4 exactly. Any
+  [0, 2], [`version`], [Protocol version. Must equal 7 exactly. Any
     other value is rejected (`UnsupportedProtocolVersion`) and the
     connection closes. There is no downgrade negotiation, because a
     silent fallback would turn a configuration error into a security
@@ -33,8 +33,9 @@ protocol error. The first frame on any connection must be a `hello`:
   [2, 1], [`kind`], [`ConnectionKind`: 0 = peer, 1 = client. Clients
     send 1.],
   [3, 4], [`node_id`], [The sender's node id. Clients send 0.],
-  [7, 16], [`database_id`], [The cluster's derived database identity.
-    Clients send 0.],
+  [7, 16], [`database_id`], [The cluster's database identity, derived
+    once at bootstrap and carried by the node's durable state
+    afterwards. Clients send 0.],
   [23, 8], [`configuration_id`], [The sender's epoch. Clients send 0.],
 )
 
@@ -49,7 +50,7 @@ one bounded `enrollment_request`, not arbitrary RPC.
 When the server is configured with a pre-shared secret, the client's
 `hello` is immediately followed by a challenge-response handshake. The
 implementation is `zaxonlite/src/transport_auth.zig`, specified in the
-format contract under Network protocol v6. From the client's
+format contract under Network protocol v7. From the client's
 perspective:
 
 + Read one `auth_challenge` frame. It carries a fresh 32-byte nonce and
@@ -139,6 +140,10 @@ fields are compatible, so ignore fields you do not use. The dispatch in
   [`issue-enrollment-token`], [Issuer-only: creates a short-lived bundle secret
     for one non-revoked configured peer. The caller is already authenticated by
     normal mTLS.],
+  [`membership`], [Reports the decided registry, replacement phase, and
+    quorum health. Registry-backed servers only.],
+  [`replace-voter`], [Privileged: replaces one data voter with one fresh
+    data voter through a decided configuration change.],
   [`failpoint`], [Arms a named fault. Test builds only.],
   [`stop`], [Requests a graceful shutdown.],
   [`backup`], [Streams a verified copy of the database. Not an
@@ -148,11 +153,13 @@ fields are compatible, so ignore fields you do not use. The dispatch in
 The subsections that follow give each op's request fields and success
 response. A field not marked optional is required.
 
-Protocol v6 applies no permission matrix to this list. That matches the
-single-application design: possession of the embedded handle or access to the
-service means full database authority. An application that serves unrelated
-users must authenticate them and expose only its own permitted operations.
-Failpoints remain a test-only capability and must be disabled in real data
+Protocol v7 applies no permission matrix to this list, with one exception:
+`replace-voter` requires an administrator certificate, described in the
+membership section below. Everything else matches the single-application
+design: possession of the embedded handle or access to the service means
+full database authority. An application that serves unrelated users must
+authenticate them and expose only its own permitted operations. Failpoints
+remain a test-only capability and must be disabled in real data
 directories.
 
 === Observing the cluster: status, members, leader, hash
@@ -160,16 +167,21 @@ directories.
 These four ops take no request fields beyond `op` itself.
 
 `status` answers with `node_id`, `database_id`, `configuration_id`,
-`role`, `node_type`, `leader`, `ballot` (an object with `round`,
-`priority`, and `node`), `decided_slot`, `applied_slot`,
-`journal_records`, `epoch_capacity`, `chain`, `page_size`, and
-`snapshot`. It describes the one node you asked, so it is the op you
-send with `require_leader = false` when you want a follower's view.
+`role`, `node_type`, `leader`, `phase`, `quorum_available`,
+`installation_state`, `ballot` (an object with `round`, `priority`, and
+`node`), `decided_slot`, `applied_slot`, `journal_records`,
+`epoch_capacity`, `chain`, `page_size`, and `snapshot`. The three
+membership fields are defined in the membership section below; on a
+registry-less host `phase` is `idle` and `installation_state` is
+`not-applicable`. `status` describes
+the one node you asked, so it is the op you send with
+`require_leader = false` when you want a follower's view.
 
-`members` answers with `voter_membership:"static"` and a `nodes` array.
-Each entry carries `id`, `host`, `port`, `role`, `votes`, `campaigns`,
-`stores_log`, `serves_reads`, `serves_writes`, `promotion_eligible`,
-`self`, and `leader`.
+`members` answers with `voter_membership:"decided"` on a registry-backed
+server and `voter_membership:"static"` on a registry-less local host,
+plus a `nodes` array. Each entry carries `id`, `host`, `port`, `role`,
+`votes`, `campaigns`, `stores_log`, `serves_reads`, `serves_writes`,
+`promotion_eligible`, `self`, and `leader`.
 
 `leader` answers with `leader:{id,host,port}`, or `leader:null` when no
 leader is known.
@@ -210,6 +222,36 @@ quickstart.
 epoch. `integrity` takes no fields and answers with `ok`, `sqlite_ok`,
 `chain_ok`, and `payloads_ok`. `expire-sessions` takes `retain` and
 answers with `expired`, the count removed.
+
+=== Membership: membership, replace-voter
+
+Both ops target a registry-backed server, one that persists its
+membership as a decided registry (chapter 7). A registry-less local
+host answers both with the error `no_registry`.
+
+`membership` takes no request fields and is read-only. It answers with
+`database_id`, `configuration_id`, `source:"decided"`,
+`registry_digest`, `highest_allocated_node_id`, `phase`,
+`quorum_available`, `installation_state`, and a `nodes` array of
+`{id, role, endpoint}` records. `phase` names the replacement lifecycle
+position: `idle`, `prepared`, `proposed`, `chosen`, `active-degraded`,
+`complete`, or `retired`. `quorum_available` is an operational
+observation, not an authorization: recently authenticated peers,
+including the answering node, satisfy the majority quorums.
+`installation_state` tracks the replacement voter's state transfer:
+`not-applicable`, `not-started`, `transferring`, `verifying`,
+`installed`, `active`, or `failed`.
+
+`replace-voter` carries `operation`, `expected_config`, `old_node`,
+`new_node`, and `endpoint`. It is the one privileged op in the table:
+the connection must present an administrator certificate over mutual
+TLS, with common name `zaxon-admin-<name>` for a name in the server's
+allow-list, or the server answers `unauthorized`. The development PSK
+transport cannot reach it. A request the registry refuses answers
+`replace_rejected` with the reason in the message. The success response
+reports the operation ID, the `phase` reached, and the resulting
+configuration ID. Retrying a retained operation ID is idempotent.
+Chapter 7 explains the lifecycle these fields track.
 
 === Operating: failpoint, stop
 

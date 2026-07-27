@@ -52,6 +52,10 @@ tail. So we keep both, and everything between.
   [Roles], [Do the witness, standby, and read replica obey their read
     restrictions and bounded-freshness refusals?],
     [`zig build test-roles`],
+  [Replacement], [Does a three-voter mTLS cluster survive a decided
+    one-for-one voter replacement, with admin refusals, a crash inside
+    the swap, idempotent retry, and quorum with the new voter? The full
+    script follows below.], [`zig build test-replace-cluster`],
   [Gateway], [Does authenticated RPC pass end to end through a process
     that holds no Paxos or SQLite state?], [`zig build test-gateway`],
   [Adverse network], [Does the cluster stay correct under real TCP
@@ -82,7 +86,13 @@ that read messages or reset a batch before confirming durability must abort
 with a stable diagnostic in Debug, ReleaseSafe, ReleaseFast, and
 ReleaseSmall, and invalid compile-time options must fail compilation.
 Zaxonlite's write path relies on that contract; the matrix proves the
-contract holds in the optimize modes Zaxonlite actually ships.
+contract holds in the optimize modes Zaxonlite actually ships. The library
+also carries the replacement's consensus-level evidence: changed-member
+rollover unit tests, and a one-for-one replacement simulation in
+`sim/reconfiguration.zig` that drives sixteen seeded schedules through
+drop, duplication, and reordering with a restart oracle. A bounded TLA+
+host model, `specs/VoterReplacement.tla`, sits beside `specs/Paxos.tla` as
+the host-level model of the replacement's stop-sign and activation steps.
 
 `zig build test-cluster -Dcluster-runs=N` repeats the whole cluster
 scenario for flake hunting. One hundred consecutive runs are an
@@ -135,6 +145,56 @@ Step 6 is the heart of the script. It manufactures the exact ambiguity
 that sessions exist for: the write was decided, the client never heard
 so. The retry in step 7 must not apply twice, and step 12 checks that
 it did not, even after every process has since been killed.
+
+== The replacement cluster scenario
+
+`zig build test-replace-cluster` runs the same controller discipline
+against the decided voter replacement: three real mTLS voters, driven
+only through the public surface, every wait a deadline on an observable
+field. The scenario strings together the failures chapter 13's runbook
+promises to survive:
+
+#transcript((
+  [1], [Controller], [Starts three mTLS voters with a decided registry
+    and an admin allow-list, writes rows, and waits for a leader.],
+  [2], [Oracle], [A `replace-voter` request under a node certificate,
+    and one under an unlisted admin name, must both be refused.],
+  [3], [Controller], [Holds one client TCP connection open, then submits
+    the replacement under the listed admin certificate.],
+  [4], [Controller], [One survivor, started with the
+    `before_transport_swap` failpoint armed, dies inside the in-process
+    swap. The controller restarts it.],
+  [5], [Oracle], [The restarted survivor must converge to the new
+    configuration, and the held client connection must still answer.],
+  [6], [Controller], [Retries the same operation ID, then submits a
+    conflicting request reusing a retained operation ID.],
+  [7], [Oracle], [The retry replays the recorded outcome; the
+    conflicting reuse is rejected.],
+  [8], [Controller], [Restarts the replaced voter with its old flags,
+    and restarts a survivor with stale flags naming it.],
+  [9], [Oracle], [The replaced voter stays sealed on its final
+    configuration and is refused admission; the stale-flag restart is
+    refused with `RegistryMismatch`.],
+  [10], [Controller], [Enrolls the replacement: token issuance, `enroll`
+    with a join descriptor, then `serve`. The node fetches and verifies
+    the registry blob and installs its snapshot.],
+  [11], [Oracle], [Every member's registry digest is identical after
+    restart, and stopping one survivor still leaves a quorum, with the
+    replacement voting.],
+))
+
+Around the scenario sit the byte-level suites. The registry module's unit
+tests pin the canonical encoding as stable across input order, reject
+corruption, hold the allocation fence and ring monotonic, replay an
+idempotent retry, refuse `OperationHistoryExpired` and
+`OperationIdExhausted`, and enforce the three-voter floor. A unit test
+pins sealed-set quorum counting: confirmation counts distinct voters of
+the sealed set only, and the proposed next voter never counts toward its
+own admission. Integration crash-window tests kill the process inside the
+rollover write order (snapshot proof, `CURRENT`, `REGISTRY`, identity)
+and require bootstrap to re-run when the pointer write is missing,
+recovery to roll `REGISTRY` and identity forward together, and a corrupt
+pointer to fail closed.
 
 == Persistence assertions, mapped
 
@@ -274,7 +334,7 @@ mode issues `F_FULLFSYNC` on macOS, exactly as Go's file sync does for
 rqlite. Group fsync already consolidates Zaxonlite's per-write flushes
 to one barrier per node per commit point (the journal sync; payload
 installs ride it — see chapter 6). The gap that remains is ordering:
-Protocol v6 retains the v5 barrier overlap. Only phase-two accept requests are
+Protocol v7 retains the v5 barrier overlap. Only phase-two accept requests are
 released before the leader barrier; promises, accepted replies, recovered
 values, commit delivery, and client replies remain behind durable evidence.
 A commit-only local marker is derived from an already durable accepting quorum
@@ -380,7 +440,10 @@ The engineering headroom tracked in the product plan: pipelined and
 batched writes under one chosen value, which the descriptor already
 anticipates with `transaction_count`; group fsync; random fault
 schedules longer than the deterministic adverse run; automatic voter
-replacement; and sharding. The 10,000-crash, 100-consecutive-run, and
+replacement; and sharding. The decided replacement verified above is
+operator-initiated, one voter at a time; a system that detects a dead
+voter and replaces it on its own is neither a product feature nor a
+verified one. The 10,000-crash, 100-consecutive-run, and
 1-GiB recovery gates are explicitly deferred. The checked large
 recovery fixture is 1 MiB.
 

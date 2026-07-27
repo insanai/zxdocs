@@ -97,11 +97,13 @@ evidence includes unit tests, single-process durability tests, and a
 three-process loopback cluster scenario with a SIGKILL failpoint. It also
 includes a CLI contract test, a C ABI smoke test, seeded property fuzzing,
 a soak run, role, gateway, and adverse-network integration tests, and
-benchmarks. Protocol v6 uses mutual TLS for production, binds peer node IDs,
+benchmarks. Protocol v7 uses mutual TLS for production, binds peer node IDs,
 encrypts traffic, confines the disclosed PSK-only development mode to numeric
 loopback, quorum-confirms transferred checkpoint proofs, and pipelines durable
 phase-two storage. It also carries the bounded one-time token/CSR enrollment
-exchange for nodes already in the static registry. The 10,000-crash, 100-run,
+exchange for nodes already named in the decided registry. Network-hosted
+clusters persist that registry durably, and it backs the decided one-for-one
+voter replacement operation. The 10,000-crash, 100-run,
 and 1-GiB stress targets are explicitly deferred. Where this book states a
 current guarantee, chapter 17 names its evidence.
 

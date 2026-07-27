@@ -25,6 +25,10 @@ data/
   snapshots/tmp-*          in-progress generations (crash debris, GC'd)
   CURRENT                  installed snapshot pointer
   current.db               materialized SQLite image (rebuildable)
+  registries/<config16hex> canonical decided registry blobs (TCP serve)
+  REGISTRY                 16-hex pointer to the active registry blob
+  PENDING-OP               the one in-flight replacement request
+  JOIN                     one-shot join descriptor on a replacement
 ```
 
 Hold onto one rule: the journal, the payloads, and the snapshots are the
@@ -33,6 +37,20 @@ database. `current.db` is a cache of applying them. The `-wal` and
 open deletes them before rebuilding. This is why the prediction exercise
 in chapter 1 was safe. Deleting `current.db` on a stopped node deletes a
 cache, and recovery rebuilds it from the authoritative files.
+
+The last four entries exist only on a network-hosted `zaxon serve` node,
+which persists its membership as a decided registry (chapter 7). Each
+blob under `registries/` is a canonical, digest-trailed encoding of one
+configuration's membership, and the `REGISTRY` pointer names the active
+one; both are authoritative, the same way the journal is. `PENDING-OP`
+holds the one in-flight replacement request, and `JOIN` is the one-shot
+join descriptor `zaxon enroll --data <dir>` writes on an enrolling
+replacement, consumed on first start. All four use the same atomic
+write-sync-rename discipline as `CURRENT`. The blob directory is named
+`registries`, not `registry`, because common case-insensitive
+filesystems would collide that name with the `REGISTRY` pointer file.
+Embedded and unix-socket local nodes keep flag-fixed membership and
+write none of these files.
 
 == The five ordering rules
 
@@ -232,11 +250,16 @@ Rollover runs in four steps:
   recording the database id, the sealed configuration, the applied
   slot, the chain value, and the image's SHA-256, then rename the
   generation into place;
-+ propose `checkpoint(metadata)` with metadata
-  `zx1 <name> <manifest-sha256>`, the stop sign that seals the epoch;
++ propose `checkpoint(metadata)` with versioned stop metadata --
+  `zx1 <name> <manifest-sha256>` on a registry-less host, `zx2` with
+  the next-registry digest bound in on a registry-backed server -- the
+  stop sign that seals the epoch;
 + when the stop sign commits, every member verifies its local
-  generation against the decided digest, installs `CURRENT`, bumps
-  `identity`, starts the next epoch's journal, and re-elects.
+  generation against the decided digest, installs `CURRENT`, then on a
+  registry-backed server writes the `REGISTRY` pointer, bumps
+  `identity`, starts the next epoch's journal, and re-elects. The
+  extended rollover order is fixed: `CURRENT`, then `REGISTRY`, then
+  `identity`.
 
 Why does a follower's digest match the leader's? Chapter 5 again:
 followers build their generation from the offline image, and
@@ -255,7 +278,9 @@ epoch's journal as a fallback generation, the two newest snapshot
 generations, and every payload referenced by a retained journal.
 Everything older is covered by the installed snapshot and deleted. A
 payload is collected only when no retained journal references it. Age
-and ballot changes never delete a payload.
+and ballot changes never delete a payload. On a registry-backed server,
+superseded registry blobs are collected with the same retention
+discipline as old snapshot generations.
 
 == The journal format
 

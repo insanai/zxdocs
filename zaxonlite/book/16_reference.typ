@@ -6,7 +6,7 @@
 These are the tables to keep beside a terminal. Every row was verified
 against `zaxonlite/src` (`main.zig`, `server.zig`, `client.zig`,
 `tls.zig`, `types.zig`, `prepared.zig`, `command.zig`,
-`durability.zig`), against
+`durability.zig`, `registry.zig`, `checkpoint_proof.zig`), against
 `include/zaxonlite.h`, and against the format contract.
 
 == CLI commands and flags
@@ -64,6 +64,16 @@ to one or two commands.
     chain to.],
   [`--enrollment-ca-key <path>`], [Owner-only CA private key enabling the
     narrow token/CSR issuer on `serve`; omit it on ordinary nodes.],
+  [`--admin <name>`], [Authorize one `zaxon-admin-<name>` client
+    certificate for privileged membership operations on `serve`. Repeat
+    the flag once per administrator; the configuration field is `admins`.],
+  [`--operation <u64>`], [The operator-chosen operation ID for
+    `replace-voter`. Retrying with the same ID is idempotent.],
+  [`--expected-config <id>`], [The configuration `replace-voter` expects
+    to change. A stale value is refused, never reinterpreted.],
+  [`--old-node <id>`], [The voter `replace-voter` retires.],
+  [`--new-node <id>@<host>:<port>`], [The replacement voter's ID and
+    endpoint for `replace-voter`.],
   [`--token-file <path>`], [Owner-only opaque bearer bundle consumed by
     `enroll`.],
   [`--identity-dir <path>`], [New directory atomically receiving `node.key`,
@@ -118,9 +128,21 @@ only ever added, so additive change stays compatible.
   [`wait`], [`applied`, `leader` (bool), `timeout_ms`], [`applied_slot`,
     `decided_slot`, `leader`, `configuration_id`],
   [`status`], [none], [The full status record: identity, role, `leader`,
-    `ballot`, decided and applied slots, journal, chain, `snapshot`.],
-  [`members`], [none], [`voter_membership`, `nodes` with role and
-    capability booleans, `self`, `leader`],
+    `ballot`, decided and applied slots, journal, chain, `snapshot`. On
+    registry-backed servers it adds the replacement `phase`,
+    `quorum_available`, and `installation_state`.],
+  [`members`], [none], [`voter_membership` (`decided` on registry-backed
+    servers, `static` otherwise), `nodes` with role and capability
+    booleans, `self`, `leader`],
+  [`membership`], [none], [Read-only registry view: the decided
+    configuration, `registry_digest`, `highest_allocated_node_id`, the
+    nodes, the replacement `phase`, `quorum_available`, and
+    `installation_state`. A flag-fixed node answers `no_registry`.],
+  [`replace-voter`], [`operation`, `expected_config`, `old_node`,
+    `new_node`, `endpoint`], [`operation`, `phase` (`proposed` or
+    `complete`), the resulting configuration ID. Privileged: requires a
+    listed `zaxon-admin-<name>` client certificate; node certificates
+    and PSK connections are refused.],
   [`leader`], [none], [A `leader` object (`id`, `host`, `port`), or
     `null`.],
   [`snapshot`], [none], [`configuration_id`. Leader only.],
@@ -309,10 +331,20 @@ produces.
   table.header([*Limit*], [*Value*], [*Source*]),
   [Voters per consensus group, witnesses included], [1--9],
     [`types.zig`],
+  [Voters required for a decided replacement], [at least 3],
+    [`registry.zig`],
+  [Node-ID allocation fence], [`u32`, monotonic, never wraps],
+    [`registry.zig`],
+  [Replacement operation ring], [32 newest decided operations],
+    [`registry.zig`],
+  [Registry endpoint text], [64 bytes, printable space-free ASCII],
+    [`registry.zig`],
+  [Registry blob on the wire], [8 KiB], [`wire.zig`],
+  [Administrator name], [`[a-z0-9-]`, at most 32 bytes], [`tls.zig`],
   [Epoch capacity], [2,048 slots, 4 reserved for the stop sign],
     [`types.zig`, `node.zig`],
   [Protocol append batch], [16 entries], [`types.zig`],
-  [Stop-sign metadata], [256 bytes], [`types.zig`],
+  [Stop-sign metadata], [512 bytes], [`types.zig`],
   [Wire frame body], [64 MiB], [format contract],
   [Declared snapshot or backup transfer], [4 GiB default, server
     configurable], [`wire.zig`, `server.zig`],
@@ -321,7 +353,9 @@ produces.
   [Handshake completion deadline], [10 000 ms default, 0 disables],
     [`server.zig`],
   [Mutual TLS protocol version], [TLS 1.3 minimum], [`tls.zig`],
-  [Zaxon wire protocol version], [6, exact match], [`wire.zig`],
+  [Zaxon wire protocol version], [7, exact match], [`wire.zig`],
+  [Checkpoint proof (`ZXP2`)], [768 bytes encoded],
+    [`checkpoint_proof.zig`],
   [Enrollment token lifetime], [600 s default; 86400 s maximum],
     [`enrollment.zig`],
   [Peer certificate common name], [`zaxon-node-<id>`, under 64 bytes],
@@ -383,9 +417,20 @@ produces.
   [Session, sequence], [A replicated exactly-once identity and its
     monotonic counter. Only the next sequence executes. The last one
     replays its saved result.],
-  [Database identity], [The shared 128-bit ID derived from the sorted
-    voter IDs, plus the optional cluster ID. The `hello` handshake
-    enforces it.],
+  [Database identity], [The shared 128-bit ID derived at bootstrap from
+    the sorted voter IDs, plus the optional cluster ID. The `hello`
+    handshake enforces it. It never changes afterward, including across
+    a decided voter replacement.],
+  [Decided registry], [The canonical `ZXRG` membership record for one
+    configuration, stored under `registries/` and named by the
+    `REGISTRY` pointer. On registry-backed servers it, not the startup
+    flags, is the membership authority.],
+  [Allocation fence], [`highest_allocated_node_id` in the registry: the
+    monotonic bound under which no node ID may ever be issued again. It
+    is what makes retirement permanent.],
+  [Operation ring], [The 32 newest decided replacement outcomes kept in
+    the registry. It makes an operator's retry by operation ID
+    idempotent and rejects conflicting reuse.],
 )
 
 #teach_back([

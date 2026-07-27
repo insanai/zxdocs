@@ -25,10 +25,14 @@ invariants. `integration_test.zig` drives one real node through
 restart and recovery. `cluster_test.zig` drives three real
 `zaxon serve` processes over the public RPC surface with no back
 door. The role, fault, and gateway suites cover the remaining
-topologies, and `fuzz.zig` attacks decoders, journal files, and
+topologies, `replacement_cluster_test.zig` drives the decided voter
+replacement end to end, and `fuzz.zig` attacks decoders, journal files, and
 whole-node schedules. In the clause column, "Format §_n_" names a
 numbered section of `docs/zds/records/0004-zaxonlite-format.typ`, and "plan" names a
-section of `docs/zds/records/0002-zaxonlite-product-plan.typ`. Where no automated
+section of `docs/zds/records/0002-zaxonlite-product-plan.typ`. "ZDS 0008"
+names `docs/zds/records/0008-zaxonlite-voter-replacement.typ`, which
+carries the replacement's clauses in its own record; nothing in the
+format record is renumbered. Where no automated
 oracle exists, the row says so directly. An unchecked guarantee is a
 claim, not evidence, and we would rather you know which rows are
 which.
@@ -263,7 +267,7 @@ which.
   [No silent wire-version downgrade. Wrong protocol versions and replayed or
     tampered optional-PSK frames are refused. Production TCP uses mTLS; the
     explicit PSK-only development mode is numeric-loopback-only.],
-  [*Enforced.* `wire.zig` `Hello.decode` accepts exactly version 6
+  [*Enforced.* `wire.zig` `Hello.decode` accepts exactly version 7
     and raises `UnsupportedProtocolVersion` otherwise; `server.zig`
     refuses TCP storage listeners without TLS unless `--dev-psk` is paired
     with an owner-only secret and all addresses are numeric loopback;
@@ -350,6 +354,71 @@ which.
     themselves have no automated test today.
 
     *Clause.* Format §7; plan "Node roles and scaling law".],
+
+  [On a registry-backed server the decided registry, not the startup
+    flags, is the membership authority. Stale flags naming a removed
+    voter are refused at restart, and every crash window in the rollover
+    write order recovers to a consistent registry.],
+  [*Enforced.* `registry.zig` defines the canonical `ZXRG` encoding and
+    its SHA-256 digest; the on-disk blob adds a digest trailer and fails
+    closed on corruption. `node.zig` validates provided flags against
+    the decided registry and refuses a mismatch with `RegistryMismatch`.
+    The rollover write order is fixed: snapshot proof, `CURRENT`,
+    `REGISTRY`, identity.
+
+    *Checked.* Registry unit tests pin the canonical encoding as stable
+    across input order and reject corruption. Integration crash-window
+    tests re-run bootstrap when the pointer write is missing, recover a
+    `REGISTRY`/identity rollback, and fail closed on a corrupt pointer.
+    The replacement scenario restarts a survivor with stale flags and
+    requires the refusal, then proves restart equivalence by registry
+    digest on every member.
+
+    *Clause.* ZDS 0008.],
+
+  [A voter replacement is decided, one for one, privileged, and
+    idempotent. It never changes the voter count, requires at least
+    three voters, and retrying an operation ID replays its recorded
+    outcome while conflicting reuse is refused.],
+  [*Enforced.* The replacement travels as a stop sign through the same
+    Paxos log as every write; `registry.zig` enforces the three-voter
+    floor and retains the 32 newest outcomes in the operation ring,
+    replaying a matching digest and refusing a differing one.
+    `server.zig` requires a listed `zaxon-admin-<name>` client
+    certificate and refuses node certificates and PSK connections.
+
+    *Checked.* Registry unit tests cover idempotent retry,
+    `OperationHistoryExpired`, `OperationIdExhausted`, and the
+    three-voter rule. The replacement scenario refuses a node
+    certificate and an unlisted admin, retries the decided operation
+    idempotently, and rejects conflicting reuse of a retained ID. The
+    library's `sim/reconfiguration.zig` drives sixteen seeded
+    changed-member schedules through drop, duplication, and reordering
+    with a restart oracle.
+
+    *Clause.* ZDS 0008.],
+
+  [A replacement activates only on sealed-set confirmation, and a
+    retired voter never returns. Quorum confirmation counts distinct
+    voters of the sealed set only; the proposed next voter never counts
+    toward its own admission. The allocation fence retires the old node
+    ID forever, and the returning process stays sealed on its final
+    configuration and is refused admission even with a valid
+    certificate.],
+  [*Enforced.* `checkpoint_proof.zig` binds the `ZXP2` proof to equal
+    sealed and next voter counts and the next-registry digest;
+    confirmation counting in `server.zig` admits sealed-set voters only.
+    `registry.zig` keeps `highest_allocated_node_id` monotonic, and
+    admission rejects a sealed final-configuration member.
+
+    *Checked.* The sealed-set quorum counting unit test; registry
+    fence and ring monotonicity tests; the replacement scenario's
+    sealed-voter restart, enrollment with registry fetch and verified
+    install, a crash inside the transport swap converging by restart,
+    a client connection held open across the swap, and a quorum that
+    survives a survivor stop with the replacement voting.
+
+    *Clause.* ZDS 0008.],
 )
 
 == Known verification gaps
@@ -377,10 +446,15 @@ stated so that this chapter cannot be read as a completeness claim:
   decision table and contract check have unit tests, and a build test asserts
   `SQLITE_OMIT_LOAD_EXTENSION`. It remains an invariant guard for a trusted
   application, not a multi-tenant SQL sandbox, and no fuzzing targets it yet.
-- Transferred snapshots now carry the canonical existing stop sign, and the
-  receiver requires a matching voter read quorum before validating and
-  activating the image. Static membership is intentional; membership-changing
-  snapshot transfer remains unsupported.
+- Transferred snapshots carry the canonical stop sign inside the `ZXP2`
+  proof, and the receiver requires matching proof-digest reports from a
+  read quorum of the sealed voter set before validating and activating the
+  image. Membership-changing snapshot transfer is supported through that
+  proof plus the decided registry: a one-for-one voter replacement is
+  admitted across a sealed epoch with sealed-set confirmation. The scope
+  stays narrow: operator-initiated, one voter at a time, at least three
+  voters, registry-backed servers only. Embedded clusters keep fixed
+  membership, and nothing replaces a voter automatically.
 - Connection admission is globally and per-peer capped, handshakes and idle
   sockets have deadlines, transfers are bounded at 4 GiB, and remote queries
   have SQL-text, row, result-byte, and SQLite VM-step budgets. Several aggregate
@@ -395,8 +469,10 @@ stated so that this chapter cannot be read as a completeness claim:
   but no current suite issues it as a differential oracle against the
   fence path. Fence evidence today is the cluster's linearizable
   counts plus the safety argument in chapter 6.
-- The core Paxos library is model-checked in `specs/Paxos.tla`, but
-  the Zaxonlite layering has no machine-checked specification. The
+- The core Paxos library is model-checked in `specs/Paxos.tla`, and a
+  bounded host-level model of the voter replacement,
+  `specs/VoterReplacement.tla`, sits beside it. The rest of the
+  Zaxonlite layering has no machine-checked specification. The
   journal, payload store, capture and apply, and session table rest
   on the plan's proof section plus the oracles above.
 - The startup configuration refusals for the nine-voter cap, zero

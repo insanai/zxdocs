@@ -110,7 +110,10 @@ directly.
   voting and serving. Something of yours must notice and page a human.
 + *Orchestration.* Process supervision, restart policy, and voter
   replacement are operator work. Automatic voter replacement is roadmap,
-  not product. A failed voter stays failed until you act.
+  not product. A failed voter stays failed until you act, but the act
+  itself is now a first-class operation: on a network-hosted cluster,
+  `zaxon replace-voter` replaces one failed data voter with one fresh
+  voter through a decided configuration change (chapter 7).
 
 #callout(title: "Scope is part of correctness", tone: "warning")[
   The guarantees in this book are conditional on that boundary.
@@ -118,8 +121,10 @@ directly.
   working fsync, and on NTFS from Windows 10 1809 onward, which a node
   verifies before it opens. Wire confidentiality holds only inside TLS, and offline-media
   confidentiality depends on OS disk or filesystem encryption.
-  Availability after a voter loss holds only if your orchestration
-  replaces the voter.
+  Availability after a voter loss holds only if you replace the voter.
+  On a served cluster the decided `zaxon replace-voter` operation is
+  the supported way to do that; noticing the loss and deciding to run
+  it is still your orchestration's job.
 ]
 
 == How the chapters build on each other

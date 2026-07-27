@@ -15,7 +15,8 @@
   legacy pre-shared key, execute one-time certificate enrollment, read
   `status` and `members` as monitoring signals, act on
   the failure playbook without improvising, run the backup and disaster
-  recovery runbooks, and roll a new binary through a live cluster.
+  recovery runbooks, replace one data voter through the decided
+  registry, and roll a new binary through a live cluster.
 ])
 
 #checkpoint("bring-up")[
@@ -29,7 +30,7 @@
 
 The quickstart ran everything on `127.0.0.1`. Production TCP now fails closed
 unless mutual TLS is configured. Automated token enrollment is available for
-members already in the static registry; it is bootstrap, not a hidden shared
+members already in the registry; it is bootstrap, not a hidden shared
 secret or a membership protocol. A realistic deployment
 changes at least these four things.
 
@@ -185,7 +186,7 @@ media, the two modes are equivalent, and this section changes nothing.
 
 The safety has a measured price on macOS. Each replicated write pays
 one full flush per voting node at its commit point — the journal barrier,
-which the payload install rides (chapter 6). Protocol v6 queues the payload
+which the payload install rides (chapter 6). Protocol v7 queues the payload
 and phase-two accept before the leader barrier, so follower storage and flush
 overlap it without allowing an accepted reply into the core early. On this
 Apple-silicon host the current 256-byte, three-voter mTLS run records roughly
@@ -327,8 +328,10 @@ The enrollment CA key must be a regular, non-symlink file with no group or
 world permissions and must match `--tls-ca`. It is not needed for consensus or
 normal mTLS, so keep it on as few designated issuer nodes as your availability
 needs require. Issuance is not a membership operation: the target must already
-appear in the issuer's static peer registry and must not be denied by the
-node-ID revocation file.
+appear in the issuer's registry, and must not be denied by the node-ID
+revocation file. On a registry-backed server that means the decided
+registry, so a replacement's token exists only after its stop sign is
+chosen.
 
 An operator who already has a valid client identity creates an owner-only
 bearer bundle for node 2:
@@ -394,9 +397,10 @@ serial. A canonical `zaxon-node-<id>` certificate is checked even when used on
 a client connection; unrelated operator-client common names remain the single
 application authority described above. Admitting a replacement under a denied
 node ID requires the operator to
-remove it from the denylist after replacing credentials. Removing a voter
-remains an operator-controlled offline replacement procedure; the book
-does not claim online consensus membership management.
+remove it from the denylist after replacing credentials. Removing a data
+voter permanently has its own online procedure: the decided one-for-one
+replacement in this chapter's replacement runbook. It is
+operator-initiated, never automatic.
 
 #callout(title: [Current release restriction], tone: "danger")[
   Do not treat PSK-only TCP as the production trust boundary: it has no
@@ -447,7 +451,11 @@ generation. A served node also reports its ballot. In client mode,
 `members --json` returns the runtime registry with one entry per node: id,
 address, role, the capability flags (`votes`, `campaigns`, `stores_log`,
 `serves_reads`, `serves_writes`, `promotion_eligible`), plus `self` and
-`leader` markers. Embedded `members` lists only the static member ids.
+`leader` markers. Embedded `members` lists only the static member ids. On a
+registry-backed server, `members` reports `voter_membership` as `decided`,
+`status` adds the replacement `phase`, `quorum_available`, and
+`installation_state`, and `zaxon membership status` shows the decided
+registry itself. The replacement runbook below reads all three.
 
 Watch four signals.
 
@@ -460,6 +468,126 @@ Watch four signals.
   emergency, not a curiosity.
 + The journal record count against the epoch capacity shows how full the
   current epoch is, which tells you when a `snapshot` is due.
+
+== Replacing a data voter
+
+A failed voter's disk does not always come back. The decided replacement
+retires one data voter and admits one new one, one operation at a time,
+without rebuilding the database or changing its identity. Its scope is
+deliberately narrow: it is operator-initiated, never automatic; it changes
+exactly one voter per operation and never the voter count; it requires at
+least three voters, so a majority of the old configuration survives the
+change; and it exists only on registry-backed servers. Embedded and
+flag-fixed clusters keep fixed membership.
+
+The registry is the authority. A registry-backed cluster records its
+membership in a decided registry (chapter 15), replicated and chosen
+through the same Paxos log as every write. Startup flags must match it;
+they can no longer contradict it.
+
+=== Authorization
+
+Replacement is a privileged operation. It requires a mutual TLS client
+certificate whose common name is `zaxon-admin-<name>`, with the name in
+`[a-z0-9-]` and at most 32 bytes, and that name must appear in the server's
+allow-list: `--admin <name>`, repeated per administrator, or the `admins`
+configuration field. A node certificate is refused, so a compromised member
+cannot reshape the cluster. PSK and anonymous connections are refused, and
+the dev-PSK mode structurally cannot reach the operation at all. Issue the
+admin certificate from the cluster CA like any client certificate, with the
+admin common name.
+
+=== The runbook
+
+Suppose voter 3 is dead and node 7 at `10.0.0.7:9901` replaces it. The new
+ID must be new: the registry's allocation fence permanently retires every
+ID it has ever seen, so a replacement never reuses an old one.
+
++ Verify preconditions: at least three voters in the decided registry, and
+  a leader plus a write quorum of the old configuration reachable. Check
+  `quorum_available` in `zaxon membership status`. That field is an
+  observation of recent authenticated peer contact, including self,
+  against the majority read and write quorums; it is a health signal, not
+  an authorization.
++ Choose an operation ID you have never used, and run, with the admin
+  certificate:
+
+  ```console
+  $ zaxon replace-voter --connect 10.0.0.1:9901 --operation 42 \
+      --expected-config 5 --old-node 3 --new-node 7@10.0.0.7:9901 \
+      --tls-cert admin.crt --tls-key admin.key --tls-ca ca.crt
+  ```
+
+  The command follows the leader on its own. `--expected-config` pins the
+  configuration you inspected; if the cluster has moved on, the request is
+  refused rather than reinterpreted. Retrying with the same operation ID
+  is idempotent: the registry's operation ring replays the recorded
+  outcome. Reusing a retained ID for a different request is a conflict and
+  is refused.
++ After the operation reports its stop sign chosen, issue the enrollment
+  token: `zaxon enroll-token --node 7 ...` as in the enrollment section.
+  Issuance requires node 7 to be in the decided registry, which is exactly
+  what the chosen stop sign established.
++ On the new host, redeem the token and record the join descriptor:
+
+  ```console
+  $ zaxon enroll --token-file node7.token \
+      --identity-dir /etc/zaxon/node7 --data /var/lib/app/n7
+  ```
+
+  Besides the certificate install, `--data` writes the one-shot `JOIN`
+  descriptor binding the database ID, the configuration, and the registry
+  digest the new node must see.
++ Start `zaxon serve` on the new host with flags matching the decided
+  registry. During its snapshot install the node fetches the registry blob
+  from a member, verifies it against the bound digest, and installs it
+  durably. It votes only after that installation is durable.
++ Watch `zaxon membership status` until the phase reaches `complete`, then
+  update every survivor's startup flags, peer lists and configuration
+  files alike, to the new membership.
+
+=== What to expect during the change
+
+The operation moves through observable phases: `prepared` and `proposed`
+while the coordinator persists and proposes the stop sign, `chosen` once
+Paxos has decided it, a brief `activating` during the in-process swap,
+`active-degraded` while the new configuration is active but the
+replacement is not yet an active voter, and `complete` when it votes. A
+replaced voter reports `retired`. `installation_state` tracks the new
+node's snapshot transfer: `not-started`, `transferring`, `verifying`,
+`installed`, `active`, or `failed`; `not-applicable` elsewhere.
+
+Plan for five effects. First, one checkpoint transfer to the new voter: the
+replacement is admitted across a sealed epoch, so it installs a snapshot
+before it votes. Second, a bounded write pause at the epoch boundary while
+the stop sign seals and the next configuration activates. Third, client
+read TCP connections stay open across the in-process swap; clients do not
+reconnect. Fourth, reduced fault tolerance until the phase reaches
+`complete`: between the old voter's retirement and the new voter's first
+durable vote, the cluster tolerates fewer failures than its size suggests,
+so do not stack a rolling upgrade on top of a replacement. Fifth, the
+database identity is stable: identity is derived once at bootstrap, and no
+replacement changes it.
+
+=== After the change
+
+Update the survivors' flags promptly. A survivor restarted with stale
+flags naming the removed voter is refused with `RegistryMismatch`; the
+decided registry, not the flag pile, is authoritative, and the refusal
+exists so a stale unit file cannot quietly resurrect dead membership.
+
+The old node ID is retired forever by the allocation fence. If the removed
+voter comes back from the dead, it stays sealed on its final configuration
+and is rejected by admission, even with a valid certificate. It can be
+decommissioned at leisure.
+
+#callout(title: [One at a time], tone: "warning")[
+  The registry serializes replacements: one pending operation per cluster,
+  decided before the next may start. Do not script parallel replacements,
+  and do not treat `active-degraded` as done. The operation is finished
+  when the phase is `complete` and `quorum_available` is true with the new
+  voter counted.
+]
 
 == Failure playbook
 
@@ -565,8 +693,8 @@ If any step fails, stop that node and diagnose. Never delete or rewrite a
 journal to force a member to join.
 
 #callout(title: [Wire-version bridge], tone: "warning")[
-  Wire compatibility is exact-major: protocol version 6 speaks only to
-  version 6. A release that changes the wire version cannot use this rolling
+  Wire compatibility is exact-major: protocol version 7 speaks only to
+  version 7. A release that changes the wire version cannot use this rolling
   procedure. It requires an explicitly dual-version bridge release, and
   there is no automatic downgrade. Downgrading is supported only when the
   older binary declares every installed durable format and wire version
