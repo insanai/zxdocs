@@ -51,10 +51,25 @@ name the failure schedule and the invariant it protects.
 
 These are deterministic hand-written schedules. `zig build test` additionally
 runs the seeded simulator in `sim/simulation.zig` (below) across three-node
-majority, five-node flexible-quorum, and prioritized configurations. The
-repository still lacks end-to-end tests against a real crash-safe journal,
-corrupted/truncated records, codec version skew, authenticated transport,
-snapshot transfer, client retry recovery, and multi-epoch process restart.
+majority, five-node flexible-quorum, and prioritized configurations, plus two
+contract gates:
+
++ `test-misuse` builds three fixture programs in Debug, ReleaseSafe,
+  ReleaseFast, and ReleaseSmall and runs them as child processes. The two
+  misuse fixtures read `messagesSlice` or call `reset` without confirming
+  durability; the gate requires the process to abort with the stable
+  diagnostic on stderr in every mode. The third fixture runs the correct
+  sequence and must exit cleanly, proving the check never misfires.
++ `test-compile-errors` compiles one fixture per invalid comptime option
+  (zero bounds, wire-type overflows, zero tick intervals, batch and metadata
+  limits, pointer-bearing values, derived-capacity overflow on a 32-bit
+  target) and passes only when the compiler rejects it with the expected
+  message.
+
+The repository still lacks end-to-end tests against a real crash-safe
+journal, corrupted/truncated records, codec version skew, authenticated
+transport, snapshot transfer, client retry recovery, and multi-epoch process
+restart.
 
 #warning([A useful critique], [
   The core protocol tests often update in-memory `Node` state and a separate
@@ -156,7 +171,11 @@ from the timed count, and every journal is reopened and replayed after timing.
 The ungrouped path performs six fsyncs per value in this three-node message
 schedule; grouping windows of eight reduces that to 0.75 and improves elapsed
 time by roughly four to five times. Read the in-memory numbers with the much
-larger durable scale in mind.
+larger durable scale in mind. Because this host copies writes and messages
+into its own batches and runs one shared barrier per group, it declares its
+protocol through `paxos.host_managed.Protocol` and carries the effect-order
+obligation itself; the post-run journal replay is the crash-recovery evidence
+that obligation requires.
 
 The in-memory benchmarks still exclude real serialization, network delay,
 contention, snapshots, retries, client admission, and application work.

@@ -73,6 +73,15 @@ To protect you from this class of bugs, our library uses *comptime metaprogrammi
   still define a versioned, canonical wire and journal encoding and validate
   decoded lengths and enum tags before constructing an envelope.
 
+Invalid capacity and timer options fail the same way. A zero `max_slots`, a
+member bound that does not fit its wire type, a zero tick interval, or a
+derived effect capacity that would overflow `usize` each stop compilation
+with a named message such as
+`paxos Protocol option max_slots must be greater than zero`. The
+`ReplicatedLog` and `Learner` factories validate their options with the same
+mechanism. Quorum sizes stay a runtime check because the member slice is
+supplied to `Membership.init` at runtime.
+
 #api_anchor([`paxos.Protocol(Value, options)`], [
   Generates a concrete family of message, durable-state, effect, membership,
   and node types. A message or write from a differently configured family is
@@ -93,12 +102,15 @@ for (effects.writesSlice()) |write| {
 }
 try journal.sync(); // Blocking sync
 
-// 3. Send network messages SECOND
+// 3. Record that the batch is durable
+effects.confirmWritesDurable();
+
+// 4. Send network messages SECOND
 for (effects.messagesSlice()) |message| {
     try transport.send(message);
 }
 
-// 4. Apply released entries in slot order.
+// 5. Apply released entries in slot order.
 for (effects.committedSlice()) |entry| {
     try db.apply(entry.slot, entry.value);
 }
@@ -110,6 +122,35 @@ until the batch has been consumed: every public transition resets the active
 effect counts and may overwrite the backing arrays. Application delivery can
 follow the sends, as above, but the host must atomically persist its state
 machine mutation and applied-slot cursor if it needs exactly-once effects.
+
+The library enforces this order in every optimize mode, including
+`ReleaseFast` and `ReleaseSmall`. Reading `messagesSlice` before
+`confirmWritesDurable`, or resetting a batch whose writes were never
+confirmed, stops the process with a stable diagnostic on stderr:
+
+```text
+paxos: messagesSlice before confirmWritesDurable
+paxos: reset discarded unconfirmed writes
+```
+
+A stopped node costs availability; a node that forgets a promise or vote it
+already published can cost agreement. Operators should treat either line as a
+host integration bug, preserve the journal, and restart only after the bug is
+fixed.
+
+=== The host-managed exception
+
+A host that batches several transitions behind one shared storage barrier
+copies writes and messages into its own buffers and syncs once for the group.
+Such a host declares its protocol through `paxos.host_managed.Protocol`. The
+factory accepts the same options but omits the runtime ordering check, which
+transfers the safety obligation to the host: copy effects out before the next
+transition resets them, keep pending messages private until the barrier
+completes, release nothing after a failed append or sync, and prove with a
+crash-recovery test that the written prefix rebuilds the live durable state.
+The namespace is deliberately searchable; every use is an audited exception
+with written ownership notes. The `ReplicatedLog` layer always builds on the
+enforced factory and has no host-managed variant.
 
 #warning([A failed sync invalidates the live node], [
   The call has already mutated `Node`. If append or sync fails, stop using that

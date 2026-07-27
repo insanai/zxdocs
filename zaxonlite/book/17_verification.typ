@@ -76,6 +76,14 @@ tail. So we keep both, and everything between.
     and mTLS transport modes?], [`zig build bench-cluster`],
 )
 
+Beneath all of these, the paxos-zig library carries its own gates. Its
+`zig build test` includes an effect-order misuse matrix: fixture processes
+that read messages or reset a batch before confirming durability must abort
+with a stable diagnostic in Debug, ReleaseSafe, ReleaseFast, and
+ReleaseSmall, and invalid compile-time options must fail compilation.
+Zaxonlite's write path relies on that contract; the matrix proves the
+contract holds in the optimize modes Zaxonlite actually ships.
+
 `zig build test-cluster -Dcluster-runs=N` repeats the whole cluster
 scenario for flake hunting. One hundred consecutive runs are an
 explicitly deferred CI gate, not a result this release claims. The

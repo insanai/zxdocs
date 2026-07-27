@@ -93,6 +93,15 @@ storage failures must use validation, errors, or protocol replies instead;
 correctness must not depend on a debug assertion that an optimized build may
 omit.
 
+A third category sits between them: a *host-facing safety boundary*, where the
+caller's code, not the library's, can break a load-bearing rule. The effect
+ordering contract is the canonical example. Boundary checks like this must be
+always-on, in every optimize mode, and stop the process with a stable
+diagnostic; an invalid option value at a type factory must fail compilation
+outright. A boundary is not an internal invariant, so `std.debug.assert` is
+the wrong tool for it, and it is not an operating error, so returning an
+error a caller could ignore is wrong too.
+
 In consensus engineering, a dead node is safe, but a corrupt node that continues running and sends corrupt messages can break safety for the entire cluster. We use `std.debug.assert` to protect all internal boundaries:
 
 ```zig

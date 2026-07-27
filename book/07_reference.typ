@@ -43,10 +43,14 @@
     delivery, and catch-up claims based on that record.],
 )
 
-Consume one batch as: append writes in order; sync the batch; send messages;
-apply released entries in order. Do not call another transition before draining
-the batch. On append or sync failure, discard the already-mutated live node and
-restore from verified durable state.
+Consume one batch as: append writes in order; sync the batch; call
+`confirmWritesDurable`; send messages; apply released entries in order. Do not
+call another transition before draining the batch. On append or sync failure,
+discard the already-mutated live node and restore from verified durable state.
+Every optimize mode enforces the confirmation step: reading `messagesSlice`
+first stops the process with `paxos: messagesSlice before
+confirmWritesDurable`, and resetting an unconfirmed batch stops it with
+`paxos: reset discarded unconfirmed writes`.
 
 == Core API
 
@@ -72,9 +76,15 @@ restore from verified durable state.
   [`currentLeader`, `decidedThrough`], [Diagnostic leader hint and contiguous
     released prefix.],
   [`Effects.init/reset`], [Initialize or clear active counts without clearing
-    backing storage. Public transitions reset automatically.],
+    backing storage. Public transitions reset automatically. `reset` stops the
+    process if the batch holds unconfirmed writes.],
+  [`Effects.confirmWritesDurable`], [Host statement that the pending batch is
+    durable; required before `messagesSlice` in every optimize mode.],
   [`DurableState.apply`], [Reference replay semantics for ordered `Write`
     records; not a disk format.],
+  [`host_managed.Protocol(Value, Options)`], [Same types without the runtime
+    ordering check; the host owns the durability boundary. An audited
+    exception for grouped-barrier hosts only.],
 )
 
 == Replicated-log API
