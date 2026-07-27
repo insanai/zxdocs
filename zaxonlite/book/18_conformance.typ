@@ -267,7 +267,7 @@ which.
   [No silent wire-version downgrade. Wrong protocol versions and replayed or
     tampered optional-PSK frames are refused. Production TCP uses mTLS; the
     explicit PSK-only development mode is numeric-loopback-only.],
-  [*Enforced.* `wire.zig` `Hello.decode` accepts exactly version 7
+  [*Enforced.* `wire.zig` `Hello.decode` accepts exactly version 8
     and raises `UnsupportedProtocolVersion` otherwise; `server.zig`
     refuses TCP storage listeners without TLS unless `--dev-psk` is paired
     with an owner-only secret and all addresses are numeric loopback;
@@ -356,13 +356,13 @@ which.
     *Clause.* Format §7; plan "Node roles and scaling law".],
 
   [On a registry-backed server the decided registry, not the startup
-    flags, is the membership authority. Stale flags naming a removed
-    voter are refused at restart, and every crash window in the rollover
+    flags, is the membership authority. Stale flags cannot override it or
+    block restart, and every crash window in the rollover
     write order recovers to a consistent registry.],
   [*Enforced.* `registry.zig` defines the canonical `ZXRG` encoding and
     its SHA-256 digest; the on-disk blob adds a digest trailer and fails
-    closed on corruption. `node.zig` validates provided flags against
-    the decided registry and refuses a mismatch with `RegistryMismatch`.
+    closed on corruption. `node.zig` derives restart membership from
+    the decided registry and ignores stale bootstrap peer flags.
     The rollover write order is fixed: snapshot proof, `CURRENT`,
     `REGISTRY`, identity.
 
@@ -371,8 +371,7 @@ which.
     tests re-run bootstrap when the pointer write is missing, recover a
     `REGISTRY`/identity rollback, and fail closed on a corrupt pointer.
     The replacement scenario restarts a survivor with stale flags and
-    requires the refusal, then proves restart equivalence by registry
-    digest on every member.
+    proves restart equivalence by registry digest on every member.
 
     *Clause.* ZDS 0008.],
 

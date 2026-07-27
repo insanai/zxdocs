@@ -6,8 +6,8 @@
 #let zds-labels = ("paxos", "durability", "verification", "release",)
 #let zds-authors = ("paxos-zig project",)
 #let zds-category = "Engineering Discussion"
-#let zds-status = "Implemented in 0.1.1"
-#let zds-last-updated = "2026-07-27"
+#let zds-status = "Implemented for 0.1.2"
+#let zds-last-updated = "2026-07-28"
 
 #import "../../shared/zds.typ": zds-document
 #import "@preview/fletcher:0.5.8" as fletcher: diagram, edge, node
@@ -61,9 +61,10 @@ paxos-zig depends on one load-bearing promise from its host. The host must
 make each promise or vote durable before it releases a message that claims
 the write happened.
 
-The API records this promise through `confirmWritesDurable`. The current
-misuse check is a debug assertion. `ReleaseFast` and `ReleaseSmall` can remove
-that assertion. An invalid call order can then continue in those builds.
+The API records this promise through `confirmWritesDurable`. Before this
+release, the misuse check was a debug assertion. `ReleaseFast` and
+`ReleaseSmall` could remove that assertion. An invalid call order could then
+continue in those builds.
 
 This record defines a small 0.1.x hardening release. The default check will
 run in every build mode. Hosts that own group durability must use a separate
@@ -421,6 +422,21 @@ placement, and benchmark setup.
 The safety check is non-negotiable. A performance result cannot justify
 removing it. Any optimization must preserve the always-on default.
 
+== Release evidence
+
+The existing benchmark archives are development observations. Both record a
+dirty worktree. The older run also predates unrelated protocol changes. They
+do not form a clean before-and-after pair for this hardening change.
+
+Before tagging 0.1.2, record a clean comparison. Use the commit immediately
+before the hardening change as the baseline. Use the 0.1.2 release commit for
+the second run. Keep the machine, toolchain, build mode, workload, and sample
+count the same. Store both raw result files and the calculated deltas.
+
+The release owner must investigate every throughput drop or latency increase
+of 3% or more. Until the clean pair exists, the performance gate is pending.
+The functional safety implementation does not depend on that measurement.
+
 = Security Considerations
 
 This change reduces the effect of a host integration bug. An optimized binary
@@ -447,6 +463,8 @@ This is a pre-launch 0.1.x release. We do not need a compatibility alias for
 
 = Rollout
 
+#set enum(spacing: 3pt)
+
 1. Add the shared internal factory and always-on helper.
 2. Add the `paxos.host_managed` namespace.
 3. Remove `assert_effect_order`.
@@ -455,7 +473,9 @@ This is a pre-launch 0.1.x release. We do not need a compatibility alias for
 6. Update every repository consumer and affected document.
 7. Run the four-mode matrix and full repository gates.
 8. Record benchmark data and investigate any 3% regression.
-9. Tag the 0.1.x patch after every release gate passes.
+9. Tag 0.1.2 after every release gate passes.
+
+#set enum(spacing: auto)
 
 Documentation must never claim always-on enforcement while an optimized build
 still omits the check.
@@ -464,14 +484,18 @@ still omits the check.
 
 - Default misuse stops in all four optimization modes.
 - Normal `Options` contains no effect-order switch.
-- The old `assert_effect_order` name is absent from source and prose.
+- The old option is absent from compilable source, active configuration
+  examples, and public API tables. Historical prose may name it when
+  explaining its removal.
 - Every exception uses the searchable `paxos.host_managed` namespace.
 - Each exception has ownership notes and crash-recovery coverage.
 - Tests compare only stable diagnostic substrings.
 - Invalid compile-time options fail with readable diagnostics.
 - Existing protocol and zaxonlite safety tests pass.
 - Durable replay matches live state in both benchmark modes.
-- A 3% or greater throughput or latency regression is investigated.
+- A clean before-and-after benchmark pair is recorded for 0.1.2.
+- A 3% or greater throughput or latency regression in that pair is
+  investigated.
 - The safety check remains enabled regardless of benchmark results.
 - README, books, API comments, and changelog describe the same contract.
 

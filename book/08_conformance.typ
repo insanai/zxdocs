@@ -74,9 +74,9 @@ Line references drift; function names are the stable anchors.
 
 == Durable state
 
-The paper's ledger variables map onto `DurableState`, and the host must
-sync them before releasing messages, which the debug-build guard in
-`Effects` enforces:
+The paper's ledger variables map onto `DurableState`. The host must sync
+them before releasing messages. The always-on guard in `Effects` enforces
+the required call order in every build mode:
 
 #table(
   columns: (auto, auto, 1.6fr),

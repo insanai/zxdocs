@@ -113,8 +113,8 @@ With more than one member, a first boot of `serve` derives a database
 identity from the membership, plus `--cluster-id` when given. The
 derivation runs only at bootstrap, when the data directory holds no
 decided registry yet. From then on the durable registry carries the
-database identity and the membership; startup flags that conflict with it
-are a startup error (`RegistryMismatch`), never a re-derivation. Two
+database identity and membership. Stale peer flags are ignored. They never
+re-derive or override decided state. Two
 clusters with the same member list but different `--cluster-id` values
 refuse to mix. That fence protects safety against cross-cluster replay.
 
@@ -187,7 +187,7 @@ results taller than the screen open in a pager (arrows scroll, `q` returns).
 
 ```console
 $ zaxon sql --data ./mydb
-zaxonlite unreleased — interactive shell
+zaxonlite 0.1.2 — interactive shell
 Statements end with ';'. Type .help for commands and keys.
 zaxon> select id, author from notes where id < 3;
 ┌────┬────────┐

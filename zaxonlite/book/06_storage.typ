@@ -29,6 +29,7 @@ data/
   REGISTRY                 16-hex pointer to the active registry blob
   PENDING-OP               the one in-flight replacement request
   JOIN                     one-shot join descriptor on a replacement
+  .ZX-DELETED              transient delete tombstone (crash debris)
 ```
 
 Hold onto one rule: the journal, the payloads, and the snapshots are the
@@ -46,7 +47,10 @@ one; both are authoritative, the same way the journal is. `PENDING-OP`
 holds the one in-flight replacement request, and `JOIN` is the one-shot
 join descriptor `zaxon enroll --data <dir>` writes on an enrolling
 replacement, consumed on first start. All four use the same atomic
-write-sync-rename discipline as `CURRENT`. The blob directory is named
+write-sync-rename discipline as `CURRENT`. Deleting `PENDING-OP` or
+`JOIN` renames it to the `.ZX-DELETED` tombstone first, so the removal
+itself can be flushed on every platform; a leftover tombstone is
+harmless crash debris and is cleaned up on the next durable delete. The blob directory is named
 `registries`, not `registry`, because common case-insensitive
 filesystems would collide that name with the `REGISTRY` pointer file.
 Embedded and unix-socket local nodes keep flag-fixed membership and

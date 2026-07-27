@@ -353,7 +353,7 @@ produces.
   [Handshake completion deadline], [10 000 ms default, 0 disables],
     [`server.zig`],
   [Mutual TLS protocol version], [TLS 1.3 minimum], [`tls.zig`],
-  [Zaxon wire protocol version], [7, exact match], [`wire.zig`],
+  [Zaxon wire protocol version], [8, exact match], [`wire.zig`],
   [Checkpoint proof (`ZXP2`)], [768 bytes encoded],
     [`checkpoint_proof.zig`],
   [Enrollment token lifetime], [600 s default; 86400 s maximum],

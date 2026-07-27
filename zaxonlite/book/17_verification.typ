@@ -159,8 +159,9 @@ promises to survive:
     and an admin allow-list, writes rows, and waits for a leader.],
   [2], [Oracle], [A `replace-voter` request under a node certificate,
     and one under an unlisted admin name, must both be refused.],
-  [3], [Controller], [Holds one client TCP connection open, then submits
-    the replacement under the listed admin certificate.],
+  [3], [Controller], [Holds one client TCP connection open. It crashes
+    the leader after durable proposal submission, restarts it, and retries
+    the same request under the listed admin certificate.],
   [4], [Controller], [One survivor, started with the
     `before_transport_swap` failpoint armed, dies inside the in-process
     swap. The controller restarts it.],
@@ -173,8 +174,8 @@ promises to survive:
   [8], [Controller], [Restarts the replaced voter with its old flags,
     and restarts a survivor with stale flags naming it.],
   [9], [Oracle], [The replaced voter stays sealed on its final
-    configuration and is refused admission; the stale-flag restart is
-    refused with `RegistryMismatch`.],
+    configuration and is refused admission. The stale-flag survivor uses
+    the decided registry and converges to the new configuration.],
   [10], [Controller], [Enrolls the replacement: token issuance, `enroll`
     with a join descriptor, then `serve`. The node fetches and verifies
     the registry blob and installs its snapshot.],

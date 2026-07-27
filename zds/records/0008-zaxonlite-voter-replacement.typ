@@ -6,7 +6,7 @@
 #let zds-labels = ("zaxonlite", "membership", "operations", "reconfiguration",)
 #let zds-authors = ("paxos-zig project",)
 #let zds-category = "Engineering Discussion"
-#let zds-status = "Implemented"
+#let zds-status = "Implemented for 0.1.2"
 #let zds-last-updated = "2026-07-28"
 
 #import "../../shared/zds.typ": zds-document
@@ -429,7 +429,7 @@ shown above.
 The proof magic moves from `ZXP1` to `ZXP2`. Both voter counts widen to
 sixteen bits, and the encoded-size bound grows from 512 to 768 bytes. The
 rule that the next configuration ID equals the sealed ID plus one is kept.
-The wire protocol moves from version 6 to version 7 in the same release,
+The wire protocol moves from version 6 to version 8 in the same release,
 covering the new proof, the registry fetch, and the replacement request.
 Exact-major acceptance is unchanged, and there is no dual-version bridge;
 the product has not launched.
@@ -540,6 +540,12 @@ Its certificate identity must match the decided node ID.
 Receiving a connection from a next-config voter does not make it ready.
 Readiness is local durable state, not a transport handshake.
 
+After installation and transport activation, the replacement sends an
+`installation_ready` frame. The frame carries the configuration ID and
+registry digest. A survivor accepts it only from the decided replacement.
+Connection state is still used for reachability, but never as installation
+evidence.
+
 == Removed voter behavior
 
 The new registry removes the old ID and advances the node-ID fence. Current
@@ -637,6 +643,11 @@ The leader handles mutation. A follower returns a structured leader hint.
   )
 ]
 
+The coordinator writes `prepared` before building the checkpoint. It submits
+and durably consumes the Paxos proposal before writing `proposed`. On restart,
+a durable accepted stop promotes a remaining `prepared` record to `proposed`.
+Without that durable evidence, the exact request remains safe to retry.
+
 = Failure and Recovery
 
 == Before the stop is chosen
@@ -688,7 +699,7 @@ phase-one quorum intersects the quorum that chose the stop.
 
 = Change Surface
 
-#block(width: 100%, breakable: false)[
+#block(width: 100%)[
   #table(
     columns: (1.35fr, 2.4fr),
     stroke: 0.5pt + rgb("d7dee8"),
@@ -793,8 +804,6 @@ message loss, duplication, reordering, and restart schedule.
 - retired peer and enrollment identities are rejected;
 - `quorum_available` follows the configured read and write quorum sizes;
 - each installation transition produces the documented status value.
-
-#pagebreak(weak: true)
 
 == Crash matrix
 
@@ -975,7 +984,7 @@ and failure path.
   decided digest.
 - Administrators authenticate with `zaxon-admin-<name>` certificates
   checked against an explicit allow-list.
-- Versions move together: wire protocol 6 to 7, proof `ZXP1` to `ZXP2`,
+- Versions move together: wire protocol 6 to 8, proof `ZXP1` to `ZXP2`,
   stop metadata `zx1` to `zx2` with a 512-byte bound.
 
 No design question remains open for this replacement operation.
@@ -1025,7 +1034,8 @@ is the decided registry, not the startup flags. The identity section gains
 the decided registry, the `REGISTRY` pointer, and the node-ID allocation
 fence; the rule that a node ID is never reused is unchanged and is now
 enforced by that fence. The wire protocol moves from version 6 to version
-7 with exact-major acceptance unchanged. The checkpoint proof moves from
+8 with exact-major acceptance unchanged. Version 8 adds an explicit durable
+installation announcement. The checkpoint proof moves from
 `ZXP1` to `ZXP2`. The stop metadata moves from `zx1` to `zx2` with a
 512-byte bound. The database ID derivation becomes bootstrap-only. These
 are direct replacements, permitted because deployment has not launched and

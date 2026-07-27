@@ -263,9 +263,13 @@ default on backup downloads.
   [26], [`registry_data`], [`configuration_id:u64`, then the stored blob,
     canonical bytes plus digest trailer, at most 8 KiB. The receiver
     verifies the trailer and the expected digest.],
+  [27], [`installation_ready`], [`configuration_id:u64`,
+    `registry_digest:[32]u8`. The replacement sends it after durable
+    installation and matching transport activation. Survivors accept it
+    only from the decided replacement.],
 )
 
-The current `hello` version is 7. Older versions are rejected outright,
+The current `hello` version is 8. Older versions are rejected outright,
 never silently downgraded. Version 2 added the storage-ACK gate and applied
 payload materialization to value-bearing phase-one promises. Version 3
 added mutual authentication and backup streaming. Version 4 added durable
@@ -279,11 +283,13 @@ opaque owner-only `ZXET` bundle binds the random token to the CA, endpoint,
 issuer, database, target node, and expiry; the issuer's `ZXER` record stores
 only its domain-separated hash. Chapter 13 gives the operational contract and
 `docs/zds/records/0004-zaxonlite-format.typ` freezes both version-1 encodings.
-Version 7 added decided one-for-one voter replacement: the `ZXP2` proof
-replaced `ZXP1`, the enrollment response gained its registry binding, and
-the two registry transfer frames joined the protocol. ZDS 0008 carries the
-new clauses. Acceptance stays exact-major: version 7 speaks only to
-version 7.
+Version 7 introduced the decided registry transfer used by one-for-one voter
+replacement. The `ZXP2` proof replaced `ZXP1`, the enrollment response gained
+its registry binding, and the two registry transfer frames joined the
+protocol. Version 8 added `installation_ready`. This frame binds replacement
+activation to the decided configuration and registry digest. ZDS 0008 carries
+the new clauses. Acceptance stays exact-major: version 8 speaks only to
+version 8.
 
 After authentication, every application body is wrapped as
 `sequence:u64 || body || hmac:[32]u8`. The receiver requires the exact next

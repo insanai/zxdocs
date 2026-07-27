@@ -80,7 +80,7 @@
     columns: (1fr, auto),
     text(size: 7.5pt, weight: "bold", tracking: 1.25pt,
       fill: cover_blue_line)[A LITERATE GUIDE TO PAXOS],
-    text(size: 7.5pt, tracking: 0.8pt, fill: cover_muted)[ZIG · 0.1.0],
+    text(size: 7.5pt, tracking: 0.8pt, fill: cover_muted)[ZIG · 0.1.2],
   )
 
   v(15mm)

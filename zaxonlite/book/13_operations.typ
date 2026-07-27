@@ -482,8 +482,8 @@ flag-fixed clusters keep fixed membership.
 
 The registry is the authority. A registry-backed cluster records its
 membership in a decided registry (chapter 15), replicated and chosen
-through the same Paxos log as every write. Startup flags must match it;
-they can no longer contradict it.
+through the same Paxos log as every write. Peer flags bootstrap a new data
+directory. Once a decided registry exists, stale peer flags are ignored.
 
 === Authorization
 
@@ -538,13 +538,13 @@ ID it has ever seen, so a replacement never reuses an old one.
   Besides the certificate install, `--data` writes the one-shot `JOIN`
   descriptor binding the database ID, the configuration, and the registry
   digest the new node must see.
-+ Start `zaxon serve` on the new host with flags matching the decided
-  registry. During its snapshot install the node fetches the registry blob
++ Start `zaxon serve` on the new host with the decided peers. During its
+  snapshot install the node fetches the registry blob
   from a member, verifies it against the bound digest, and installs it
   durably. It votes only after that installation is durable.
-+ Watch `zaxon membership status` until the phase reaches `complete`, then
-  update every survivor's startup flags, peer lists and configuration
-  files alike, to the new membership.
++ Watch `zaxon membership status` until the phase reaches `complete`.
+  Update the survivor configuration files for operator clarity. Recovery
+  does not depend on that update because the durable registry is authoritative.
 
 === What to expect during the change
 
@@ -571,10 +571,10 @@ replacement changes it.
 
 === After the change
 
-Update the survivors' flags promptly. A survivor restarted with stale
-flags naming the removed voter is refused with `RegistryMismatch`; the
-decided registry, not the flag pile, is authoritative, and the refusal
-exists so a stale unit file cannot quietly resurrect dead membership.
+Update the survivors' flags promptly so their files describe the running
+cluster. A survivor restarted before that edit still opens the decided
+registry and converges to the new membership. Stale bootstrap flags cannot
+resurrect removed membership or block crash recovery.
 
 The old node ID is retired forever by the allocation fence. If the removed
 voter comes back from the dead, it stays sealed on its final configuration
@@ -693,8 +693,8 @@ If any step fails, stop that node and diagnose. Never delete or rewrite a
 journal to force a member to join.
 
 #callout(title: [Wire-version bridge], tone: "warning")[
-  Wire compatibility is exact-major: protocol version 7 speaks only to
-  version 7. A release that changes the wire version cannot use this rolling
+  Wire compatibility is exact-major: protocol version 8 speaks only to
+  version 8. A release that changes the wire version cannot use this rolling
   procedure. It requires an explicitly dual-version bridge release, and
   there is no automatic downgrade. Downgrading is supported only when the
   older binary declares every installed durable format and wire version

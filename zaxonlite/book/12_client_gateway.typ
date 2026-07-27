@@ -25,13 +25,13 @@ body, so it is never zero. The bound is 64 MiB, and anything larger is a
 protocol error. The first frame on any connection must be a `hello`:
 
 #field_table(
-  [0, 2], [`version`], [Protocol version. Must equal 7 exactly. Any
+  [0, 2], [`version`], [Protocol version. Must equal 8 exactly. Any
     other value is rejected (`UnsupportedProtocolVersion`) and the
     connection closes. There is no downgrade negotiation, because a
     silent fallback would turn a configuration error into a security
     downgrade.],
-  [2, 1], [`kind`], [`ConnectionKind`: 0 = peer, 1 = client. Clients
-    send 1.],
+  [2, 1], [`kind`], [`ConnectionKind`: 0 = peer, 1 = client, 2 =
+    enrollment. Ordinary clients send 1.],
   [3, 4], [`node_id`], [The sender's node id. Clients send 0.],
   [7, 16], [`database_id`], [The cluster's database identity, derived
     once at bootstrap and carried by the node's durable state
@@ -50,7 +50,7 @@ one bounded `enrollment_request`, not arbitrary RPC.
 When the server is configured with a pre-shared secret, the client's
 `hello` is immediately followed by a challenge-response handshake. The
 implementation is `zaxonlite/src/transport_auth.zig`, specified in the
-format contract under Network protocol v7. From the client's
+format contract under Network protocol v8. From the client's
 perspective:
 
 + Read one `auth_challenge` frame. It carries a fresh 32-byte nonce and

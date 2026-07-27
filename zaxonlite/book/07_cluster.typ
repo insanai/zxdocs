@@ -66,8 +66,8 @@ Every node starts from the same role registry. At bootstrap, when no
 decided registry exists yet, the shared `database_id` is derived
 deterministically from the sorted voter ids, plus an optional
 `--cluster-id`. The derivation runs only then. Afterwards the decided
-registry carries the database identity: changed flags cannot re-derive
-it, and a conflicting startup is refused (`RegistryMismatch`). A voter
+registry carries the database identity and membership. Changed flags cannot
+re-derive or override it. A voter
 replacement changes the voter set without ever changing the database. A
 mis-configured process therefore cannot join the wrong database. The
 `hello` handshake rejects it. Election priority is the node id. That
@@ -100,8 +100,8 @@ writer. Aggregate write scale requires independent databases or shards.
 A network-hosted `zaxon serve` cluster persists its membership as a
 decided registry: the consensus-decided mapping from configuration ID to
 node IDs, roles, and endpoints. Bootstrap flags create configuration 1.
-From then on the durable registry is authoritative, and conflicting
-startup flags are a startup error. Embedded clusters and unix-socket
+From then on the durable registry is authoritative. Stale startup flags
+are ignored during recovery. Embedded clusters and unix-socket
 local nodes keep flag-fixed membership and write no registry.
 
 The registry backs exactly one online membership change: replacing one
