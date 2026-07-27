@@ -100,3 +100,16 @@
 #document("pdf/zds-0007-paxos-zig-0-1-hardening.pdf")[
   #include "records/0007-paxos-zig-0-1-hardening.typ"
 ]
+
+#document(
+  "zds/0008-zaxonlite-voter-replacement.html",
+  title: [ZDS 0008: zaxonlite Dynamic Voter Replacement],
+  author: ("Zaxon Contributors",),
+  description: [A bounded membership change for replacing one data voter without rebuilding the database],
+)[
+  #include "records/0008-zaxonlite-voter-replacement.typ"
+]
+
+#document("pdf/zds-0008-zaxonlite-voter-replacement.pdf")[
+  #include "records/0008-zaxonlite-voter-replacement.typ"
+]
