@@ -113,3 +113,16 @@
 #document("pdf/zds-0008-zaxonlite-voter-replacement.pdf")[
   #include "records/0008-zaxonlite-voter-replacement.typ"
 ]
+
+#document(
+  "zds/0009-zaxonlite-multimodal-search.html",
+  title: [ZDS 0009: Multimodal Search in zaxonlite],
+  author: ("Zaxon Contributors",),
+  description: [Replicated FTS5 and sqlite-vec search, memory-mapped chunked vector scans, Zig SIMD reranking, and Zig-native RRF and DBSF.],
+)[
+  #include "records/0009-zaxonlite-multimodal-search.typ"
+]
+
+#document("pdf/zds-0009-zaxonlite-multimodal-search.pdf")[
+  #include "records/0009-zaxonlite-multimodal-search.typ"
+]
