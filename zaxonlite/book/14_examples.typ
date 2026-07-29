@@ -7,9 +7,10 @@
   By the end of this chapter you should be able to embed one durable node in
   a Zig program and name the durability effect of every call, run a
   failure-drill lab against a five-member cluster and predict each drill's
-  outcome before you run it, and outline how an application with its own
-  event loop embeds the C ABI without violating its threading contract.
-  Guidance fades from example to example.
+  outcome before you run it, build a hybrid search over FTS5 and vectors
+  that replicates like any other table, and outline how an application with
+  its own event loop embeds the C ABI without violating its threading
+  contract. Guidance fades from example to example.
 ])
 
 == Small example: one durable node embedded in Zig
@@ -341,4 +342,137 @@ session; and when periodic `zaxonlite_snapshot` and
   while the replica in drill 2 could answer a query but could not keep
   writes alive. Then explain which drill would break if the two flags were
   ever combined carelessly on one node.
+])
+
+== Hybrid search: FTS5, vectors, and fusion
+
+*Working example, medium guidance.* Every statement below is exercised
+verbatim by `zaxonlite/src/sqlite/search_extension.zig` and
+`zaxonlite/src/integration_test.zig`. Nothing here is special to search:
+it is ordinary SQL over virtual tables, and the resulting index pages
+replicate exactly like any other page. The application supplies
+embeddings; zaxonlite never runs a model.
+
+One schema carries all three representations of an item: the base row,
+the FTS5 tokens, and both vector forms. The bit vector is the coarse
+representation, 32 times smaller than the float32 vector it shadows.
+
+#code_file("hybrid search schema (application SQL)")[
+```sql
+create table media(id integer primary key, title text, uri text);
+create virtual table media_fts using fts5(
+  title, content='media', content_rowid='id');
+create virtual table media_vec using vec0(
+  item_id integer primary key,
+  embedding float[1536],
+  embedding_coarse bit[1536]);
+```
+]
+
+Ingest all three in one transaction, so a follower either sees the whole
+item or none of it. `:embedding` is the L2-normalized little-endian
+float32 vector from your embedding model.
+
+#code_file("atomic multimodal insert")[
+```sql
+insert into media(id, title, uri) values (:id, :title, :uri);
+insert into media_fts(rowid, title) values (:id, :title);
+insert into media_vec(item_id, embedding, embedding_coarse)
+  values (:id, vec_f32(:embedding),
+          vec_quantize_binary(vec_f32(:embedding)));
+```
+]
+
+The vector query is a two-stage pipeline in one statement: a Hamming
+scan over the compact bit vectors keeps `:candidate_count` candidates,
+and only those candidates' float32 vectors are read for the exact
+cosine rerank. Query memory follows the candidate count, not the corpus
+size.
+
+#code_file("coarse scan, exact rerank")[
+```sql
+with coarse as (
+  select item_id, embedding from media_vec
+  where embedding_coarse match vec_quantize_binary(:query_embedding)
+    and k = :candidate_count)
+select item_id,
+       zaxon_vec_distance_cosine(embedding, :query_embedding)
+         as exact_distance
+from coarse order by exact_distance, item_id limit :k;
+```
+]
+
+To fuse the lexical and semantic answers, rank each branch and sum
+weighted reciprocal ranks. RRF depends only on ordering, which makes it
+the safe default when the two score scales share nothing.
+
+#code_file("hybrid RRF fusion")[
+```sql
+with lexical as (
+  select rowid as item_id,
+         row_number() over (order by bm25(media_fts), rowid) as rank
+  from media_fts where media_fts match :text_query
+  order by bm25(media_fts), rowid limit :candidate_count),
+coarse as (
+  select item_id, embedding from media_vec
+  where embedding_coarse match vec_quantize_binary(:query_embedding)
+    and k = :candidate_count),
+reranked as (
+  select item_id,
+         zaxon_vec_distance_cosine(embedding, :query_embedding)
+           as exact_distance
+  from coarse order by exact_distance, item_id limit :k),
+semantic as (
+  select item_id,
+         row_number() over (order by exact_distance, item_id) as rank
+  from reranked),
+contributions as (
+  select item_id, rrf(rank, 60, :text_weight) as score from lexical
+  union all
+  select item_id, rrf(rank, 60, :vector_weight) as score from semantic)
+select item_id, sum(score) as fused_score
+from contributions group by item_id
+order by fused_score desc, item_id limit :k;
+```
+]
+
+When retriever score magnitudes carry real information, replace `rrf`
+with `dbsf` over `avg(score) over ()` and `stddev_samp(score) over ()`,
+orienting each branch so higher is better (`-bm25(...)`,
+`-exact_distance`).
+
+The network host wraps the same pipeline in one typed operation that
+enforces the 4,096 candidate ceiling before any SQL exists:
+
+#code_file("typed search over the client RPC")[
+```json
+{"op": "search", "fts_table": "media_fts", "vec_table": "media_vec",
+ "text": "replication", "embedding": "<base64 float32 vector>",
+ "k": 10, "candidate_count": 80, "fusion": "rrf"}
+```
+]
+
+Two operational rules keep bulk work inside the replication budget.
+First, batch vector ingestion by observed bytes, starting around 1,000
+to 2,000 rows for 1,536-dimensional vectors: a row costs about 6,336
+bytes before page overhead, and a captured transaction should stay
+under the 16 MiB payload target. Second, run FTS5 maintenance as
+bounded commands, never one giant merge:
+
+#code_file("bounded FTS5 maintenance")[
+```sql
+insert into media_fts(media_fts, rank) values ('usermerge', 4);
+insert into media_fts(media_fts, rank) values ('merge', 10);
+```
+]
+
+Repeat the merge transaction while it reports work remaining, and stop
+if the captured payload approaches the target. Both rules are asserted
+by `zaxonlite/src/wal.zig` tests.
+
+#teach_back([
+  Using only the words pages and candidates, explain to a colleague why
+  a follower needs no vector code to stay consistent with the leader's
+  search indexes, and why doubling the corpus size does not change the
+  memory a single query needs.
 ])

@@ -327,3 +327,46 @@ lets equal chain hashes mean equal history.
   descriptor whose payload bytes it had never verified. Use the words
   payload gate and safety.
 ])
+
+== Search capability manifest
+
+The search feature makes the database image depend on build
+capabilities for the first time: a schema containing `USING vec0`
+cannot even be opened for queries by a binary without the module. Every
+release therefore records the exact search surface, and the image
+records which feature version it requires.
+
+#table(
+  columns: (auto, 1fr),
+  table.header([*Recorded fact*], [*Value in this release*]),
+  [SQLite version and FTS5], [3.50.4, `SQLITE_ENABLE_FTS5`, asserted by
+    a unit test via `compileOptionUsed`],
+  [sqlite-vec], [v0.1.9, statically linked amalgamation, filesystem
+    helpers compiled out (`SQLITE_VEC_OMIT_FS`); release zip SHA-256
+    `b87cdda12112657ba5ab8842f0088a4090982eaf41f22b2bd6d495b81765a8c9`],
+  [Vector element formats], [little-endian float32 BLOBs and one-bit
+    coarse vectors; big-endian binaries are rejected at compile time],
+  [Fusion API], [version 1: `rrf`, `dbsf`, `stddev_samp`],
+  [Distance kernel], [version 1: 128-bit SIMD cosine with scalar
+    fallback; the selected backend is reported by `zaxon_search_debug()`
+    and node status],
+  [Mapped-I/O compile maximum], [1 GiB (`SQLITE_MAX_MMAP_SIZE`); the
+    runtime default is zero on every target],
+)
+
+The image side is one replicated metadata key: `search_feature_version`
+in `__zaxon_meta`. A fresh database records version 1 at schema
+bootstrap. An image that predates the feature has no key, reads as
+version 0, and serves normally. A binary refuses to serve an image
+whose recorded version is newer than it implements, before it serves
+anything. Upgrading an old image is the explicit
+`enable-search-feature` operation, run once, after every member already
+serves a compatible binary; rolling the binary out first and activating
+second is what keeps a mixed cluster impossible.
+
+#teach_back([
+  Explain to a colleague why the feature version lives inside the
+  replicated image rather than in each node's configuration file, and
+  what a configuration-file version could get wrong during a snapshot
+  transfer to a freshly replaced voter.
+])

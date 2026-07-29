@@ -124,13 +124,27 @@ only ever added, so additive change stays compatible.
     [`changes`, `slot`, `replayed`],
   [`query`], [`sql`; optional `level` (default `linearizable`) and
     `freshness_ms` (level `any` only)], [`columns`, `rows`, `level`],
+  [`search`], [`fts_table` with `text`, `vec_table` with base64
+    `embedding` (little-endian float32), or both; optional `k` (default
+    10), `candidate_count` (default `min(max(8k, 64), 4096)`, hard cap
+    4096), `fusion` (`rrf` default, or `dbsf`), `text_weight`,
+    `vector_weight`, plus `level`/`freshness_ms` as for `query`],
+    [`columns`, `rows`, `level`; rows carry item IDs and scores, never
+    embedding BLOBs],
+  [`enable-search-feature`], [none], [`slot`,
+    `search_feature_version`. Records the search-feature version in an
+    image that predates it; run only after every member serves a
+    compatible binary. New databases record it at bootstrap.],
   [`session`], [none], [`session_id`],
   [`wait`], [`applied`, `leader` (bool), `timeout_ms`], [`applied_slot`,
     `decided_slot`, `leader`, `configuration_id`],
   [`status`], [none], [The full status record: identity, role, `leader`,
-    `ballot`, decided and applied slots, journal, chain, `snapshot`. On
-    registry-backed servers it adds the replacement `phase`,
-    `quorum_available`, and `installation_state`.],
+    `ballot`, decided and applied slots, journal, chain, `snapshot`, and
+    the search capability manifest (`fts5_enabled`,
+    `sqlite_vec_version`, `search_feature_version`, `simd_backend`,
+    `mmap_size`, `candidate_hard_limit`). On registry-backed servers it
+    adds the replacement `phase`, `quorum_available`, and
+    `installation_state`.],
   [`members`], [none], [`voter_membership` (`decided` on registry-backed
     servers, `static` otherwise), `nodes` with role and capability
     booleans, `self`, `leader`],
@@ -242,6 +256,49 @@ on every path; chapter 11 states the full boundary contract.
     error text through the facade.],
 )
 
+== Search SQL functions
+
+Every connection registers FTS5, the pinned sqlite-vec module, and four
+Zig functions before preparing any statement, so the same SQL works on
+leaders, followers, read replicas, restored snapshots, and backups. All
+four are deterministic, allocation-free, and return `SQLITE_CONSTRAINT`
+with a plain message on a contract violation. NULL input produces NULL.
+
+#table(
+  columns: (auto, 1fr),
+  table.header([*Function*], [*Contract*]),
+  [`rrf(rank[, k[, weight]])`], [Weighted reciprocal rank contribution
+    `weight / (k + rank)`. `rank` is a positive one-based integer, `k`
+    finite and positive (default 60), `weight` finite and nonnegative
+    (default 1). Sum contributions per item and order descending.],
+  [`dbsf(score, mean, stddev[, weight])`], [Distribution-based score
+    contribution `weight * (0.5 + (score - mean) / (6 * stddev))`. A
+    zero deviation yields the neutral `0.5 * weight`. Values are not
+    clipped. Orient scores so higher is better first, for example
+    `-bm25(...)` and `-distance`.],
+  [`stddev_samp(x)`], [Sample standard deviation as an aggregate or
+    window function (Welford state; sliding frames supported). NULL rows
+    are ignored; an empty set is NULL and a singleton is zero, so `dbsf`
+    applies its neutral rule.],
+  [`zaxon_vec_distance_cosine(a, b)`], [Exact cosine distance over two
+    float32 BLOBs of equal nonzero length divisible by four. Uses the
+    compiled 128-bit SIMD kernel with a scalar tail; non-finite
+    elements, zero magnitude, and malformed BLOBs are errors. Accepts
+    vec0 `float` columns directly.],
+  [`zaxon_search_debug()`], [Returns `simd=neon128`, `simd=sse128`,
+    `simd=wasm128`, or `simd=scalar` for the compiled backend;
+    `vec_debug()` reports the sqlite-vec build beside it.],
+)
+
+The vector candidate count in raw SQL (`... and k = :candidate_count`)
+is a documented contract with a 4096 ceiling: zaxonlite cannot see a
+bound parameter consumed inside the vec0 virtual table, so raw queries
+are bounded by the server row, byte, and VM-step budgets instead. Note
+that the VM-step budget under-counts work done inside virtual-table
+scans; the row and byte limits and the statement deadline are the
+operative bounds for vector queries. The typed `search` operation is the
+enforced path: it validates `candidate_count` before any SQL exists.
+
 == Diagnostic catalogue
 
 Every operator-facing failure reaches stderr in one fixed shape, produced
@@ -340,6 +397,12 @@ produces.
   [Registry endpoint text], [64 bytes, printable space-free ASCII],
     [`registry.zig`],
   [Registry blob on the wire], [8 KiB], [`wire.zig`],
+  [Vector KNN candidate count], [4,096; enforced by the typed `search`
+    operation, documented contract for raw SQL], [`search_api.zig`],
+  [Mapped-I/O limit], [0 default on every target; opt-in up to 1 GiB],
+    [`sqlite/core.zig`],
+  [Search-maintenance payload], [16 MiB target, 32 MiB operational soft
+    ceiling, `64 MiB - 73` hard limit], [`command.zig`, ZDS 0009],
   [Administrator name], [`[a-z0-9-]`, at most 32 bytes], [`tls.zig`],
   [Epoch capacity], [2,048 slots, 4 reserved for the stop sign],
     [`types.zig`, `node.zig`],

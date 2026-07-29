@@ -434,6 +434,54 @@ To reproduce, run `benchmarks/compare-rqlite-3node.sh` and
 under `benchmarks/results/`, and rebuilding the book re-renders the
 dashboard from your run.
 
+== The search gates
+
+The multimodal search layer (ZDS 0009) adds five verification layers of
+its own, each answering one question.
+
+*Does the index state replicate exactly?* The byte-identical WAL oracle
+in `zaxonlite/src/wal.zig` drives FTS5 external-content indexing, vec0
+float and bit vector writes, updates and deletes through all three
+representations, bounded `usermerge`/`merge` maintenance, and an
+`optimize` compaction — then rebuilds the database from captured
+payloads alone and compares every byte. The three-process cluster
+scenario repeats the point end to end: a hybrid coarse-scan-plus-rerank
+query must answer identically on the leader, both followers, and after
+snapshot transfer and total restart.
+
+*Is the SIMD real?* `zig build disasm-probe` emits the ReleaseFast
+cosine kernel as an object file, and `benchmarks/verify-simd.sh` greps
+its disassembly for packed float multiply/add instructions — NEON
+`fmul/fadd .4s` on AArch64, `mulps/addps` on x86-64. A benchmark alone
+is not accepted as proof. The pure kernels also cross-compile for the
+whole vector target matrix (`zig build check-kernels`), including the
+scalar fallbacks and wasm, and big-endian targets are rejected at
+compile time.
+
+*Are the formulas right?* The fusion and Welford contracts are
+table-driven unit tests with no SQLite; the SQLite adapter tests then
+run the ZDS record's RRF and DBSF example statements verbatim, plus
+arity, NULL, and error-code conformance for every registered function.
+
+*Is query memory bounded?* `zig build bench-search` records the SQLite
+heap high-water mark at candidate counts 64, 512, and 4,096 over both a
+2,048-row and an 8,192-row corpus: the mark follows the candidate
+count and stays flat as the corpus quadruples. The same run records
+scalar-versus-SIMD rerank throughput at dimensions 384 through 1,536
+plus a non-multiple-of-four tail, the coarse-versus-float storage
+ratio, and mmap-on/off query latency, all into
+`benchmarks/results/search-latest.json` — recorded numbers, never prose
+copies.
+
+*Is retrieval quality tracked without a model in CI?* The pinned GME
+fixture (`benchmarks/data/gme-qwen2-vl-2b-1536/`) is generated offline
+by `benchmarks/generate-gme-fixture.py`; CI runs
+`benchmarks/verify-fixture.py`, which only proves the recorded SHA-256
+hashes still match. When the fixture is present, `bench-search`
+measures final recall at oversampling factors 4, 8, and 16 against an
+exact float32 scan. Audio recall is deliberately unclaimed until an
+audio-capable model is separately qualified.
+
 == What this release does not verify
 
 Honesty about the suites requires the same honesty about their edges.

@@ -1,13 +1,13 @@
 #let zds-number = "0009"
 #let zds-title = "Multimodal Search in zaxonlite"
-#let zds-state = "discussion"
+#let zds-state = "committed"
 #let zds-created = "2026-07-28"
 #let zds-discussion = "FTS5, sqlite-vec, memory-mapped vector scans, RRF, and DBSF"
 #let zds-labels = ("zaxonlite", "sqlite", "search", "multimodal", "vectors",)
 #let zds-authors = ("paxos-zig project",)
 #let zds-category = "Engineering Discussion"
-#let zds-status = "Open for Discussion"
-#let zds-last-updated = "2026-07-28"
+#let zds-status = "Implemented"
+#let zds-last-updated = "2026-07-29"
 
 #import "../../shared/zds.typ": zds-document
 #import "@preview/fletcher:0.5.8" as fletcher: diagram, edge, node
@@ -206,6 +206,14 @@ The search path needs a small and reproducible memory footprint.
 7. One vector table contains one fixed embedding dimension and metric.
 8. Final ordering always has a stable item-ID tie-break.
 9. Query memory has an explicit bound derived from `candidate_count`.
+   The typed `search` operation is the enforced path: it validates the
+   count against the 4096 ceiling before any SQL exists. For raw
+   application SQL the `k = ?` value is consumed inside the vec0
+   virtual table where the host cannot observe it, so the ceiling is a
+   documented contract there, backed by the server row, byte, and
+   VM-step budgets; the VM-step budget under-counts virtual-table scan
+   work, so rows, bytes, and the statement deadline are the operative
+   raw-SQL bounds.
 10. zaxonlite never directly memory-maps a database file behind SQLite.
 11. Offline page apply never overlaps an open connection or live SQLite mmap.
 12. A mixed binary whose search feature manifest is incompatible fails closed.
@@ -486,7 +494,12 @@ Each module owns its tests:
 
 The SQLite build gains an explicit FTS5 flag. The sqlite-vec amalgamation is a
 pinned Zig package dependency compiled into the same static SQLite library
-with its supported static-link mode and filesystem helpers omitted.
+with its supported static-link mode and filesystem helpers omitted. The pin
+is sqlite-vec v0.1.9 (upstream is pre-1.0; the pin names the exact release,
+not a stability promise), release zip SHA-256
+`b87cdda12112657ba5ab8842f0088a4090982eaf41f22b2bd6d495b81765a8c9`, compiled
+with `SQLITE_CORE`, `SQLITE_VEC_STATIC`, and `SQLITE_VEC_OMIT_FS` (which
+removes the `vec_npy_file`/`vec_npy_each` filesystem readers).
 Architecture-specific sqlite-vec flags are enabled only when the resolved Zig
 target guarantees the corresponding instructions.
 
@@ -952,6 +965,12 @@ For dimension `d`, corpus size `N`, and candidate count `C`, the work is:
   from coupling its API to an embedding element format.
 ]
 
+The single-table layout above — one vec0 table holding both the float32
+and the bit column, with KNN `MATCH` on the bit column — is verified
+against the pinned v0.1.9 source and covered by conformance tests. Raw
+BLOBs bind as float32 by default; bit vectors bind through `vec_bit()`
+or `vec_quantize_binary()`.
+
 sqlite-vec's shadow tables already divide vectors into chunks and scan one
 chunk at a time. SQLite-managed mmap allows those chunks to be faulted from
 the OS page cache without first copying every page into SQLite heap. If mmap
@@ -962,6 +981,23 @@ returns Hamming ordering as the final semantic order. Every release benchmark
 records recall after exact rerank for each qualified embedding space. The
 first-release fixture qualifies text and image; audio remains a storage and
 query compatibility path until an audio model is separately qualified.
+
+== Typed search operation
+
+The network host exposes one typed `search` operation beside `query`.
+It is the enforced path for the candidate ceiling: the host validates
+table identifiers (ASCII identifier characters only, never the
+`__zaxon_` or `sqlite_` namespaces), `k` and `candidate_count` in
+`1..=4096` (default `min(max(8k, 64), 4096)`), finite nonnegative
+weights, and the embedding shape (float32, dimension divisible by
+eight) before any SQL exists, then builds exactly the canonical
+statements this record documents — lexical-only, coarse-plus-rerank
+vector-only, or the RRF/DBSF hybrid — with every user value bound,
+never spliced. The built statement runs through the standard read path,
+so read levels, leases, guards, and query budgets apply unchanged, and
+the result carries item IDs and scores, never embedding BLOBs. Raw SQL
+remains fully supported for everything else; the typed operation is a
+convenience and an enforcement point, not a new query language.
 
 == Hybrid query sequence
 
@@ -1193,8 +1229,11 @@ A 1536-dimensional float32 vector occupies 6144 bytes; its coarse bit vector
 adds 192 bytes before SQLite record, page, index, and WAL overhead. Therefore
 5000 rows require about 30.2 MiB and 10000 rows about 60.4 MiB of vector
 payload alone. Bulk vector work is byte-budgeted rather than fixed at
-5000 to 10000 rows. The initial batch controller starts at 1000 to 2000 rows,
-observes captured WAL bytes, and adapts without crossing 32 MiB. Rebuilds may
+5000 to 10000 rows. The batch controller is application-side policy, not
+product code: the application starts at 1000 to 2000 rows, observes
+captured WAL bytes, and adapts without crossing 32 MiB, following the
+documented pattern in the zaxonlite book. The replication tests prove a
+1500-row 1536-dimensional batch stays inside the 16 MiB target. Rebuilds may
 also build a replacement table and switch schemas in a reviewed migration.
 
 = Verification and Acceptance
@@ -1306,6 +1345,12 @@ embedding space.
 
 = Delivery Plan
 
+All steps below are implemented as of 2026-07-29. The retrieval-quality
+fixture arrays await one offline generator run
+(`benchmarks/generate-gme-fixture.py`); every code path they feed —
+hash verification, recall measurement, and the recorded results file —
+is in place and skips cleanly while the fixture is absent.
+
 1. Create the internal `zaxon_search` module with independent `fusion.zig` and
    `vector.zig` tests; keep its public surface free of SQLite types.
 2. Divide the SQLite wrapper into `sqlite/core.zig` and
@@ -1410,10 +1455,26 @@ filters, and visible to `EXPLAIN QUERY PLAN`.
     BLOBs require an explicit ordinary SQL projection.],
     [At `k = 100`, 1536-dimensional float32 vectors add exactly 600 KiB before
     response framing.],
+    [Q5: candidate-cap enforcement],
+    [The typed `search` operation validates `candidate_count` in
+    `1..=4096` before building SQL; raw application SQL treats the
+    ceiling as a documented contract backed by the row, byte, and
+    VM-step budgets, because the vec0 `k` binding is invisible to the
+    host.],
+    [The VM-step budget under-counts virtual-table scans; rows, bytes,
+    and the statement deadline are the operative raw-SQL bounds. Node
+    status reports `candidate_hard_limit`.],
+    [Q6: sqlite-vec pin],
+    [v0.1.9, static amalgamation, `SQLITE_CORE` +
+    `SQLITE_VEC_STATIC` + `SQLITE_VEC_OMIT_FS`, single-table
+    float+bit layout confirmed against the pinned source.],
+    [Release zip SHA-256
+    `b87cdda12112657ba5ab8842f0088a4090982eaf41f22b2bd6d495b81765a8c9`;
+    the Zig package hash pins the dependency in `build.zig.zon`.],
   )
 ]
 
-These decisions close the four questions for the first release. Selecting and
+These decisions close the open questions for the first release. Selecting and
 qualifying an audio embedding model is a later retrieval-quality decision; it
 does not change the generic SQLite vector storage or fusion contracts.
 
