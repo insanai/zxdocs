@@ -978,9 +978,11 @@ is disabled, the same algorithm uses bounded SQLite page-cache reads.
 
 Binary quantization can reduce recall. The implementation therefore never
 returns Hamming ordering as the final semantic order. Every release benchmark
-records recall after exact rerank for each qualified embedding space. The
-first-release fixture qualifies text and image; audio remains a storage and
-query compatibility path until an audio model is separately qualified.
+records recall after exact rerank for every exercised embedding space. The
+checked representative fixture exercises the text- and image-query paths but
+makes no neural-model quality claim. Text/image quality is qualified only by
+the optional GME/Qwen harness; audio remains a storage and query compatibility
+path until an audio model is separately qualified.
 
 == Typed search operation
 
@@ -990,12 +992,15 @@ table identifiers (ASCII identifier characters only, never the
 `__zaxon_` or `sqlite_` namespaces), `k` and `candidate_count` in
 `1..=4096` (default `min(max(8k, 64), 4096)`), finite nonnegative
 weights, and the embedding shape (float32, dimension divisible by
-eight) before any SQL exists, then builds exactly the canonical
+eight) before any SQL exists. An optional metadata projection validates
+one application table, its item-ID column, and at most 16 selected column
+identifiers. The host then builds exactly the canonical
 statements this record documents — lexical-only, coarse-plus-rerank
 vector-only, or the RRF/DBSF hybrid — with every user value bound,
 never spliced. The built statement runs through the standard read path,
 so read levels, leases, guards, and query budgets apply unchanged, and
-the result carries item IDs and scores, never embedding BLOBs. Raw SQL
+the result carries item IDs, scores, and requested metadata, never implicit
+embedding BLOBs. Raw SQL
 remains fully supported for everything else; the typed operation is a
 convenience and an enforcement point, not a new query language.
 
@@ -1288,19 +1293,18 @@ also build a replacement table and switch schemas in a reviewed migration.
 
 == Benchmark fixtures
 
-The initial retrieval-quality fixture uses
-`Alibaba-NLP/gme-Qwen2-VL-2B-Instruct`. Its output dimension is 1536 and the
-model covers text, image, and composed image-text inputs. It does not cover
-audio. The first release therefore qualifies text and image retrieval;
-generic audio-vector storage follows the same database path, but audio recall
-is not claimed until a separate audio-capable model and relevance set are
-recorded.
-
-Routine CI and CI/CD never load the neural model. Precomputed NumPy artifacts
-live under:
+The mandatory representative fixture is deterministic, model-free, and
+generated entirely with the Python standard library. It contains 96 corpus
+vectors plus 12 text and 12 image query vectors at 512 dimensions. The
+complete bundle is approximately 244 KiB and needs no model weights, so
+regeneration and verification are routine on an 8 GiB Apple M1 as well as CI.
+It exercises NumPy parsing, float and bit vec0
+storage, coarse candidate selection, exact reranking, modality-specific query
+arrays, and recall recording. It is a mechanical regression oracle, not
+evidence about an embedding model:
 
 ```text
-zaxonlite/benchmarks/data/gme-qwen2-vl-2b-1536/
+zaxonlite/benchmarks/data/representative-v1-512/
   manifest.json
   corpus.f32.npy
   text-queries.f32.npy
@@ -1308,13 +1312,20 @@ zaxonlite/benchmarks/data/gme-qwen2-vl-2b-1536/
   relevance.json
 ```
 
-`manifest.json` pins the exact model repository revision, embedding prompt
-and preprocessing configuration, normalization rule, dtype, dimensions,
-source-dataset licenses, row IDs, and SHA-256 of every artifact. The checked-in
-bundle is a bounded correctness and regression fixture, not the model weights
-or the full source media corpus. An offline, explicitly invoked generator may
-recreate the arrays; CI verifies hashes and consumes only the arrays and
-relevance judgments.
+`generate-representative-fixture.py` deterministically recreates the bundle
+without NumPy, PyTorch, model weights, or network access.
+`verify-fixture.py` treats the bundle as required and validates its NumPy
+shape, little-endian float32 layout, L2 normalization, relevance structure,
+manifest, and artifact hashes.
+
+Model-quality qualification is a separate, optional tier. The retained
+`generate-gme-fixture.py` harness loads
+`Alibaba-NLP/gme-Qwen2-VL-2B-Instruct`, produces 1536-dimensional text and
+image arrays, and records the exact model revision, prompts, preprocessing,
+licenses, row IDs, and hashes. Those artifacts live under
+`benchmarks/data/gme-qwen2-vl-2b-1536/` when explicitly generated. Routine CI
+does not download or run Qwen. The representative bundle cannot be used to
+claim text, image, or audio retrieval quality.
 
 == Performance gates
 
@@ -1324,10 +1335,11 @@ release must demonstrate:
 - query heap growth bounded by `candidate_count`, within measurement noise;
 - coarse bit storage no more than one thirty-second of raw float payload,
   excluding SQLite page and table metadata;
-- final recall measured at oversampling factors 4, 8, and 16;
+- representative text- and image-query recall measured at oversampling
+  factors 4, 8, and 16 on every run;
 - mmap-on and mmap-off results for latency, RSS, and page faults;
-- scalar versus SIMD rerank throughput for the selected 1536-dimensional
-  model, compatibility dimensions 384, 768, and 1024, and one
+- scalar versus SIMD rerank throughput at the intended 1536-dimensional
+  production size, compatibility dimensions 384, 768, and 1024, and one
   non-multiple-of-four tail case;
 - disassembly evidence for packed float instructions in supported release
   targets;
@@ -1337,19 +1349,20 @@ release must demonstrate:
 - no regression to ordinary non-search transactions beyond the cost of
   explicitly maintained application indexes.
 
-No universal recall threshold is specified because embedding models and
-modalities differ. The text and image fixture records its acceptance threshold
-before binary coarse search is enabled. If factor 16 cannot meet that
-threshold, the product uses an int8 coarse table or exact float scan for that
-embedding space.
+The representative fixture must retain `recall@10 = 1.0` at factors 4, 8,
+and 16; this is a deterministic regression threshold, not a quality target.
+No universal model-quality threshold is specified because models, corpora,
+and modalities differ. A Qwen qualification run must record its acceptance
+threshold before binary coarse search is enabled. If factor 16 cannot meet
+that threshold, the product uses an int8 coarse table or exact float scan for
+that embedding space.
 
 = Delivery Plan
 
-All steps below are implemented as of 2026-07-29. The retrieval-quality
-fixture arrays await one offline generator run
-(`benchmarks/generate-gme-fixture.py`); every code path they feed —
-hash verification, recall measurement, and the recorded results file —
-is in place and skips cleanly while the fixture is absent.
+All implementation steps below are complete as of 2026-07-29. The checked
+representative arrays are present, verified in CI, and exercised by the
+recorded benchmark. GME/Qwen 2B inference remains an explicitly invoked
+model-quality qualification harness rather than a release-build dependency.
 
 1. Create the internal `zaxon_search` module with independent `fusion.zig` and
    `vector.zig` tests; keep its public surface free of SQLite types.
@@ -1366,8 +1379,8 @@ is in place and skips cleanly while the fixture is absent.
    reject translated-C imports outside `src/sqlite/`.
 7. Add direct SQLite conformance tests for the documented grammar and SQL.
 8. Add replicated FTS5/vec0 lifecycle and byte-identical rebuild tests.
-9. Add the pinned 1536-dimensional text/image fixture, then record recall,
-   latency, page-fault, and memory benchmarks without neural inference in CI.
+9. Add the checked 512-dimensional representative fixture and CI recall;
+   retain the 1536-dimensional GME/Qwen 2B harness for later qualification.
 10. Publish ingestion, RRF, DBSF, and vector-rerank examples in the
    zaxonlite book.
 11. Enable the search feature version only after all cluster members run the
@@ -1432,13 +1445,12 @@ filters, and visible to `EXPLAIN QUERY PLAN`.
     inset: 5pt,
     table.header([*Question*], [*Resolved answer*], [*Constraint or metric*]),
     [Q1: model / suite],
-    [`gme-Qwen2-VL-2B-Instruct`, 1536 dimensions, with pinned precomputed
-    `.npy` text/image fixtures under `zaxonlite/benchmarks/data/`. Audio
-    quality qualification is deferred to an audio-capable model.],
-    [The model has 2.21B parameters. A reduced-precision deployment is
-    expected to occupy roughly 2.2 to 4 GiB, but model inference and weights are
-    absent from routine CI/CD. Artifact hashes and the exact model revision
-    are mandatory.],
+    [A required deterministic 512-dimensional `.npy` representative suite;
+    GME/Qwen 2B remains an optional 1536-dimensional quality harness.],
+    [The checked suite is under 250 KiB and runs on an 8 GiB M1 without
+    inference or third-party Python packages. It proves mechanics, not model
+    quality. Qwen artifacts must pin revision, configuration, licenses, and
+    hashes when qualified.],
     [Q2: mmap policy],
     [Explicit opt-in. Every target starts with `mmap_size = 0`; supported
     64-bit operators may select the 256 MiB profile.],
@@ -1469,7 +1481,8 @@ filters, and visible to `EXPLAIN QUERY PLAN`.
     `SQLITE_VEC_STATIC` + `SQLITE_VEC_OMIT_FS`, single-table
     float+bit layout confirmed against the pinned source.],
     [Release zip SHA-256
-    `b87cdda12112657ba5ab8842f0088a4090982eaf41f22b2bd6d495b81765a8c9`;
+    `b87cdda12112657ba5ab8842f0088a40`#linebreak()
+    `90982eaf41f22b2bd6d495b81765a8c9`;
     the Zig package hash pins the dependency in `build.zig.zon`.],
   )
 ]

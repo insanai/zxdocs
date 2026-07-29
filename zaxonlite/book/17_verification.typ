@@ -469,18 +469,20 @@ heap high-water mark at candidate counts 64, 512, and 4,096 over both a
 count and stays flat as the corpus quadruples. The same run records
 scalar-versus-SIMD rerank throughput at dimensions 384 through 1,536
 plus a non-multiple-of-four tail, the coarse-versus-float storage
-ratio, and mmap-on/off query latency, all into
+ratio, and mmap-on/off query latency, SQLite page reads, peak RSS, and
+minor/major page-fault deltas, all into
 `benchmarks/results/search-latest.json` — recorded numbers, never prose
 copies.
 
-*Is retrieval quality tracked without a model in CI?* The pinned GME
-fixture (`benchmarks/data/gme-qwen2-vl-2b-1536/`) is generated offline
-by `benchmarks/generate-gme-fixture.py`; CI runs
-`benchmarks/verify-fixture.py`, which only proves the recorded SHA-256
-hashes still match. When the fixture is present, `bench-search`
-measures final recall at oversampling factors 4, 8, and 16 against an
-exact float32 scan. Audio recall is deliberately unclaimed until an
-audio-capable model is separately qualified.
+*Is search recall tracked without a model in CI?* The checked
+`benchmarks/data/representative-v1-512/` bundle contains 96 corpus
+vectors plus 12 text and 12 image queries. Its standard-library
+generator is deterministic; CI validates NumPy layout, L2
+normalization, relevance structure, manifest, and hashes.
+`bench-search` measures recall at oversampling factors 4, 8, and 16
+against an exact float32 scan on every run. This proves search
+mechanics, not neural-model quality. The offline GME/Qwen 2B harness is
+retained for later text/image qualification; audio remains unclaimed.
 
 == What this release does not verify
 

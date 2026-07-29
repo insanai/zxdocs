@@ -448,7 +448,8 @@ enforces the 4,096 candidate ceiling before any SQL exists:
 ```json
 {"op": "search", "fts_table": "media_fts", "vec_table": "media_vec",
  "text": "replication", "embedding": "<base64 float32 vector>",
- "k": 10, "candidate_count": 80, "fusion": "rrf"}
+ "k": 10, "candidate_count": 80, "fusion": "rrf",
+ "metadata_table": "media", "metadata_columns": ["title", "uri"]}
 ```
 ]
 

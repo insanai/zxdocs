@@ -128,9 +128,11 @@ only ever added, so additive change stays compatible.
     `embedding` (little-endian float32), or both; optional `k` (default
     10), `candidate_count` (default `min(max(8k, 64), 4096)`, hard cap
     4096), `fusion` (`rrf` default, or `dbsf`), `text_weight`,
-    `vector_weight`, plus `level`/`freshness_ms` as for `query`],
-    [`columns`, `rows`, `level`; rows carry item IDs and scores, never
-    embedding BLOBs],
+    `vector_weight`; optional `metadata_table`, `metadata_id_column`
+    (default `id`), and one to 16 `metadata_columns`; plus
+    `level`/`freshness_ms` as for `query`],
+    [`columns`, `rows`, `level`; rows carry item IDs, scores, and selected
+    application metadata, never implicit embedding BLOBs],
   [`enable-search-feature`], [none], [`slot`,
     `search_feature_version`. Records the search-feature version in an
     image that predates it; run only after every member serves a
@@ -339,6 +341,8 @@ produces.
     role set is invalid. Exits 2.],
   [`-- INVALID LISTEN ADDRESS --`], [The listen endpoint cannot be
     parsed. Exits 2.],
+  [`-- INVALID MMAP SIZE --`], [`--mmap-size` exceeds the 1 GiB runtime
+    ceiling. Exits 2 before the database or listener opens.],
   [`-- SQL ERROR --`], [A write statement failed. Exits 1.],
   [`-- QUERY ERROR --`], [A read failed, or a write reached the read
     path. Exits 1.],
