@@ -112,7 +112,7 @@ configured target and the next and only frame must be an `enrollment_request`.
 The joiner pins the CA carried in its owner-only bundle and requires the exact
 issuer common name, so this exception does not weaken ordinary peer or client
 connections. The request contains a one-time secret, the database and target
-bindings, and a signed CSR; it cannot execute SQL or any RPC. Chapter 13
+bindings, and a signed CSR; it cannot execute SQL or any RPC. Chapter 14
 describes token issuance and failure recovery.
 
 == The RPC contract
@@ -131,9 +131,13 @@ fields are compatible, so ignore fields you do not use. The dispatch in
   [`leader`], [Names the current leader, if one is known.],
   [`exec`], [Executes a replicated write, optionally under a session.],
   [`query`], [Runs a read-only query at a chosen consistency level.],
+  [`search`], [Runs a typed lexical, vector, or hybrid search through
+    the validated native planner.],
   [`session`], [Opens a replicated client session.],
   [`wait`], [Blocks until the node reaches a condition you name.],
   [`snapshot`], [Takes an online snapshot and seals the journal epoch.],
+  [`enable-search-feature`], [Records the search-feature version in an
+    image that predates it.],
   [`integrity`], [Verifies the image, chain, and payload store.],
   [`hash`], [Reports the state hashes for cross-node comparison.],
   [`expire-sessions`], [Deletes idle sessions.],
@@ -153,7 +157,7 @@ fields are compatible, so ignore fields you do not use. The dispatch in
 The subsections that follow give each op's request fields and success
 response. A field not marked optional is required.
 
-Protocol v7 applies no permission matrix to this list, with one exception:
+Protocol v8 applies no permission matrix to this list, with one exception:
 `replace-voter` requires an administrator certificate, described in the
 membership section below. Everything else matches the single-application
 design: possession of the embedded handle or access to the service means
@@ -170,7 +174,12 @@ These four ops take no request fields beyond `op` itself.
 `role`, `node_type`, `leader`, `phase`, `quorum_available`,
 `installation_state`, `ballot` (an object with `round`, `priority`, and
 `node`), `decided_slot`, `applied_slot`, `journal_records`,
-`epoch_capacity`, `chain`, `page_size`, and `snapshot`. The three
+`epoch_capacity`, `chain`, `page_size`, the search capability manifest
+(`fts5_enabled`, `sqlite_vec_version`, `search_feature_version`,
+`simd_backend`, `mmap_size`, `candidate_hard_limit`), `write_gate`
+(the literal `fifo-v1`, naming the ordered write-admission contract),
+`typed_v1` (`true`: this server accepts the typed value format below),
+and `snapshot`. The three
 membership fields are defined in the membership section below; on a
 registry-less host `phase` is `idle` and `installation_state` is
 `not-applicable`. `status` describes
@@ -197,12 +206,30 @@ session fields come as a pair: both or neither. The success response
 carries `changes`, `slot`, and `replayed`. Chapter 8's exactly-once
 contract rides on those two request fields, and we return to them below.
 
+The request may also carry `"format":"typed-v1"` and a `params` array
+of tagged prepared values. Each parameter is an object whose `t` is
+`"null"`, `"int"`, `"real"`, `"text"`, or `"blob"`; an integer rides
+in `i`, a real in `r`, text as a JSON string in `v`, and a blob as
+standard base64 in `v`. Sending `params` without the format is
+rejected (`params require format typed-v1`), so an older server never
+silently ignores your bindings. A typed success response echoes
+`"format":"typed-v1"` and adds `last_insert_rowid` when the statement
+observably set it.
+
 === Reading: query
 
 The request carries `sql`, an optional `level`, and an optional
 `freshness_ms` that is valid only with level `any`. The success response
 carries `columns` (an array of names), `rows` (an array of rows, each
 cell a string or null), and the `level` that was actually served.
+
+With `"format":"typed-v1"` — and the same tagged `params` binding as
+`exec` — the response cells are tagged instead of stringified: `null`,
+or `{"t":"i","i":n}` for an integer, `{"t":"r","r":x}` for a real,
+`{"t":"t","v":s}` for text, and `{"t":"b","v":base64}` for a blob. A
+non-finite real, which JSON cannot carry as a number, travels as
+`{"t":"r","x":"<16 hex digits>"}` of its IEEE-754 bits. Requests that
+omit `format` keep the legacy string-or-null cells unchanged.
 
 === Sessions and waiting: session, wait
 
@@ -274,7 +301,11 @@ no fields, answers
   [`session`], [Unknown session, sequence gap, or expired result.],
   [`ambiguous`], [The write's fate is unknown. Retry idempotently with
     the same session and sequence.],
-  [`timeout`], [The operation ran out of time. Retry.],
+  [`timeout`], [The operation ran out of time. When the response also
+    carries `"queued":true`, the write expired while still waiting in
+    the admission queue and provably never executed, so a plain retry
+    is safe. A bare `timeout` on a write leaves the fate unknown,
+    like `ambiguous`: retry idempotently.],
   [`retry`], [The epoch is rolling over, or leadership changed during a
     read fence. Retry.],
   [`too_large`], [The payload exceeds the 64 MiB wire limit.],
@@ -332,7 +363,10 @@ returned instead of executing SQL. After `ambiguous` or a connection
 loss, the recovery is always the same: reconnect anywhere, follow
 redirects, and resend the *same* session and sequence. Exactly-once
 holds across leader changes because the session table is replicated
-state.
+state. One timeout is the exception: a response of
+`{"error":"timeout","queued":true}` means the write expired before it
+was ever admitted for execution, so no sequence was consumed and a
+fresh retry is safe without a replay.
 
 == A worked exchange
 
@@ -409,7 +443,7 @@ gateway costs only open connections. In the role registry a gateway is
 one automatically when the local member has that role, backending onto
 every registry member whose role serves reads or writes.
 
-#exercise("10.1", [
+#exercise([13.1], [
   Your client sends `{"op":"query","sql":"select 1","level":"any",
   "freshness_ms":200}` to a read replica and receives
   `{"ok":false,"error":"stale",...}`. List the three distinct conditions

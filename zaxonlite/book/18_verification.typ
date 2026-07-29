@@ -24,7 +24,7 @@ Zaxonlite in layers, in the same order we built it: bytes first, then
 one process, then three processes, then hostile networks, then time
 and load. Each layer has its own suite and its own oracle. The last
 sections measure the finished product against rqlite and say plainly
-what those numbers mean. Chapter 18 then closes the book by tracing
+what those numbers mean. Chapter 19 then closes the book by tracing
 every guarantee to its code and its oracle.
 
 == The test layers
@@ -151,7 +151,7 @@ it did not, even after every process has since been killed.
 `zig build test-replace-cluster` runs the same controller discipline
 against the decided voter replacement: three real mTLS voters, driven
 only through the public surface, every wait a deadline on an observable
-field. The scenario strings together the failures chapter 13's runbook
+field. The scenario strings together the failures chapter 14's runbook
 promises to survive:
 
 #transcript((
@@ -307,7 +307,7 @@ a different contract.
 
 This is a product-level comparison, not a consensus microbenchmark.
 Each system is timed through its own front door. The Zaxonlite driver
-speaks the framed binary RPC from chapter 12 and follows `not_leader`
+speaks the framed binary RPC from chapter 13 and follows `not_leader`
 redirects until it holds a connection to the leader. The rqlite driver
 speaks HTTP to a node, and that node forwards each write to its
 leader. Writes reach the leader in both systems, but the path there
@@ -335,7 +335,7 @@ mode issues `F_FULLFSYNC` on macOS, exactly as Go's file sync does for
 rqlite. Group fsync already consolidates Zaxonlite's per-write flushes
 to one barrier per node per commit point (the journal sync; payload
 installs ride it — see chapter 6). The gap that remains is ordering:
-Protocol v7 retains the v5 barrier overlap. Only phase-two accept requests are
+Protocol v8 retains the v5 barrier overlap. Only phase-two accept requests are
 released before the leader barrier; promises, accepted replies, recovered
 values, commit delivery, and client replies remain behind durable evidence.
 A commit-only local marker is derived from an already durable accepting quorum
@@ -345,7 +345,7 @@ with the pinned rqlite v10.2.7 baseline and labels them as separate executions
 on the same host. A development
 `--sync os` run on the same machine reverses the ranking at roughly a
 tenfold lower write latency, but at the price of power-loss
-durability; chapter 13 states when that trade is acceptable, and
+durability; chapter 14 states when that trade is acceptable, and
 chapter 6 states why a consensus voter must not make it silently.
 
 === Failure and recovery under a realistic workload
@@ -498,7 +498,7 @@ verified one. The 10,000-crash, 100-consecutive-run, and
 1-GiB recovery gates are explicitly deferred. The checked large
 recovery fixture is 1 MiB.
 
-#exercise([17.1], [
+#exercise([18.1], [
   Run `benchmarks/compare-rqlite-3node.sh` on your own machine.
   Before it finishes, predict which columns of your table will differ
   most from the recorded one and which will differ least. Then
@@ -509,7 +509,7 @@ recovery fixture is 1 MiB.
   the shape of the pipeline does.
 ])
 
-Chapter 18 finishes the job. It leaves suites behind and traces each
+Chapter 19 finishes the job. It leaves suites behind and traces each
 user-visible guarantee, one row at a time, to the function that
 enforces it and the oracle that checks it, and it names the
 guarantees that still have no oracle at all.

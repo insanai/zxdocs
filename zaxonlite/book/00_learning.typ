@@ -9,7 +9,7 @@
   supplies versus what your deployment must still add.
 ])
 
-Zaxonlite is one implementation serving five kinds of user. The five do not
+Zaxonlite is one implementation serving six kinds of user. The six do not
 need the same chapters. They do share one starting point. Everyone begins
 with chapter 1, the quickstart, at a shell. Ten minutes there gives you a
 durable database, a three-voter cluster, and a leader kill that lost
@@ -22,7 +22,7 @@ guarantees. After chapter 3 the routes diverge. Each route is organized
 around a symbol or command that exists in the repository today. When a
 chapter names an API, the API is real.
 
-== The five readers
+== The six readers
 
 #table(
   columns: (auto, auto, 1fr),
@@ -31,7 +31,7 @@ chapter names an API, the API is real.
   [`Node.open`],
   [Chapter 5 for WAL replication and chapter 6 for storage and recovery.
     Then chapter 9, the embedded-node guide. Then chapter 8 for sessions
-    and read levels, and chapter 13 for backup and integrity checking.],
+    and read levels, and chapter 14 for backup and integrity checking.],
   [Embedded Zig,\ cluster],
   [`Embedded.open`],
   [The one-node route, plus chapter 7 on role-aware clusters before the
@@ -43,15 +43,20 @@ chapter names an API, the API is real.
     unchanged. Then chapter 11, the C ABI guide. The Zig guides are
     optional background. The C surface is a strict subset with JSON
     results and `zaxonlite_last_error`.],
+  [Python application\ developer],
+  [`zxlite.connect`],
+  [Chapter 8 for the session and read-level contract, then chapter 12,
+    the Python guide. The SDK is DB-API 2.0 over the C ABI; chapter 11
+    is optional background on the library it rides.],
   [Operator of\ `zaxon serve`],
   [`zaxon serve`],
-  [Chapter 7 on clusters, then chapter 13 on operations, then chapter 15
-    so you recognize every file in a data directory. Chapter 17 says what
+  [Chapter 7 on clusters, then chapter 14 on operations, then chapter 16
+    so you recognize every file in a data directory. Chapter 18 says what
     the failure playbook has actually been tested against.],
   [RPC client or\ gateway developer],
   [`Connection.open`],
-  [Chapter 8 on consistency, then chapter 12, then the wire-frame section
-    of chapter 15. The gateway is byte-transparent. Authentication and
+  [Chapter 8 on consistency, then chapter 13, then the wire-frame section
+    of chapter 16. The gateway is byte-transparent. Authentication and
     frame integrity stay end-to-end between client and storage node.],
 )
 
@@ -74,7 +79,7 @@ The C entry points are `zaxonlite_open` and `zaxonlite_cluster_open` in
 `gateway.serve` in `zaxonlite/src/gateway.zig`.
 
 #predict([
-  Decide now: which of the five readers are you, and which guarantee do
+  Decide now: which of the six readers are you, and which guarantee do
   you most depend on? Durability, exactly-once retry, or read freshness?
   Write the answer down. Chapter 8 will test it.
 ])
@@ -132,11 +137,11 @@ directly.
 The book has five parts. Part I (chapters 1--3) gets you running: the
 quickstart, the `zaxon` CLI, and the product guarantees. Part II (chapters
 4--8) explains how it works: architecture, WAL replication, storage,
-clusters, and consistency. Part III (chapters 9--12) embeds it: one node
-in Zig, a cluster in Zig, the C ABI, and clients and gateways. Part IV
-(chapters 13--14) operates it, with a playbook and worked examples. Part V
-(chapters 15--18) holds the formats, the desk reference, verification and
-benchmarks, and conformance.
+clusters, and consistency. Part III (chapters 9--13) embeds it: one node
+in Zig, a cluster in Zig, the C ABI, the Python SDK, and clients and
+gateways. Part IV (chapters 14--15) operates it, with a playbook and
+worked examples. Part V (chapters 16--19) holds the formats, the desk
+reference, verification and benchmarks, and conformance.
 
 The dependency structure is deliberate. Part I gives you the experience
 and the vocabulary: descriptor, payload, journal, chosen slot. Within Part
@@ -144,10 +149,10 @@ II, storage and clusters are independent of each other, but both feed
 chapter 8. Consistency is the last chapter that states guarantees.
 Everything after it shows how to use them or how to check them. The guides
 assume their Part II chapters. Chapter 10 leans on chapter 7, and chapter
-12 leans on chapter 8. The format chapter is normative. When prose and
-format disagree, chapter 15 and the frozen format document win. Chapter 17
+13 leans on chapter 8. The format chapter is normative. When prose and
+format disagree, chapter 16 and the frozen format document win. Chapter 18
 closes the loop by mapping every stated guarantee to the test that
-exercises it. Chapter 18 states what a compatible implementation must do.
+exercises it. Chapter 19 states what a compatible implementation must do.
 
 Read the callouts the way the theme presents them. A `decision` callout
 records a design commitment and its consequence. A `warning` callout marks

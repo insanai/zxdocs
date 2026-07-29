@@ -120,10 +120,14 @@ only ever added, so additive change stays compatible.
 #table(
   columns: (auto, 1fr, 1.2fr),
   table.header([*Op*], [*Request fields*], [*Success response fields*]),
-  [`exec`], [`sql`; optional `session` and `sequence`, always together],
-    [`changes`, `slot`, `replayed`],
-  [`query`], [`sql`; optional `level` (default `linearizable`) and
-    `freshness_ms` (level `any` only)], [`columns`, `rows`, `level`],
+  [`exec`], [`sql`; optional `session` and `sequence`, always
+    together; optional `format` (`typed-v1`) with tagged `params`],
+    [`changes`, `slot`, `replayed`; typed responses echo `format` and
+    add `last_insert_rowid` when set],
+  [`query`], [`sql`; optional `level` (default `linearizable`),
+    `freshness_ms` (level `any` only), and `format` (`typed-v1`) with
+    tagged `params`], [`columns`, `rows`, `level`; typed responses
+    carry tagged cells instead of strings],
   [`search`], [`fts_table` with `text`, `vec_table` with base64
     `embedding` (little-endian float32), or both; optional `k` (default
     10), `candidate_count` (default `min(max(8k, 64), 4096)`, hard cap
@@ -144,7 +148,8 @@ only ever added, so additive change stays compatible.
     `ballot`, decided and applied slots, journal, chain, `snapshot`, and
     the search capability manifest (`fts5_enabled`,
     `sqlite_vec_version`, `search_feature_version`, `simd_backend`,
-    `mmap_size`, `candidate_hard_limit`). On registry-backed servers it
+    `mmap_size`, `candidate_hard_limit`), `write_gate` (`fifo-v1`),
+    and `typed_v1` (`true`). On registry-backed servers it
     adds the replacement `phase`, `quorum_available`, and
     `installation_state`.],
   [`members`], [none], [`voter_membership` (`decided` on registry-backed
@@ -228,9 +233,19 @@ on every path; chapter 11 states the full boundary contract.
   [`zaxonlite_exec_prepared`], [Run one prepared statement with
     `zaxonlite_value` bindings. TEXT and BLOB values are borrowed for the
     duration of the call.],
+  [`zaxonlite_exec_prepared_result`], [The same write with a
+    structured result: `changes`, `replayed`, `last_insert_rowid`
+    when observably set, and typed RETURNING rows complete before the
+    acknowledgment.],
   [`zaxonlite_transaction_begin`, `_exec`, `_commit`, `_close`],
     [Collect copied statements, then replicate them atomically. Each
     transaction object is single-use.],
+  [`zaxonlite_live_begin`, `_exec`, `_savepoint`,
+    `_release_savepoint`, `_rollback_to_savepoint`, `_commit`,
+    `_rollback`, `_active`], [Gate C live transaction on a
+    single-member local handle: a real SQLite transaction with
+    read-your-writes and ordinal savepoints, captured as one WAL
+    transition at commit.],
   [`zaxonlite_session_open`], [Open a replicated exactly-once session.],
   [`zaxonlite_exec_idempotent`], [Execute one session sequence at most
     once. Sets `replayed` when it returns the saved result of the last
@@ -239,6 +254,19 @@ on every path; chapter 11 states the full boundary contract.
     buffer of columns and rows.],
   [`zaxonlite_query_prepared_json`], [The same read with
     `zaxonlite_value` bindings.],
+  [`zaxonlite_query_prepared_result`], [Run a read-only prepared query
+    into an opaque typed result handle.],
+  [`zaxonlite_result_column_count`, `_row_count`, `_column_name`,
+    `_value`, `_close`], [Bounds-checked accessors over a typed
+    result. `_value` lends TEXT and BLOB bytes until `_close`; close
+    accepts NULL.],
+  [`zaxonlite_search`], [Run a typed lexical, vector, or hybrid search
+    through the validated native planner into a typed result.],
+  [`zaxonlite_statement_describe`], [Prepare without executing and
+    report `parameter_count`, `column_count`, `read_only`, and
+    `has_tail`.],
+  [`zaxonlite_statement_parameter_name`], [Copy one bound parameter's
+    name (1-based; empty for a positional parameter).],
   [`zaxonlite_free`], [Release a returned JSON buffer.],
   [`zaxonlite_snapshot`], [Seal the epoch and install a snapshot
     generation.],
@@ -249,14 +277,64 @@ on every path; chapter 11 states the full boundary contract.
     retained activity window.],
   [`zaxonlite_last_error`], [Return the most recent error message for the
     handle.],
+  [`zaxonlite_last_error_category`], [Return the ABI-stable category
+    (0 to 10) of the handle's most recent error.],
   [`zaxonlite_cluster_open`, `_close`], [Own a transport-owning member
     built from a runtime registry (`zaxonlite_cluster_options`, at most
     36 members, nine of them voters).],
+  [`zaxonlite_cluster_open_v2`], [The same facade from a
+    `struct_size`-versioned options struct: PSK provider file,
+    loopback-only development PSK, Unix-socket service.],
   [`zaxonlite_cluster_exec`, `_query_json`], [Cluster writes and reads
     through the facade.],
   [`zaxonlite_cluster_call_json`, `_last_error`], [Generic JSON RPC and
     error text through the facade.],
+  [`zaxonlite_remote_open`, `_close`], [Own a pooled external client
+    to an existing cluster: 1 to 64 slots, no data directory, no
+    listener, database identity pinned per slot.],
+  [`zaxonlite_remote_exec`, `_query`], [Exactly-once writes on one
+    FIFO write lane with a replicated session; typed reads at level 0
+    (`any`), 1 (`leader`), or 2 (`linearizable`).],
+  [`zaxonlite_remote_resolve_pending`], [Drive a retained pending
+    write to a definitive outcome after its deadline expired.],
+  [`zaxonlite_remote_status_json`, `_last_error`,
+    `_last_error_category`], [Raw status JSON, the most recent error
+    message, and its stable category for a remote handle.],
 )
+
+== The Python SDK
+
+Chapter 12 is the guide; these are the desk facts. The package lives
+at `zaxonlite/languages/python`. From that directory, `uv sync` and
+then `uv pip install -e .` build the extension against the static
+library. The module globals are `apilevel` `"2.0"`, `threadsafety`
+`2`, and `paramstyle` `"qmark"`. `zxlite.connect` takes a data
+directory for a local embedded node, `unix:<path>` for a served local
+socket, or a `zxlite://` DSN with comma-separated seeds for a remote
+cluster.
+
+#table(
+  columns: (auto, 1fr),
+  table.header([*Keyword*], [*Meaning*]),
+  [`timeout`], [Bounds the write-queue admission wait, not a lock
+    spin. Expiry raises `OperationalError` with category
+    `write_queue_timeout`; the statement provably never executed, so
+    an immediate retry is safe.],
+  [`isolation_level`], [`None` (autocommit, the default), or
+    `DEFERRED` for a Gate C live transaction. Local single-member
+    connections only; remote connections are autocommit-only.],
+  [`read_level`], [`any`, `leader`, or `linearizable` (the default).
+    Never downgraded by retry or load balancing.],
+  [`pool_size`], [Remote connection slots, 1 to 64; the default is
+    `min(32, max(4, 2 * seeds))`. The pool scales reads only; writes
+    travel one FIFO lane.],
+)
+
+Exceptions follow DB-API 2.0, mapped from the stable native
+categories: constraint raises `IntegrityError`; busy, interrupt,
+session, storage, and availability raise `OperationalError`; misuse
+and validation raise `ProgrammingError`; every exception exposes the
+token as `exception.category`.
 
 == Search SQL functions
 
@@ -434,8 +512,8 @@ produces.
     [`prepared.zig`],
   [Idempotent sessions], [one outstanding sequence, last result only],
     [format contract],
-  [Writers per database], [1, serialized through the leader],
-    [format contract],
+  [Writers per database], [1, serialized through the leader; FIFO
+    admission], [format contract],
   [Learners and gateways], [runtime-sized registry], [format contract],
   [Shell input line], [64 KiB], [`main.zig`],
 )

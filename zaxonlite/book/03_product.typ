@@ -13,7 +13,7 @@
 You have already run the product. In chapter 1 you built `zaxon`, wrote
 through a cluster, and killed its leader. This chapter states precisely
 what those commands promised you. Hold the book to these statements.
-Chapter 17 maps each one to the test that exercises it.
+Chapter 18 maps each one to the test that exercises it.
 
 == What Zaxonlite is
 
@@ -39,7 +39,7 @@ documents every command.
 #callout(title: [Security model and current status], tone: "warning")[
   Zaxonlite is a single-application database, not a multi-user SQL server.
   The application authenticates its users and decides what SQL to issue.
-  Production TCP is mutual TLS 1.3 only. Protocol v7 can still layer the
+  Production TCP is mutual TLS 1.3 only. Protocol v8 can still layer the
   optional shared-PSK challenge inside TLS. An explicit PSK-only development
   mode is restricted to numeric loopback, while plaintext TCP exists solely
   behind the failpoint-gated test switch. Mutual TLS
@@ -97,7 +97,9 @@ Five statements carry the product. Each is a claim you can test.
   this in chapter 1; chapter 8 states the full contract.
 + *One-writer serializability.* All writes flow through the current
   leader, one replicated transaction at a time. A dependent slot is never
-  proposed before its predecessor is chosen.
+  proposed before its predecessor is chosen. Concurrent writers are
+  admitted strictly in arrival order behind the gate, so contention
+  queues fairly instead of failing or starving.
 + *Read levels you can name.* `any` reads locally, and may be stale on a
   follower; the response says so. `leader` reads the leader's applied
   state. `linearizable` first completes a quorum read fence.

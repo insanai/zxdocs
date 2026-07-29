@@ -281,7 +281,7 @@ certificate-less TLS connection is accepted only by a deliberately configured
 issuer, only for connection kind 2, and only for this single request. The
 opaque owner-only `ZXET` bundle binds the random token to the CA, endpoint,
 issuer, database, target node, and expiry; the issuer's `ZXER` record stores
-only its domain-separated hash. Chapter 13 gives the operational contract and
+only its domain-separated hash. Chapter 14 gives the operational contract and
 `docs/zds/records/0004-zaxonlite-format.typ` freezes both version-1 encodings.
 Version 7 introduced the decided registry transfer used by one-for-one voter
 replacement. The `ZXP2` proof replaced `ZXP1`, the enrollment response gained
@@ -312,7 +312,7 @@ be zero, and decode enforces that padding. Tag 0 is `noop`. Tag 1 is
 are decode errors. One byte pattern has one meaning. That property is what
 lets equal chain hashes mean equal history.
 
-#exercise([15.1], [
+#exercise([16.1], [
   A payload header begins `5a 58 50 4c 01 00 00 00 00 10 00 00`. Read off
   the magic, the version, and the page size. Then explain which later check
   would still reject this payload if its one transaction did not end on a

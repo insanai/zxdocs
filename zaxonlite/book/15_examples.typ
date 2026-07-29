@@ -111,7 +111,7 @@ voting member ids plus the cluster id, so adding a witness describes a
 different database than the one your chapter 1 directories hold. Changing
 a voting set is never a restart with new flags. The one supported online
 reconfiguration is the decided one-for-one replacement of a data voter
-from chapter 13, and it changes the members, never the identity or the
+from chapter 14, and it changes the members, never the identity or the
 count. It does not add a witness. We sidestep the problem with fresh
 directories and a five-member registry: three data voters, one witness,
 one read replica.
@@ -316,7 +316,7 @@ read-only path; how sequences are assigned when several loop tasks share one
 session; and when periodic `zaxonlite_snapshot` and
 `zaxonlite_expire_sessions` calls run so they never race a burst of writes.
 
-#exercise([14.1], [
+#exercise([15.1], [
   Extend the chapter 1 quickstart cluster with a read replica. Tear the
   three voters down, then restart all four processes with the same extended
   registry: node 4 serves with `--role read-replica` and the three voter

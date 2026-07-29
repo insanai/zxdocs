@@ -312,7 +312,7 @@ definition current, so every read is linearizable.
     and installed snapshot name. The `role` and `node_type` strings are
     static. The membership fields a registry-backed `zaxon serve`
     status adds (`phase`, `quorum_available`, `installation_state`)
-    belong to the served surface (chapter 12), not to this embedded
+    belong to the served surface (chapter 13), not to this embedded
     view.],
 )
 

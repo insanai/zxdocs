@@ -58,7 +58,7 @@ shutdown. An accepted connection must complete hello and authentication
 within a handshake deadline, 10 seconds by default, or the tick loop
 closes it. Established connections have a five-minute idle deadline and each
 peer is capped at two overlapping inbound connections. Remote SQL additionally
-has the row, byte, text, and VM-step budgets described in chapter 13.
+has the row, byte, text, and VM-step budgets described in chapter 14.
 
 == Registry, voter membership, and scale
 
@@ -80,7 +80,7 @@ A `standby` and a `read-replica` both store the chosen log and materialize
 SQLite, but they never send a promise or an accepted vote. A standby is
 promotion-eligible by an operator. A read replica is not. A `gateway`
 stores nothing and routes end-to-end authenticated client connections;
-chapter 12 covers it in detail.
+chapter 13 covers it in detail.
 
 Two registry rules are enforced at startup. Every registry must contain at
 least one data voter. An all-witness quorum would be safe, but it could
@@ -204,7 +204,7 @@ surviving voter. And a node missing a payload for a committed slot refuses
 to serve rather than invent state.
 
 #callout(title: [Production TCP is mTLS], tone: "warning")[
-  Protocol v7 can authenticate possession of a provider-file PSK with a
+  Protocol v8 can authenticate possession of a provider-file PSK with a
   challenge-response: a fresh nonce, a connection-unique session key, and a
   monotonically sequenced HMAC on every post-handshake frame. A wrong
   proof, a replay, tampering, or a version downgrade closes the stream.
@@ -232,7 +232,7 @@ already named in the decided registry. That node creates its key and CSR
 locally, and the configured issuer signs only the exact `zaxon-node-<id>`
 identity. Token issuance checks the decided registry, so a replacement voter
 can enroll only after the stop sign choosing its membership is decided. The
-exchange neither changes the voter set nor grants a new role. Chapter 13 gives
+exchange neither changes the voter set nor grants a new role. Chapter 14 gives
 the operational sequence.
 
 == How a learner learns
@@ -276,7 +276,7 @@ only contiguously and buffers at most a compile-time-bounded reorder
 window. A reconnect resets the leader's cursor and replays the chosen
 prefix; the replay is idempotent. The certifying voter also serves as the
 learner's redirect hint when a client sends it a leader-only request
-(chapter 12).
+(chapter 13).
 
 A learner also needs to know how fresh it is. The leader emits a learner
 heartbeat every 20 ticks, which is 500 ms at the default tick, carrying its

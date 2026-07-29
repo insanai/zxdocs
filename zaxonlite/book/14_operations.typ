@@ -186,11 +186,11 @@ media, the two modes are equivalent, and this section changes nothing.
 
 The safety has a measured price on macOS. Each replicated write pays
 one full flush per voting node at its commit point — the journal barrier,
-which the payload install rides (chapter 6). Protocol v7 queues the payload
+which the payload install rides (chapter 6). Protocol v8 queues the payload
 and phase-two accept before the leader barrier, so follower storage and flush
 overlap it without allowing an accepted reply into the core early. On this
 Apple-silicon host the current 256-byte, three-voter mTLS run records roughly
-15.94 ms p50 and 63 writes per second under `full`; chapter 17 reads the exact
+15.94 ms p50 and 63 writes per second under `full`; chapter 18 reads the exact
 row from JSON. Reads are untouched. Sustained full-mode write load can also stall the leader's
 tick loop long enough for leadership to move, visible as occasional
 large latency maxima. Use `--sync os` only for development loops and
@@ -481,7 +481,7 @@ change; and it exists only on registry-backed servers. Embedded and
 flag-fixed clusters keep fixed membership.
 
 The registry is the authority. A registry-backed cluster records its
-membership in a decided registry (chapter 15), replicated and chosen
+membership in a decided registry (chapter 16), replicated and chosen
 through the same Paxos log as every write. Peer flags bootstrap a new data
 directory. Once a decided registry exists, stale peer flags are ignored.
 
@@ -701,7 +701,7 @@ journal to force a member to join.
   compatible.
 ]
 
-#exercise([13.1], [
+#exercise([14.1], [
   Rehearse both recovery paths on the chapter 1 loopback cluster. First
   reimage: stop one voter, delete its entire data directory, restart it with
   its original command, and prove with `status --json` that its `chain`

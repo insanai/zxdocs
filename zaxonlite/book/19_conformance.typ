@@ -19,7 +19,7 @@ library's Lamport conformance table. Each row names one guarantee and
 its three legs. Line numbers drift, so the rows anchor on function
 names, test names, and scenario steps instead.
 
-Chapter 17 described the suites as layers. Here each row names the
+Chapter 18 described the suites as layers. Here each row names the
 specific evidence inside them. Unit tests pin codecs and single-file
 invariants. `integration_test.zig` drives one real node through
 restart and recovery. `cluster_test.zig` drives three real
@@ -32,7 +32,10 @@ numbered section of `docs/zds/records/0004-zaxonlite-format.typ`, and "plan" nam
 section of `docs/zds/records/0002-zaxonlite-product-plan.typ`. "ZDS 0008"
 names `docs/zds/records/0008-zaxonlite-voter-replacement.typ`, which
 carries the replacement's clauses in its own record; nothing in the
-format record is renumbered. Where no automated
+format record is renumbered. "ZDS 0010" names
+`docs/zds/records/0010-zaxonlite-python-sdk.typ`, which carries the
+typed boundary, write-queueing, live-transaction, and remote-client
+clauses. Where no automated
 oracle exists, the row says so directly. An unchecked guarantee is a
 claim, not evidence, and we would rather you know which rows are
 which.
@@ -115,6 +118,44 @@ which.
     retention window".
 
     *Clause.* Plan "Bounded client sessions and retry semantics".],
+
+  [Concurrent writers are admitted strictly first-in-first-out, and a
+    write that times out while still queued is provably unexecuted
+    and reported as such.],
+  [*Enforced.* `server.zig` `runWrite` parks contending writers on
+    the intrusive `WriterTicket` queue; `releaseWriterGate` grants
+    the oldest ticket, so a sustained stream of writers cannot starve
+    one caller past its deadline. A deadline that expires before
+    admission raises `OpTimeoutQueued`, answered as
+    `{"error":"timeout","queued":true}` — distinct from the
+    fate-unknown bare `timeout` and `ambiguous` — and `remote.zig`
+    treats exactly that response as safe to resend.
+
+    *Checked.* The Python contention suite
+    (`tests/dbapi/test_threads.py`) drives 32 concurrent writers with
+    every write applied exactly once and asserts the typed
+    `write_queue_timeout` category with a safe retry; the C ABI
+    smoke test and the cluster suites drive concurrent writes over
+    the public surfaces. No oracle observes the admission order
+    itself yet.
+
+    *Clause.* ZDS 0010, "Write queueing without database locks".],
+
+  [Gate C live transactions are local and single-member only, and an
+    open live transaction holds the node handle exclusively.],
+  [*Enforced.* `node.zig` `beginLive` returns
+    `error.ClusterTransactionUnsupported` on a multi-member node, and
+    while a live transaction is open the one-shot write, snapshot,
+    and membership paths refuse with `error.TransactionOpen`. Commit
+    captures exactly one WAL transition and acknowledges only after
+    the decided slot is applied; rollback publishes nothing.
+
+    *Checked.* `integration_test.zig` "live transaction:
+    read-your-writes, returning, savepoints, durability" and "live
+    transaction: rollback publishes nothing"; the C ABI smoke test's
+    live-transaction section, savepoints included.
+
+    *Clause.* ZDS 0010, Gate C local live transactions.],
 )
 
 == Reads
@@ -327,15 +368,21 @@ which.
 
   [One serialized writer per database. Concurrent endpoints never
     create multi-leader writes.],
-  [*Enforced.* The `server.zig` `runWrite` `writer_busy` gate allows
-    one replicated write at a time; `node.zig` `WriteInFlight` and
+  [*Enforced.* The `server.zig` `runWrite` FIFO writer gate
+    (`writer_gate_busy` plus the `WriterTicket` queue) allows one
+    replicated write at a time, and admission is strictly
+    first-in-first-out: `releaseWriterGate` hands the gate to the
+    oldest queued ticket, never to a newcomer, and status advertises
+    `write_gate` `fifo-v1`. `node.zig` `WriteInFlight` and
     the exclusive directory lock, `tryLock(.exclusive)` raising
     `error.NodeLocked`, guard the node; non-leaders answer
     `not_leader`.
 
     *Checked.* `integration_test.zig` "a second process cannot open a
     locked node directory"; the cluster scenario submits writes
-    through all three endpoints and counts every row exactly once.
+    through all three endpoints and counts every row exactly once;
+    the C ABI smoke test and the cluster suites drive concurrent
+    writes over the public surfaces.
 
     *Clause.* Format §7: one serialized writer per database.],
 
@@ -418,11 +465,40 @@ which.
     survives a survivor stop with the replacement voting.
 
     *Clause.* ZDS 0008.],
+
+  [The typed-v1 client RPC preserves SQLite's five storage classes
+    end to end, and a server without the typed contract is refused,
+    never silently degraded to strings.],
+  [*Enforced.* `server.zig` decodes tagged `params` and emits tagged
+    result cells, carrying a non-finite real as its raw IEEE-754 bits
+    (`{"t":"r","x":"<16 hex>"}`) because JSON cannot carry it as a
+    number; `remote.zig` refuses a server whose status lacks
+    `typed_v1` with `error.TypedV1Unsupported`.
+
+    *Checked.* The C ABI smoke test's cluster typed-v1 query and
+    exec-with-params checks; the Python type suite
+    (`tests/dbapi/test_types.py`) round-trips the five storage
+    classes through the SDK.
+
+    *Clause.* ZDS 0010, the typed-boundary invariants.],
+
+  [A remote client pool serves exactly one database. Every slot's
+    first status probe must observe the pinned database identity or
+    that slot fails.],
+  [*Enforced.* `remote.zig` pins the identity from
+    `expected_database_id`, or from the first successful status
+    probe, and every slot's first probe compares against the pin,
+    failing with `error.DatabaseMismatch` on any difference.
+
+    *Checked.* The C ABI smoke test's remote-pool section against a
+    dev-PSK loopback server.
+
+    *Clause.* ZDS 0010, invariant 16.],
 )
 
 == Known verification gaps
 
-Chapter 17 listed the suites. These are the holes the suites leave,
+Chapter 18 listed the suites. These are the holes the suites leave,
 stated so that this chapter cannot be read as a completeness claim:
 
 - The PSK mode proves only shared-secret possession and is no longer a

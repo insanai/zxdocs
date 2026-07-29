@@ -75,7 +75,7 @@ promise. Part II then explains how the machine works. Part III moves the
 same machine into your own process, in Zig or through the C ABI. Part IV
 covers operating it. Part V is reference and evidence.
 
-Five readers use this book, and each gets a guide of their own. All five
+Six readers use this book, and each gets a guide of their own. All six
 start with the quickstart in chapter 1. Running the system first is the
 fastest way to build a correct mental model of it.
 
@@ -87,17 +87,19 @@ fastest way to build a correct mental model of it.
   `Embedded.open`.
 + *The C ABI embedder* links `zaxonlite.h` from another language. Chapter
   11 carries the same guarantees across the opaque-handle boundary.
++ *The Python application developer* wants the database behind a DB-API
+  2.0 connection. Chapter 12 is the guide, built around `zxlite.connect`.
 + *The operator* deploys `zaxon serve` with voters and learners. Chapters
-  13 and 15 supply the failure playbook and the file formats.
+  14 and 16 supply the failure playbook and the file formats.
 + *The client or gateway developer* speaks the TCP RPC protocol. Chapter
-  12 covers leader redirects and the current shared-secret streams.
+  13 covers leader redirects and the current shared-secret streams.
 
 The implemented vertical slice is tested, not merely described. Its
 evidence includes unit tests, single-process durability tests, and a
 three-process loopback cluster scenario with a SIGKILL failpoint. It also
 includes a CLI contract test, a C ABI smoke test, seeded property fuzzing,
 a soak run, role, gateway, and adverse-network integration tests, and
-benchmarks. Protocol v7 uses mutual TLS for production, binds peer node IDs,
+benchmarks. Protocol v8 uses mutual TLS for production, binds peer node IDs,
 encrypts traffic, confines the disclosed PSK-only development mode to numeric
 loopback, quorum-confirms transferred checkpoint proofs, and pipelines durable
 phase-two storage. It also carries the bounded one-time token/CSR enrollment
@@ -105,7 +107,7 @@ exchange for nodes already named in the decided registry. Network-hosted
 clusters persist that registry durably, and it backs the decided one-for-one
 voter replacement operation. The 10,000-crash, 100-run,
 and 1-GiB stress targets are explicitly deferred. Where this book states a
-current guarantee, chapter 17 names its evidence.
+current guarantee, chapter 18 names its evidence.
 
 #callout(title: "Reading order", tone: "note")[
   Run first, understand second, embed third. Part I gets a cluster running

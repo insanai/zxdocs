@@ -82,7 +82,7 @@ to mTLS. When no endpoint answered at all, the client prints one
 
 When the servers require mutual TLS, client mode takes the same three
 certificate flags as `serve`: `--tls-cert`, `--tls-key`, and `--tls-ca`.
-Chapter 13 covers provisioning.
+Chapter 14 covers provisioning.
 
 == Server mode: `serve`
 
@@ -136,7 +136,7 @@ accepts or dials, peer and client alike, then runs TLS 1.3 with mutual
 certificate verification against the cluster CA, and a peer's certificate
 must name exactly the node id it claims. TLS and the PSK compose: when
 both are configured, the PSK handshake runs inside the TLS channel.
-Chapter 13 covers certificate provisioning and the identity rules;
+Chapter 14 covers certificate provisioning and the identity rules;
 chapter 7 states what each transport mode proves.
 
 `--dev-psk` is the one explicit PSK-only mode. It requires `--auth-file` and
@@ -162,7 +162,7 @@ certificate issuer. The file must be a regular, non-symlink, owner-only CA
 private key matching `--tls-ca`; most nodes should omit it. Enrollment adds
 no member by itself: it issues identities only for nodes the decided
 registry names, and a replacement voter can be issued a token only after
-the configuration that includes it is chosen. Chapter 13 gives the
+the configuration that includes it is chosen. Chapter 14 gives the
 two-command enrollment procedure and the crash semantics.
 
 `--admin <name>`, repeatable, authorizes one administrator principal for
@@ -352,7 +352,7 @@ certificate whose common name is `zaxon-admin-<name>` for a name in the
 server's allow-list (`--admin`, or the config file's `admins` field).
 Replacement also needs at least three voters, because the survivors alone
 must still satisfy the sealed configuration's read quorum. Chapter 7
-explains the replacement lifecycle; chapter 13 gives the operational
+explains the replacement lifecycle; chapter 14 gives the operational
 procedure.
 
 == Identity bootstrap: `enroll-token`, `enroll`
@@ -427,7 +427,7 @@ benchmarks only there. On Linux and the other supported platforms plain
 `fsync` already flushes the cache, so the two modes are identical. Any
 other value is a usage error, exit 2: `--sync must be os or full`.
 Chapter 6 explains why a consensus voter must not run `os` on macOS in
-production, and chapter 13 prices the difference.
+production, and chapter 14 prices the difference.
 
 == Configuration file and environment
 

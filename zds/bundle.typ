@@ -131,7 +131,7 @@
   "zds/0010-zaxonlite-python-sdk.html",
   title: [ZDS 0010: zxlite: A Native Python SDK for zaxonlite],
   author: ("Zaxon Contributors",),
-  description: [Native Python DB-API, redundant cluster connections, multi-threaded reads, PyPI, and SQLAlchemy],
+  description: [Native Python DB-API, Python-hosted backends, redundant cluster connections, multi-threaded reads, PyPI, and SQLAlchemy],
 )[
   #include "records/0010-zaxonlite-python-sdk.typ"
 ]

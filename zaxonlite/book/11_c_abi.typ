@@ -14,9 +14,10 @@ This chapter is for the dqlite-style embedder. Any language with a C FFI
 can host a replicated SQLite node inside its own process. The whole
 surface is one header, `zaxonlite/include/zaxonlite.h`, implemented by
 `zaxonlite/src/capi.zig`. We walk the surface in the order you will use
-it: link, open, write, batch, retry, read, maintain, cluster. The rules
-about memory and threads come last, once you have seen every buffer they
-govern.
+it: link, open, write, batch, hold a live transaction, retry, read — as
+JSON and as typed results — maintain, cluster, and finally reach an
+existing cluster as a pure client. The rules about memory and threads
+come last, once you have seen every buffer they govern.
 
 == Link and open
 
@@ -159,6 +160,37 @@ replicate a write that does nothing. A transaction is also single-use.
 After `_commit`, whether it succeeded or failed, only `_close` is valid.
 `_close` is always required, because it frees the builder.
 
+== Live transactions
+
+The builder never holds SQLite state open, and for a cluster member
+that is the right trade: a leader can change while your application
+thinks. On a single-member local handle there is no other leader to
+lose to, so a caller-held transaction is safe — and some hosts, a
+DB-API layer or an ORM unit of work, need one. Gate C live
+transactions serve exactly that case.
+
+#api_anchor([`zaxonlite_live_begin` / `_exec` / `_savepoint` /
+  `_release_savepoint` / `_rollback_to_savepoint` / `_commit` /
+  `_rollback` / `_active`],
+  [A caller-held SQLite transaction on the writer connection of a
+    single-member local handle.], source: [`capi.zig`])
+
+`zaxonlite_live_begin` opens a real transaction on the writer
+connection; a multi-member handle refuses it. Statements run through
+`zaxonlite_live_exec`, and each observes the transaction's earlier
+uncommitted writes — read-your-writes, before anything replicates.
+Savepoints are host-managed and named by ordinal:
+`zaxonlite_live_savepoint(handle, 2)` creates `zx_sp_2`, with release
+and rollback-to counterparts.
+
+Nothing leaves the process until `zaxonlite_live_commit`. Commit
+captures the whole transaction as exactly one WAL transition and
+acknowledges only after the decided slot is applied — the same
+durability meaning as a one-shot write, held open across your calls.
+`zaxonlite_live_rollback` publishes nothing. While a live transaction
+is open, one-shot writes, snapshots, and membership operations on the
+handle are refused, and `zaxonlite_live_active` reports the state.
+
 == Sessions: exactly-once retry
 
 #api_anchor([`zaxonlite_session_open` / `zaxonlite_exec_idempotent`],
@@ -193,6 +225,61 @@ pedantry. The read path performs no replication, so a write that slipped
 through it would change this node's image and no one else's. The
 replicas would fork. Rejecting the statement with code 2 is the only
 correct answer.
+
+== Typed results and structured writes
+
+JSON stringifies every cell, and for a host language with real
+integers and floats that is a lossy detour. The typed surface removes
+it. `zaxonlite_query_prepared_result` runs the same read-only prepared
+query but returns an opaque `zaxonlite_result` handle instead of a
+buffer.
+
+#api_anchor([`zaxonlite_query_prepared_result` / `zaxonlite_result_*`],
+  [Materialized typed query results behind an opaque handle, read
+    through bounds-checked accessors.], source: [`capi.zig`])
+
+The result owns copied column names and cell bytes.
+`zaxonlite_result_column_count` and `zaxonlite_result_row_count` give
+the shape, `zaxonlite_result_column_name` names a column, and
+`zaxonlite_result_value` fills a `zaxonlite_value` whose text and
+blob bytes are borrowed from the result until
+`zaxonlite_result_close`. Every count and index operation is
+bounds-checked, so an out-of-range row or column is an error, never a
+read past the end. Integer and real cells preserve SQLite's runtime
+storage class, and zero-length text or blob is distinct from NULL.
+`zaxonlite_result_close` releases the handle and accepts NULL, so
+cleanup paths need no guard.
+
+Writes gain a structured counterpart.
+`zaxonlite_exec_prepared_result` reports a `zaxonlite_exec_result`:
+`changes`, `replayed`, and `last_insert_rowid`, which is present —
+`has_last_insert_rowid` set — only when the statement observably
+updated SQLite's last insert rowid (an INSERT or REPLACE). When the
+statement has a RETURNING clause its typed rows arrive in the same
+opaque result form, and they are complete before the write is
+acknowledged: a RETURNING row you hold describes a durable, decided
+write, never a speculative one.
+
+#api_anchor([`zaxonlite_statement_describe` /
+  `zaxonlite_statement_parameter_name`],
+  [Statement metadata from SQLite's own preparation, so hosts never
+    parse SQL.], source: [`capi.zig`])
+
+Two describers keep hosts out of the SQL-parsing business.
+`zaxonlite_statement_describe` prepares, without executing, the first
+statement and reports `parameter_count`, `column_count`, `read_only`,
+and `has_tail`, so a host rejects trailing statements without parsing
+SQL. `zaxonlite_statement_parameter_name` copies the name of one
+bound parameter (1-based, with the `:name`, `@name`, or `$name`
+spelling included), or an empty string for a positional one. SQLite
+resolves the names; the host never rewrites SQL.
+
+Finally, `zaxonlite_last_error_category` returns the stable category
+of the handle's most recent error: 0 none, 1 constraint, 2 busy, 3
+interrupt, 4 misuse, 5 storage, 6 integrity, 7 availability, 8
+session, 9 other SQL, 10 validation. The values are ABI-stable, so a
+host maps them to its own exception hierarchy; the message from
+`zaxonlite_last_error` stays diagnostic only.
 
 == Maintenance
 
@@ -231,6 +318,29 @@ node, or the stateless router when the local role is gateway, then
 blocks until the local endpoint answers. If the endpoint never answers,
 open fails with 4 at the timeout.
 
+#api_anchor(`zaxonlite_cluster_open_v2`,
+  [Opens the same facade from a size-versioned options struct with a
+    PSK provider file, a loopback development mode, and Unix-socket
+    service.], source: [`capi.zig`])
+
+The v1 options struct has no size member, so its layout is frozen
+forever; that is why a versioned entry point exists at all.
+`zaxonlite_cluster_options_v2` begins with `struct_size`, which you
+set to `sizeof(zaxonlite_cluster_options_v2)` before calling, so the
+library knows which fields your binary was compiled against and later
+additions stay compatible. Three fields ride on it. An
+`auth_file_path` names a PSK provider file, loaded with the native
+regular-file, symlink, permission, and size checks; it is mutually
+exclusive with the raw `auth_secret` buffer, because two sources for
+one secret is a configuration ambiguity. `allow_psk_only_loopback`
+enables development-only PSK TCP: it requires a secret, forbids TLS,
+and every member address must be numeric loopback (127.0.0.1 or ::1).
+And a registry holding a single member whose address is
+`unix:<absolute path>` serves one local node over an owner-only
+Unix-domain socket — the registry must contain exactly that member,
+it may not be a gateway, and Unix service composes with neither TLS
+nor the PSK flag.
+
 The facade routes through the client RPC protocol and follows leader
 redirects for you. `zaxonlite_cluster_exec` handles writes.
 `zaxonlite_cluster_query_json` handles linearizable reads.
@@ -242,6 +352,46 @@ Remote errors surface as code 4 with the error name in
 the `{"ok":false,...}` response body itself. `zaxonlite_cluster_close`
 requests a graceful stop and joins the server thread.
 
+== The remote client
+
+Everything above either owns a data directory or is a cluster member.
+An application process on another machine is neither: it wants to
+reach an existing cluster the way a database driver reaches a
+database. The remote client is that driver surface — a pooled
+external client that opens no data directory and no listener.
+
+#api_anchor([`zaxonlite_remote_open` / `_close` / `_exec` / `_query` /
+  `_resolve_pending` / `_status_json` / `_last_error` /
+  `_last_error_category`],
+  [A pooled external client speaking typed client RPC to an existing
+    cluster.], source: [`capi_remote.zig`])
+
+You describe the target in `zaxonlite_remote_options`: 1 to 36 seed
+addresses (`host:port`, or one `unix:<path>` that must be the only
+seed, since one socket path names exactly one server), a mutual TLS
+identity or a PSK provider file with the loopback-only development
+flag, and a `pool_size` of 1 to 64 connection slots, where 0 selects
+`min(32, max(4, 2 * seed_count))`. Reads distribute over the pool at
+a read level you name — 0 `any`, 1 `leader`, 2 `linearizable` —
+while every write travels one FIFO write lane that owns a replicated
+session and numbers each write, so retry across leader changes and
+ambiguous connection loss stays exactly-once. If a write's deadline
+expires with its fate unknown, the exact request is retained and
+every later write fails until `zaxonlite_remote_resolve_pending`
+reaches a definitive outcome: success, an idempotent replay, or a
+rejection that proves the statement never committed.
+
+Two refusals protect the surface. Every slot's first status probe
+must observe the same pinned database identity — supplied in
+`expected_database_id`, or learned from the first probe — so a pool
+never straddles two clusters. And a server that does not advertise
+the typed value contract (`typed_v1` in status) is refused outright,
+so remote cells keep their storage classes exactly like local ones.
+Results come back through the same `zaxonlite_result_*` accessors,
+and `zaxonlite_remote_status_json` returns raw status JSON for host
+diagnostics. Chapter 12 builds the Python SDK on precisely this
+surface.
+
 == Memory ownership across the boundary
 
 You have now seen every buffer the ABI moves. Three rules cover all of
@@ -252,9 +402,13 @@ them.
   Transactions copy at `_exec`, and cluster open copies the registry
   before returning, so your buffers are free the moment each call
   returns.
-+ *You own returned JSON.* Every `char **json_out` result is a heap
-  buffer. Release it with `zaxonlite_free`, which uses the C allocator
-  the library links. Your own `free` is the wrong allocator.
++ *You own returned results.* Every `char **json_out` result is a
+  heap buffer released with `zaxonlite_free`, which uses the C
+  allocator the library links; your own `free` is the wrong
+  allocator. Every `zaxonlite_result` handle is released with
+  `zaxonlite_result_close`, and the text and blob bytes
+  `zaxonlite_result_value` lends you are valid only until that
+  close.
 + *You borrow error strings.* `zaxonlite_last_error` and
   `zaxonlite_cluster_last_error` return handle-internal storage. Do not
   free them. Copy them out if you need them past the next call.
@@ -334,7 +488,7 @@ int main(void) {
 }
 ```
 
-#exercise("9.1", [
+#exercise([11.1], [
   `zaxonlite_query_json(db, "delete from c", &json)` returns 2, yet
   `zaxonlite_exec` accepts the same string. Explain, in terms of the
   replication path each function takes, why the read path must reject

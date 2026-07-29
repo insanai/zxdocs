@@ -15,7 +15,7 @@
   Chapter 7 showed how voters decide, and how payload bytes reach a
   quorum before any vote references them. This chapter states what a
   client may rely on because of that machinery. You first used sessions
-  in chapter 1; chapter 12 shows the same contract at the wire level.
+  in chapter 1; chapter 13 shows the same contract at the wire level.
 ])
 
 == Write acknowledgement: three outcomes, not two
@@ -119,7 +119,7 @@ You choose how much a read costs and how much it promises:
 
 The default is `linearizable`, as you saw in chapter 1. Chapter 7
 explains the `freshness_ms` bound that tightens `any` on a learner, and
-chapter 12 shows how a client requests each level.
+chapter 13 shows how a client requests each level.
 
 == The quorum read fence
 
