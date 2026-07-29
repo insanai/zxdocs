@@ -1,12 +1,12 @@
-#let zds-number = "XXXXX"
+#let zds-number = "0010"
 #let zds-title = "zxlite: A Native Python SDK for zaxonlite"
-#let zds-state = "prediscussion"
+#let zds-state = "discussion"
 #let zds-created = "2026-07-29"
 #let zds-discussion = "CPython Stable ABI, Python DB-API, PyPI wheels, and SQLAlchemy compatibility"
 #let zds-labels = ("zaxonlite", "zxlite", "python", "db-api", "sqlalchemy", "pypi", "sdk",)
 #let zds-authors = ("paxos-zig project",)
 #let zds-category = "Engineering Discussion"
-#let zds-status = "Proposed"
+#let zds-status = "Open for Discussion"
 #let zds-last-updated = "2026-07-29"
 
 #import "../../shared/zds.typ": zds-document

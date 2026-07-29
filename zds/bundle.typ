@@ -126,3 +126,16 @@
 #document("pdf/zds-0009-zaxonlite-multimodal-search.pdf")[
   #include "records/0009-zaxonlite-multimodal-search.typ"
 ]
+
+#document(
+  "zds/0010-zaxonlite-python-sdk.html",
+  title: [ZDS 0010: zxlite: A Native Python SDK for zaxonlite],
+  author: ("Zaxon Contributors",),
+  description: [CPython Stable ABI, Python DB-API, PyPI wheels, and SQLAlchemy compatibility],
+)[
+  #include "records/0010-zaxonlite-python-sdk.typ"
+]
+
+#document("pdf/zds-0010-zaxonlite-python-sdk.pdf")[
+  #include "records/0010-zaxonlite-python-sdk.typ"
+]
