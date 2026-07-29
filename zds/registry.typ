@@ -144,7 +144,7 @@
     status: "Open for Discussion",
     created: "2026-07-29",
     updated: "2026-07-29",
-    summary: "CPython Stable ABI, Python DB-API, PyPI wheels, and SQLAlchemy compatibility",
+    summary: "Defines the native zxlite DB-API and SQLAlchemy package, redundant multi-seed cluster connections, exactly-once remote writes, and consistency-aware multi-threaded read distribution.",
     source: "docs/zds/records/0010-zaxonlite-python-sdk.typ",
     html: "zds/0010-zaxonlite-python-sdk.html",
     pdf: "pdf/zds-0010-zaxonlite-python-sdk.pdf",

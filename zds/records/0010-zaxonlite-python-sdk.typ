@@ -2,7 +2,7 @@
 #let zds-title = "zxlite: A Native Python SDK for zaxonlite"
 #let zds-state = "discussion"
 #let zds-created = "2026-07-29"
-#let zds-discussion = "CPython Stable ABI, Python DB-API, PyPI wheels, and SQLAlchemy compatibility"
+#let zds-discussion = "CPython Stable ABI, redundant cluster connections, Python DB-API, PyPI, and SQLAlchemy"
 #let zds-labels = ("zaxonlite", "zxlite", "python", "db-api", "sqlalchemy", "pypi", "sdk",)
 #let zds-authors = ("paxos-zig project",)
 #let zds-category = "Engineering Discussion"
@@ -86,12 +86,15 @@ CPython 3.12's Limited API and Stable ABI, so one `cp312-abi3` wheel per
 operating-system and architecture pair can serve supported later CPython
 releases.
 
-Delivery has two compatibility gates. The first release provides a useful,
-typed, sqlite-shaped DB-API subset in replicated autocommit mode. The second
-adds a local embedded transaction surface with rollback, read-your-writes,
-savepoints, `lastrowid`, and `RETURNING`, then publishes a dedicated
-SQLAlchemy dialect. The project does not claim that API resemblance alone
-makes arbitrary `sqlite3` applications portable.
+Delivery has three compatibility gates. The first provides a useful, typed,
+sqlite-shaped DB-API subset in replicated autocommit mode. The second adds a
+redundant remote connection over multiple cluster seeds, exactly-once write
+retry, and a bounded pool that can distribute explicitly stale-tolerant reads
+across healthy read-serving members. The third adds a local embedded
+transaction surface with rollback, read-your-writes, savepoints, `lastrowid`,
+and `RETURNING`, then publishes a dedicated SQLAlchemy dialect. The project
+does not claim that API resemblance alone makes arbitrary `sqlite3`
+applications portable.
 
 = Introduction
 
@@ -147,18 +150,28 @@ papering over missing semantics in Python.
   `commit()`, `rollback()`, context managers, and savepoints
 - *cluster client*: a network or transport-owning handle that may redirect
   operations to a leader
+- *seed endpoint*: one configured `host:port` used to discover and contact a
+  cluster; it is not permanently preferred over other healthy seeds
+- *remote connection*: one logical DB-API connection backed by a pool of
+  independent authenticated zaxonlite client connections
+- *read level*: the server consistency contract: `any`, `leader`, or
+  `linearizable`
+- *read policy*: the client-side choice of an eligible physical connection,
+  never a change to the requested read level
+- *least-in-flight*: select the healthy eligible pool slot currently serving
+  the fewest operations, with round-robin as the tie-break
 - *materialized cursor*: a cursor whose complete result is copied into
   extension-owned or Python-owned memory before `execute()` returns
 
-This record covers the local embedded driver, additive C ABI work, Python
-interfaces, packaging, binary wheels, SQLAlchemy integration, and release
-verification. It does not define a general Python cluster protocol, an async
-driver, arbitrary Python SQLite callbacks, or substitution of the
-standard-library `sqlite3` module.
+This record covers local embedded and redundant remote connections, additive
+C and client-RPC work, Python interfaces, packaging, binary wheels,
+SQLAlchemy integration, and release verification. It does not define an async
+driver, arbitrary Python SQLite callbacks, a distributed live transaction,
+or substitution of the standard-library `sqlite3` module.
 
 = Problem Statement
 
-Five gaps must be closed before zaxonlite can be a credible Python database
+Six gaps must be closed before zaxonlite can be a credible Python database
 package.
 
 First, the C query ABI destroys SQLite type information. Python's default
@@ -184,6 +197,14 @@ Fifth, SQLAlchemy does not support a new driver merely because that driver
 has methods named like `sqlite3`. Its SQLite dialect has pysqlite-specific
 connection behavior. zaxonlite needs its own dialect and acceptance suite.
 
+Sixth, the existing reusable `client.ClusterConnection` accepts multiple
+endpoints, rotates through unreachable seeds, retains a connection to one
+answering server, and follows authenticated leader redirects. The C ABI does
+not expose that external client, and one `ClusterConnection` is intentionally
+single-call-at-a-time. A Python wrapper over one instance would provide
+failover but would serialize every Python thread and would not distribute
+`any` reads across cluster members.
+
 = Goals and Non-Goals
 
 == Goals
@@ -201,6 +222,15 @@ connection behavior. zaxonlite needs its own dialect and acceptance suite.
 - Release the GIL around blocking native operations.
 - Enforce one-call-at-a-time access to a native handle.
 - Make autocommit semantics explicit in the first release.
+- Accept redundant multi-server connection strings for remote clusters.
+- Reuse the existing leader-redirect and endpoint-rotation client behavior.
+- Make remote connections safe to share across Python threads through a
+  bounded pool of independent native client connections.
+- Distribute only `level="any"` reads across healthy read-serving endpoints.
+- Preserve `linearizable` as the default read level and never downgrade it
+  during retry or load balancing.
+- Use replicated sessions and sequences for exactly-once retry of remote
+  writes whose response may be lost.
 - Add genuine rollback and read-your-writes before enabling DB-API transaction
   mode.
 - Provide a dedicated SQLAlchemy URL and dialect only after its behavioral
@@ -217,10 +247,14 @@ connection behavior. zaxonlite needs its own dialect and acceptance suite.
 - No direct access to zaxonlite's `current.db`.
 - No `ATTACH`, runtime extension loading, or capture-changing pragmas.
 - No arbitrary Python `create_function`, `create_aggregate`, or
-  `create_window_function` in the first two releases.
+  `create_window_function` in the initial releases.
 - No Python callback executed from a Zig or SQLite worker thread.
 - No faithful distributed transaction spanning separate Python calls across
   leader changes.
+- No transparent distribution of `leader` or `linearizable` reads to
+  followers or read replicas.
+- No automatic consistency downgrade when the leader or quorum is
+  unavailable.
 - No asyncio API in the first release.
 - No embedding model, NumPy dependency, media decoder, or model inference in
   the Python package.
@@ -239,15 +273,19 @@ connection behavior. zaxonlite needs its own dialect and acceptance suite.
    explicit release path.
 5. The Python extension does not expose a pointer whose lifetime can outlive
    its native owner.
-6. One connection serializes native calls even when the GIL is released.
-7. `check_same_thread=True` is the default; disabling it removes the
-   creator-thread check but not the per-connection lock.
+6. One local connection serializes native calls even when the GIL is released.
+   One remote logical connection may run calls concurrently only on distinct
+   pool slots; each physical client connection remains single-call-at-a-time.
+7. The module advertises `threadsafety = 2`: threads may share modules and
+   connections, but not use one cursor concurrently. Local connections retain
+   `check_same_thread=True` by default; remote pooled connections default to
+   thread sharing.
 8. The first release never pretends that a no-op `rollback()` can undo an
    already replicated write.
 9. A live transaction is enabled only for a local embedded, single-member
    handle whose ownership and failure semantics are defined by this record.
-10. Cluster handles remain autocommit-only until a separate design defines
-    leases, leader loss, abandoned transactions, and retry identity.
+10. Remote cluster connections remain autocommit-only. A transaction request
+    on a remote DSN fails before sending SQL.
 11. The extension is compiled against `Py_LIMITED_API=0x030C0000` and may use
     only symbols documented in the CPython 3.12 Limited API.
 12. The wheel contains the exact zaxonlite, paxos, SQLite, and sqlite-vec
@@ -259,6 +297,13 @@ connection behavior. zaxonlite needs its own dialect and acceptance suite.
 15. Python's typed search API delegates validation and SQL-plan construction
     to zaxonlite's ZDS 0009 implementation; it never reconstructs the
     canonical hybrid SQL with Python string interpolation.
+16. A remote connection pins the database identity learned from its first
+    authenticated seed and refuses results from an endpoint reporting a
+    different database identity.
+17. `linearizable` is the default for remote reads and search. Load balancing
+    never changes a request's level.
+18. A remote write is retried after an ambiguous transport failure only with
+    the same replicated session and sequence.
 
 = Design Overview
 
@@ -356,7 +401,7 @@ SQLAlchemy only when the optional dialect is used; the base driver has no
 runtime dependency outside the Python standard library and its bundled
 native extension.
 
-== Two compatibility gates
+== Three compatibility gates
 
 #table(
   columns: (1.05fr, 1.55fr, 2.2fr),
@@ -368,7 +413,12 @@ native extension.
   and materialized reads.],
   [Typed result handles, prepared positional parameters, changes, generated
   row ID, reliable exception mapping, and explicit autocommit-only policy.],
-  [Gate B: local transactions],
+  [Gate B: remote cluster],
+  [A redundant multi-seed connection with authenticated failover,
+  exactly-once autocommit writes, and concurrent consistency-aware reads.],
+  [External client C ABI, typed client RPC, endpoint health, leader routing,
+  replicated write sessions, and a bounded pool of physical connections.],
+  [Gate C: local transactions],
   [Rollback, read-your-writes, savepoints, generated keys, `RETURNING`, and
   supported SQLAlchemy Core/ORM operation.],
   [Connection-scoped local transaction, writer-connection reads, result rows
@@ -382,9 +432,12 @@ direct zaxonlite maintenance. It includes typed search because search uses
 the existing bounded read path and does not require a live transaction. Gate
 A is not marketed as general SQLAlchemy support.
 
-Gate B is intentionally local. It extends the embedded node so Python can
+Gate B is intentionally autocommit-only. It exposes the existing
+multi-endpoint reference client without claiming that remote calls form a
+live SQLite transaction. Gate C is intentionally local. It extends the
+embedded node so Python can
 hold a live transaction between calls without inventing distributed
-transaction semantics. A future cluster DB-API design requires its own ZDS.
+transaction semantics. Distributed live transactions require a separate ZDS.
 
 = Detailed Design
 
@@ -457,17 +510,20 @@ The C extension uses multi-phase module initialization and heap types created
 through Limited-API type specifications. It does not read CPython object
 layouts or use private `_Py` symbols.
 
-The private extension owns four kinds of objects:
+The private extension owns five kinds of objects:
 
 - a native connection wrapping a zaxonlite handle, creator thread ID, state,
   and mutex;
+- a remote cluster pool wrapping independent external client connections,
+  endpoint health, database-identity pin, replicated write session, and
+  scheduler state;
 - a native result wrapping one `zaxonlite_result`;
-- a native transaction for Gate B;
+- a native transaction for Gate C;
 - module state containing exception and type references.
 
-Each potentially blocking open, close, execute, query, snapshot, backup,
-integrity, transaction commit, and transaction rollback call follows this
-sequence:
+Each potentially blocking local open, close, execute, query, snapshot,
+backup, integrity, transaction commit, and transaction rollback call follows
+this sequence:
 
 1. validate and convert Python arguments while holding the GIL;
 2. acquire the connection mutex while holding a strong reference to the
@@ -478,8 +534,10 @@ sequence:
 6. release the mutex;
 7. convert the result or raise the mapped Python exception.
 
-The close path marks the connection closing before releasing the GIL.
-Concurrent new operations then fail with `ProgrammingError`. Finalization
+The remote path selects and reserves one pool slot before releasing the GIL,
+then applies the same ownership pattern to that slot. The close path marks the
+logical connection closing, prevents new reservations, cancels active
+sockets, waits for checked-out slots, and then destroys them. Finalization
 never calls into a handle already detached by explicit `close()`.
 
 Python-to-SQLite binding is:
@@ -521,24 +579,37 @@ The base module exports:
 
 ```python
 apilevel = "2.0"
-threadsafety = 1
+threadsafety = 2
 paramstyle = "qmark"
 
 def connect(
-    database,
+    target,
     *,
     timeout=5.0,
     isolation_level=None,
-    check_same_thread=True,
+    check_same_thread=None,
     autocommit=True,
+    tls_ca=None,
+    tls_cert=None,
+    tls_key=None,
+    read_level="linearizable",
+    freshness_ms=None,
+    pool_size=None,
 ): ...
 ```
 
-`database` is a path-like zaxonlite data directory, not an SQLite filename.
-Gate A accepts only `isolation_level=None` and `autocommit=True`. Any other
-combination raises `NotSupportedError` at connect time. Gate B adds
-`isolation_level="DEFERRED"` as the default compatibility mode while
-retaining explicit autocommit.
+`target` is a path-like local zaxonlite data directory or a `zxlite://`
+connection string. Gate A accepts only `isolation_level=None` and
+`autocommit=True`. Any other combination raises `NotSupportedError` at
+connect time. Gate B adds remote cluster targets but remains autocommit-only.
+Gate C adds `isolation_level="DEFERRED"` for local targets while retaining
+explicit autocommit.
+
+When `check_same_thread` is omitted, local connections use `True` and remote
+pooled connections use `False`. Setting it to `True` on a remote connection
+restores creator-thread enforcement. Setting it to `False` on a local
+connection permits sharing but still serializes all calls through the one
+local native handle.
 
 The exception hierarchy is:
 
@@ -590,6 +661,9 @@ busy, interrupt, misuse, storage, integrity, and availability classification.
 
 - `cursor(factory=Cursor)`;
 - shortcut `execute`, `executemany`, and `executescript`;
+- zxlite-specific
+  `query(sql, parameters=(), *, read_level=None, freshness_ms=None)` for a
+  per-call remote consistency override;
 - `commit`, `rollback`, `close`, and context-manager methods;
 - `row_factory`, `total_changes`, and `in_transaction`;
 - zaxonlite-specific `snapshot`, `backup`, `integrity_check`,
@@ -607,7 +681,7 @@ busy, interrupt, misuse, storage, integrity, and availability classification.
   `row_factory`.
 
 `description` is one seven-tuple per result column with the name followed by
-six `None` values. Cursors are materialized in both gates: native execution
+six `None` values. Cursors are materialized in every mode: native execution
 finishes before `execute()` returns, and fetch methods traverse copied rows.
 This makes ownership simple and matches the current node query architecture.
 Query row, byte, and VM-step budgets must be configurable before untrusted
@@ -618,9 +692,295 @@ one SQL statement; `executescript()` is the explicit multi-statement path.
 The implementation uses SQLite preparation metadata to detect a trailing
 statement rather than parsing SQL in Python.
 
-Gate B adds named dict binding. The C ABI exposes each prepared parameter's
+Gate C adds named dict binding. The C ABI exposes each prepared parameter's
 SQLite name and index so `:name`, `@name`, and `$name` are resolved by SQLite
 itself. Python never rewrites SQL with a regular expression.
+
+== Remote connection strings
+
+The same `connect()` entry point distinguishes a local data directory from a
+remote cluster DSN:
+
+```python
+# Local embedded node.
+db = zxlite.connect("/var/lib/example")
+
+# Redundant remote cluster seeds.
+db = zxlite.connect(
+    "zxlite://db1.example:9901,db2.example:9901,db3.example:9901/"
+    "?read_level=linearizable&pool_size=8",
+    tls_ca="/run/secrets/cluster-ca.pem",
+    tls_cert="/run/secrets/client.pem",
+    tls_key="/run/secrets/client-key.pem",
+)
+```
+
+The remote grammar is:
+
+```ebnf
+remote-dsn       ::= authority-dsn | query-seed-dsn ;
+authority-dsn    ::= "zxlite://" seed ( "," seed )* [ "/" ]
+                     [ "?" remote-option ( "&" remote-option )* ] ;
+query-seed-dsn   ::= "zxlite:///?" query-option
+                     ( "&" query-option )* ;
+query-option     ::= "seed=" encoded-seed | remote-option ;
+seed             ::= dns-host ":" port
+                   | ipv4-address ":" port
+                   | "[" ipv6-address "]" ":" port ;
+encoded-seed     ::= percent-encoded seed ;
+remote-option    ::= "read_level=" read-level
+                   | "read_policy=" read-policy
+                   | "freshness_ms=" unsigned-integer
+                   | "pool_size=" unsigned-integer
+                   | "connect_timeout_ms=" unsigned-integer
+                   | "operation_timeout_ms=" unsigned-integer
+                   | "expected_database_id=" hex-u128 ;
+read-level       ::= "any" | "leader" | "linearizable" ;
+read-policy      ::= "least_in_flight" | "round_robin" ;
+```
+
+The authority form is the preferred direct `zxlite.connect()` spelling. The
+repeated `seed=` form exists because SQLAlchemy's URL model represents
+repeated query keys without relying on a comma-separated host extension; the
+dialect reads it through `URL.normalized_query`. The two forms are not mixed.
+After percent decoding, either form contains one to 36 unique seeds. A
+missing port, empty host, userinfo, fragment, path other than `/`, unknown
+option, duplicate singleton option, invalid percent encoding, or value
+outside its bound rejects the DSN before network activity. Only `seed` may
+repeat. IPv6 literals require brackets before percent encoding.
+
+The DSN never contains a password, private-key bytes, or secret. Production
+TCP requires all three `tls_ca`, `tls_cert`, and `tls_key` arguments. Provider
+paths are copied into native configuration but excluded from `repr`, logs,
+exceptions, and pool status. Test-only plaintext remains unavailable from the
+published wheel.
+
+`read_level` defaults to `linearizable`. `freshness_ms` is accepted only with
+`read_level=any`. `pool_size` defaults to
+`min(32, max(4, 2 * seed_count))` and is bounded to `1..=64`.
+`connect_timeout_ms` defaults to 5000 and `operation_timeout_ms` to 10000.
+
+`expected_database_id` is optional. When supplied, it must match the
+authenticated status probe from every endpoint. When omitted, the first
+successfully authenticated seed establishes the database identity for the
+logical connection. Every later physical connection runs a status probe
+before joining the pool and must report the pinned identity.
+
+Opening succeeds when at least one seed authenticates, reports the expected
+database identity, and accepts a client RPC. The remaining slots connect
+lazily. Failure to reach a quorum does not make `connect()` lie: connection
+creation can succeed while a later write or linearizable read correctly fails
+because no leader or quorum is available.
+
+== External client C ABI and typed RPC
+
+`zaxonlite_cluster_open` starts an in-process cluster member and is not the
+right primitive for a Python application connecting to existing servers. An
+additive external-client ABI wraps `client.ClusterConnection` without opening
+a data directory or listener:
+
+```c
+typedef void zaxonlite_remote;
+
+typedef struct zaxonlite_remote_options {
+    const char *const *seeds;
+    size_t seed_count;
+    const char *tls_ca_path;
+    const char *tls_cert_path;
+    const char *tls_key_path;
+    size_t pool_size;
+    uint64_t connect_timeout_ms;
+    uint64_t operation_timeout_ms;
+    bool has_expected_database_id;
+    uint8_t expected_database_id[16];
+} zaxonlite_remote_options;
+
+int zaxonlite_remote_open(
+    const zaxonlite_remote_options *options,
+    zaxonlite_remote **out_remote);
+void zaxonlite_remote_close(zaxonlite_remote *remote);
+```
+
+The remote execute, query, and search functions use the same
+`zaxonlite_value`, typed result, search options, and structured write result
+defined for local connections. This requires an additive `typed-v1` client
+RPC representation:
+
+- request parameters carry explicit null, integer, real, UTF-8 text, or
+  base64 blob tags;
+- the server binds them with the existing prepared-value path;
+- response cells carry the same tags instead of converting every non-null
+  value to a JSON string;
+- legacy requests that omit `format:"typed-v1"` retain their existing JSON
+  string/null response;
+- row, byte, VM-step, SQL-length, embedding, and candidate limits remain
+  server-enforced.
+
+This is a client RPC format addition, not a Paxos, journal, snapshot, or WAL
+payload-format change. A server that does not advertise `typed-v1` causes
+remote `zxlite.connect()` to fail with a version error instead of silently
+losing value types.
+
+Remote autocommit writes use a replicated session. The logical connection
+opens one session at the leader, serializes its writes, assigns monotonically
+increasing sequences, and retries the same request with the same session and
+sequence after a redirect or ambiguous connection loss. The replicated
+session result is extended to retain the change count and optional last
+inserted row ID. Remote `RETURNING` stays unsupported until its bounded typed
+result can also be retained and replayed.
+
+Remote `executemany()` uses one bounded `typed-v1` batch request and one
+replicated transaction, with one parameter vector per statement execution.
+The batch has one session and sequence and is replayed as one operation.
+Python never implements remote atomicity by looping over rows or by issuing
+independent writes.
+
+If the operation deadline expires while a write remains ambiguous, the
+connection retains the exact pending request and enters `write_pending`.
+Reads may continue. A different write raises `OperationalError` until
+`resolve_pending()` reconnects and retries the same session/sequence to a
+definitive replay or success response. The SDK never advances the sequence or
+substitutes a new SQL statement while a prior result is unresolved.
+
+This retry guarantee is scoped to a live replicated session. An unknown,
+closed, or expired session is never recreated under the same or a replacement
+identity. If future ordered session expiry causes resolution to return
+`SessionExpired`, the SDK raises a distinct `OperationalError` carrying the
+session and sequence as diagnostic operation identity and marks the outcome
+unknown; it still does not execute SQL again. Explicit `close()` refuses while
+`write_pending` remains unresolved so normal application code cannot silently
+discard that state. Interpreter finalization may abandon the local object but
+does not send a session-close command and emits `ResourceWarning`.
+
+== Multi-threaded remote read pool
+
+One `client.ClusterConnection` owns one socket and mutable retry state. It
+remains single-call-at-a-time. Concurrency comes from a bounded pool of
+independent instances, never concurrent mutation of one instance.
+
+#figure(
+  zds-figure(
+    diagram(
+      spacing: (11mm, 9mm),
+      node-outset: 2pt,
+      edge-stroke: 0.8pt + rgb("64748b"),
+      flow-node(
+        (0, 0),
+        [Python threads],
+        [independent cursors #linebreak() GIL released],
+        blue,
+        width: 28mm,
+      ),
+      flow-node(
+        (1, 0),
+        [Remote #linebreak() scheduler],
+        [level + health #linebreak() least in flight],
+        amber,
+        width: 30mm,
+      ),
+      flow-node(
+        (2, -1),
+        [Write lane],
+        [session + sequence #linebreak() leader redirect],
+        violet,
+        width: 29mm,
+      ),
+      flow-node(
+        (2, 0),
+        [Read slot A],
+        [one socket #linebreak() one active call],
+        slate,
+        width: 27mm,
+      ),
+      flow-node(
+        (2, 1),
+        [Read slot B..N],
+        [independent sockets #linebreak() bounded pool],
+        slate,
+        width: 29mm,
+      ),
+      flow-node(
+        (3, -1),
+        [Leader],
+        [writes + leader / #linebreak() linearizable reads],
+        green,
+        width: 30mm,
+      ),
+      flow-node(
+        (3, 0),
+        [Data voter],
+        [`any` reads #linebreak() local applied image],
+        green,
+        width: 27mm,
+      ),
+      flow-node(
+        (3, 1),
+        [Read replica],
+        [`any` + freshness #linebreak() local applied image],
+        green,
+        width: 29mm,
+      ),
+      edge((0, 0), (1, 0), "-|>"),
+      edge((1, 0), (2, -1), edge-label[write], "-|>", bend: 14deg),
+      edge((1, 0), (2, 0), edge-label[read], "-|>"),
+      edge((1, 0), (2, 1), edge-label[read], "-|>", bend: -14deg),
+      edge((2, -1), (3, -1), "-|>"),
+      edge((2, 0), (3, 0), "-|>"),
+      edge((2, 1), (3, 1), "-|>"),
+    ),
+  ),
+  caption: [Concurrency uses independent physical clients. Consistency level,
+  not thread count, determines which cluster members may answer.],
+)
+
+The scheduler applies these rules:
+
+#table(
+  columns: (1fr, 1.35fr, 2.25fr),
+  stroke: 0.5pt + rgb("d7dee8"),
+  inset: 5pt,
+  table.header([*Read level*], [*Eligible target*], [*Scheduling and guarantee*]),
+  [`linearizable`],
+  [leader only],
+  [Default. Follow the authenticated leader hint and complete the quorum read
+  fence. Multiple pool slots may overlap requests, but work is not distributed
+  to followers.],
+  [`leader`],
+  [leader only],
+  [Follow the authenticated leader hint and read the leader's applied image
+  without the linearizable fence.],
+  [`any`],
+  [healthy read-serving member],
+  [Use least-in-flight or round-robin across data voters, standbys, and read
+  replicas. The response is local and may be stale; `freshness_ms` lets a
+  learner reject a result outside the requested bound.],
+)
+
+The first authenticated `members` response seeds the topology cache. Only
+roles whose advertised capabilities serve reads are eligible for direct
+`any` routing; witnesses are never selected. Gateways remain valid configured
+seeds and can provide availability before topology discovery, but a
+successfully authenticated storage-member endpoint is preferred for explicit
+per-member distribution.
+
+Topology is advisory and refreshed after configuration changes, repeated
+role errors, or a bounded interval. Every newly learned endpoint must be
+authenticated by the cluster CA, must present the advertised node ID, and
+must report the pinned database identity before it becomes eligible.
+Unauthenticated leader or topology advertisements never expand the seed set.
+
+Each slot tracks consecutive connection failures, `stale` responses, current
+in-flight count, and a monotonic retry deadline. Transport failures trigger
+bounded exponential backoff with jitter; successful probes return a slot to
+service. Endpoints are not permanently evicted. A read may retry another
+eligible slot because the server enforces that the statement is read-only.
+Retries stop at the operation deadline and never change `read_level` or
+remove `freshness_ms`.
+
+One cursor is never used concurrently. Separate cursors on one remote
+`Connection` may execute in parallel, and their materialized result ownership
+is independent. Local connections remain serialized because they own one node
+handle and, in Gate C, may own one live transaction.
 
 == Typed search API
 
@@ -704,6 +1064,8 @@ cursor = connection.search(
     metadata_table=None,
     metadata_id_column=None,
     metadata_columns=(),
+    read_level=None,
+    freshness_ms=None,
 )
 ```
 
@@ -711,6 +1073,9 @@ It returns a normal materialized `Cursor`, so `description`, row factories,
 iteration, and all fetch methods behave exactly as for `execute()`.
 Lexical-only search requires `fts_table` and `text`. Vector-only search
 requires `vec_table` and `embedding`. Hybrid search supplies both branches.
+For a remote connection, omitted read options inherit the DSN defaults;
+explicit options apply to this call only. A local connection rejects
+non-null `read_level` or `freshness_ms`.
 
 `embedding` accepts `bytes`, `bytearray`, or a contiguous `memoryview`.
 Bytes-like input is interpreted as raw little-endian float32. The base
@@ -760,9 +1125,9 @@ SQL text containing application `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`,
 or `RELEASE` continues to be rejected by the zaxonlite guard. Transaction
 control is a connection operation, never an escape hatch around WAL capture.
 
-== Gate B local live transactions
+== Gate C local live transactions
 
-Gate B introduces a native local-transaction handle. It is restricted to a
+Gate C introduces a native local-transaction handle. It is restricted to a
 single embedded node because that node cannot lose leadership to another
 voter while a Python caller holds a transaction.
 
@@ -848,17 +1213,34 @@ also rejects misuse so non-Python embedders cannot violate the rule.
 
 == SQLAlchemy dialect
 
-Gate B registers:
+Gate C registers:
 
 ```text
 sqlalchemy.dialects
   zxlite = zxlite.sqlalchemy:ZxLiteDialect
 ```
 
-The connection URL is:
+Local connection URLs distinguish relative and absolute data directories:
 
 ```python
-create_engine("zxlite:///absolute/or/relative/data-directory")
+create_engine("zxlite:///relative/data-directory")
+create_engine("zxlite:////var/lib/zxlite/data-directory")
+```
+
+A remote SQLAlchemy URL uses repeated, percent-encoded `seed` values so it
+round-trips through SQLAlchemy's standard URL parser:
+
+```python
+create_engine(
+    "zxlite:///?seed=db1.example%3A9901&seed=db2.example%3A9901"
+    "&seed=db3.example%3A9901&read_level=any&freshness_ms=250&pool_size=8",
+    connect_args={
+        "tls_ca": "/run/secrets/cluster-ca.pem",
+        "tls_cert": "/run/secrets/client.pem",
+        "tls_key": "/run/secrets/client-key.pem",
+    },
+    isolation_level="AUTOCOMMIT",
+)
 ```
 
 The dialect reuses SQLAlchemy's SQLite SQL compiler, type compiler, identifier
@@ -880,6 +1262,13 @@ zaxonlite directory lock, and closing it releases that ownership. A
 underlying connection per data directory. The dialect detects a second open
 as `OperationalError`, not as a separate SQLite connection to the same file.
 
+For a remote DSN the dialect defaults to `StaticPool`: one thread-safe
+logical `zxlite.Connection` already owns its bounded native socket pool, so a
+second SQLAlchemy pool would multiply sockets without improving scheduling.
+Remote SQLAlchemy requires `isolation_level="AUTOCOMMIT"` and supports Core
+autocommit operations. ORM unit-of-work rollback and nested transactions are
+supported only by Gate C local connections.
+
 An optional dependency extra installs the tested SQLAlchemy range:
 
 ```text
@@ -892,7 +1281,7 @@ is out of scope.
 
 == Unsupported sqlite3 facilities
 
-#block(breakable: false)[
+#block(breakable: true)[
   #set text(size: 8pt)
   #table(
     columns: (1.5fr, 1.2fr, 2.1fr),
@@ -943,17 +1332,19 @@ a focused `build_ext` subclass:
 
 1. locate the monorepo root when building from a checkout;
 2. invoke the pinned Zig 0.16.0 build for the static zaxonlite C library with
-   `-Doptimize=ReleaseSafe -Dtls=false`;
+   `-Doptimize=ReleaseSafe -Dtls=true`;
 3. compile the CPython shim with `Py_LIMITED_API=0x030C0000`;
-4. link the shim, zaxonlite, pinned SQLite, sqlite-vec, the platform C runtime,
-   and required platform system libraries into `_zxlite`;
+4. link the shim, zaxonlite, pinned SQLite, sqlite-vec, pinned OpenSSL 3, the
+   platform C runtime, and required platform system libraries into `_zxlite`;
 5. mark the extension `py_limited_api=True`;
 6. copy it under `src/zxlite` with the platform's `abi3` extension suffix.
 
-TLS is disabled because this SDK record covers local embedded connections.
-It avoids bundling OpenSSL into every wheel and prevents a local driver from
-accidentally exposing an unaudited cluster surface. A future cluster SDK may
-ship a separate native artifact or define an OpenSSL packaging contract.
+TLS is enabled because Gate B is a production remote client and zaxonlite
+requires mutual TLS for production TCP. Release builds pin OpenSSL 3, link or
+bundle it according to the platform wheel policy, and record its exact
+version in provenance. The wheel dependency inspection fails on an
+unaccounted system OpenSSL. An OpenSSL security update triggers a new zxlite
+wheel release even when the Python API is unchanged.
 
 The initial release matrix is:
 
@@ -1015,7 +1406,7 @@ they are compatible. Wheels record:
 - zaxonlite and paxos versions;
 - SQLite numeric version;
 - sqlite-vec version and source pin;
-- target triple, optimization mode, and TLS-disabled flag;
+- target triple, optimization mode, TLS-enabled flag, and OpenSSL version;
 - CPython Limited API floor;
 - wheel repair tool and version.
 
@@ -1052,13 +1443,33 @@ provenance, and then publishes first to TestPyPI or PyPI as selected.
   [busy, interrupt, or I/O error],
   [`OperationalError`],
   [Handle remains usable only when native error state permits it.],
+  [some remote seeds are down],
+  [connect or operation succeeds through another healthy seed],
+  [Failed endpoints enter bounded backoff and remain eligible for later
+  probes.],
+  [all remote seeds are down],
+  [`OperationalError` after the configured deadline],
+  [No consistency downgrade or unbounded retry occurs.],
+  [remote endpoint has another database identity],
+  [`InterfaceError`; endpoint quarantined],
+  [The endpoint never enters the read pool or receives application SQL.],
+  [`any` read is stale on one replica],
+  [retry another eligible member],
+  [The same freshness bound and read level are retained.],
+  [linearizable read has no leader or quorum],
+  [`OperationalError`],
+  [The SDK never retries it as an `any` read.],
+  [remote write response is ambiguous],
+  [retry the same session and sequence],
+  [A deadline leaves the connection in `write_pending`; a different write is
+  refused until resolution.],
   [invalid UTF-8 TEXT result],
   [`OperationalError`],
   [Result is closed; no partially converted cursor is returned.],
   [Gate A rollback request],
   [no-op only in explicit autocommit],
   [Every prior write is already replicated and remains committed.],
-  [Gate B close with open transaction],
+  [Gate C close with open transaction],
   [rollback then close],
   [No payload is proposed; rollback failure poisons the handle.],
   [SQLite commit succeeds, logging fails],
@@ -1081,6 +1492,13 @@ The package statically links the existing guarded SQLite build. Runtime
 extension loading stays omitted. Python cannot replace zaxonlite's authorizer,
 register an arbitrary callback, attach a database, or obtain `current.db`.
 
+Production remote connections use mutual TLS. A topology or leader
+advertisement can add an endpoint only after the server certificate binds the
+advertised node ID under the configured cluster CA. A status probe then binds
+the endpoint to the logical connection's database ID. DNS, an unauthenticated
+JSON response, or possession of the shared PSK alone is insufficient to
+expand the trusted endpoint set.
+
 All Python lengths, row/column indexes, parameter counts, and buffer sizes are
 validated before casting to C types. Contiguous buffers are pinned for the
 entire GIL-released native call. Text and blob output is copied before its
@@ -1090,9 +1508,10 @@ The extension never parses native error messages to make a security decision.
 Stable native error categories drive exception mapping; the message is
 diagnostic text only.
 
-The GIL is not the connection lock. Native calls release the GIL, so explicit
-per-connection synchronization and close-state transitions prevent
-use-after-close, concurrent handle use, and result-owner races.
+The GIL is not a connection or pool-slot lock. Native calls release the GIL,
+so explicit synchronization, slot reservations, cancellation state, and
+close-state transitions prevent use-after-close, concurrent physical-client
+use, and result-owner races.
 
 TestPyPI and PyPI publication use separate environments. The publishing job
 has no arbitrary pull-request execution and no long-lived API token. Every
@@ -1101,10 +1520,11 @@ code.
 
 = Replication and Compatibility
 
-The typed result ABI changes no journal, WAL payload, snapshot, or wire
-format. It exposes information SQLite and zaxonlite already compute.
+The typed local result ABI changes no journal, WAL payload, snapshot, or
+consensus wire format. The `typed-v1` client RPC is additive and negotiated;
+legacy request and response bodies remain byte-for-byte compatible.
 
-Gate B changes the duration of the writer transaction, not the committed
+Gate C changes the duration of the writer transaction, not the committed
 artifact. A completed local transaction still produces one captured WAL
 transition and one transaction payload. Its protocol payload remains subject
 to the existing statement, input-byte, and maximum-payload bounds.
@@ -1123,16 +1543,26 @@ The Python API follows semantic versioning:
 - changing a native dependency without changing the Python API is still
   release-noted because SQLite behavior may change.
 
-`sqlite3` compatibility is stated feature by feature. A program can usually
-port by changing `import sqlite3 as db` to `import zxlite as db` only when
-every used feature is marked supported and its database argument is changed
-from an SQLite file to a zaxonlite data directory.
+`sqlite3` compatibility is stated feature by feature. A local program can
+usually port by changing `import sqlite3 as db` to `import zxlite as db` only
+when every used feature is marked supported and its database argument is
+changed from an SQLite file to a zaxonlite data directory. A remote program
+supplies a multi-seed DSN and accepts the explicitly documented
+autocommit-only transaction contract.
 
 = Operational Considerations
 
 Opening a connection initializes a zaxonlite node and can perform recovery.
 It is heavier than opening a routine cursor and should be pooled at the
 application level only within the one-directory/one-owner rule.
+
+Opening a remote connection authenticates at least one seed and initializes a
+bounded native socket pool. Applications and SQLAlchemy reuse that logical
+connection instead of creating one pool per thread. The status surface
+reports seed count, connected and in-flight slots, leader cache, topology
+generation, pinned database ID, endpoint backoff, read level, read policy,
+freshness bound, and unresolved write state. It never reports key paths or
+certificate contents.
 
 Materialized query results bound native lifetimes but can consume memory
 proportional to total result bytes. The SDK documents query budgets and
@@ -1149,7 +1579,8 @@ dependency inspection, and test results. The installed package performs no
 network telemetry.
 
 The first wheels are expected to be substantially larger than a pure-Python
-driver because they contain SQLite, sqlite-vec, Paxos, and zaxonlite. CI
+driver because they contain SQLite, sqlite-vec, Paxos, zaxonlite, and the
+remote client's OpenSSL dependency. CI
 records stripped wheel and loaded-library sizes; size is reported, not hidden
 by downloading a native library after installation.
 
@@ -1195,7 +1626,47 @@ by downloading a native library after installation.
 - Compare each supported behavior against CPython 3.12 `sqlite3` using a
   table-driven compatibility oracle.
 
-== Gate B transaction tests
+== Gate B remote-cluster tests
+
+- Parse DNS, IPv4, bracketed IPv6, multiple seeds, every option, and all
+  malformed or duplicate DSN forms.
+- Round-trip SQLAlchemy's repeated `seed=` URL values through
+  `URL.normalized_query`, including percent-encoded IPv6, and reject mixed
+  authority/query seed forms.
+- Connect when the first seed is down, when only a gateway is initially
+  reachable, and after a previously failed seed recovers.
+- Fail at the deadline when all seeds are down without leaking sockets or
+  native pool slots.
+- Reject a CA-invalid certificate, advertised node-ID mismatch, database-ID
+  mismatch, unauthenticated topology expansion, and a server without
+  `typed-v1`.
+- Round-trip every prepared parameter and result type through the typed RPC
+  while retaining legacy string/null responses for legacy requests.
+- Prove witnesses are never selected for reads and that stale topology is
+  refreshed after a decided voter replacement or role change.
+- Run parallel cursors from at least 32 Python threads; verify no physical
+  client handles two calls concurrently and active calls never exceed
+  `pool_size`.
+- Verify least-in-flight and round-robin distribution across data voters and
+  read replicas for `level="any"`.
+- Verify `leader` and `linearizable` calls are answered only by the leader,
+  including when follower capacity is idle.
+- Verify `freshness_ms` survives every retry, a stale replica rotates to an
+  eligible fresh member, and all-stale members return `OperationalError`.
+- Kill a connection before a write, after the request reaches the leader, and
+  before the response; prove one session/sequence changes the database at
+  most once.
+- Exercise `write_pending`, `resolve_pending`, leader failover, sequence
+  replay, session expiry with an outcome-unknown error, refusal of a different
+  unresolved write, and proof that no replacement session retries it.
+- Verify explicit close refuses an unresolved pending write and finalization
+  neither closes its server session nor executes the statement again.
+- Close while reads are active, cancel blocked sockets, join checked-out
+  slots, and reject new operations without use-after-close.
+- Run thread and address sanitizers around the native scheduler, slot state,
+  cancellation, topology refresh, and endpoint backoff code where supported.
+
+== Gate C transaction tests
 
 - Implicit begin on the first write and explicit autocommit.
 - Read-your-writes across insert, update, delete, and DDL.
@@ -1229,6 +1700,12 @@ Run SQLAlchemy 2.0 and 2.1 tests against the installed wheel:
 - explicit rejection of unsupported Python UDF and attachment features.
 - raw search SQL through SQLAlchemy `text()` and typed search through the
   underlying `zxlite` DB-API connection.
+- local URLs use `NullPool`; remote multi-seed URLs use one `StaticPool`
+  logical connection and do not multiply native socket pools.
+- remote URLs reject non-autocommit isolation, ORM rollback claims, and nested
+  transactions before SQL reaches the cluster.
+- repeated remote `seed=` query values survive SQLAlchemy URL parsing and
+  produce exactly one native logical connection.
 
 The documentation may say "SQLAlchemy supported" only after this suite passes
 on every release platform.
@@ -1258,13 +1735,20 @@ Benchmarks record:
 - materialized result memory per row and per byte;
 - GIL release by demonstrating progress on another Python thread during a
   deliberately slow native operation;
+- remote read throughput and p95/p99 latency at pool sizes 1, 2, 4, 8, 16,
+  and 32 with matching Python worker counts;
+- per-endpoint distribution, open sockets, reconnect rate, and TLS handshake
+  cost under healthy, one-seed-down, leader-failover, and stale-replica cases;
+- proof that linearizable throughput changes only through concurrent leader
+  connections and never through follower routing;
 - `executemany` throughput and payload size;
-- Gate B commit and rollback latency;
+- Gate C commit and rollback latency;
 - import time and loaded native image size.
 
 The first release sets no claim that Python overhead is zero. It must show no
 per-row native ownership leak, no allocation proportional to query history,
-and no unexpected serialization beyond the documented one-handle rule.
+and no unexpected serialization beyond the documented local-handle,
+write-lane, and per-pool-slot rules.
 Results are stored as raw benchmark artifacts with machine, Python, Zig, and
 native dependency versions.
 
@@ -1291,7 +1775,21 @@ native dependency versions.
 5. Publish a Gate A prerelease to TestPyPI and retain the explicit
    autocommit-only label.
 
-== Phase 3: local transaction core
+== Phase 3: redundant remote cluster
+
+1. Add the external-client C ABI over the existing endpoint parser,
+   `ClusterConnection`, mTLS identity checks, redirects, and cancellation.
+2. Add negotiated typed prepared-value/result RPC without changing legacy
+   JSON responses or consensus formats.
+3. Implement strict multi-seed DSN parsing, database-ID pinning, topology
+   discovery, endpoint health, and bounded backoff.
+4. Implement one replicated-session write lane with pending-write resolution.
+5. Implement the bounded physical-client pool and consistency-aware read
+   scheduler; keep linearizable as the default.
+6. Pass the failover, multi-thread, identity, consistency, exactly-once, and
+   no-regression gates before enabling remote DSNs in a wheel.
+
+== Phase 4: local transaction core
 
 1. Refactor node write capture into begin, statement, query, savepoint,
    commit, and rollback states without weakening the application guard.
@@ -1300,11 +1798,12 @@ native dependency versions.
    multi-statement-tail detection.
 4. Complete crash, resync, payload-limit, finalization, and one-member
    capability tests.
-5. Enable Gate B DB-API transaction mode only after the native suite passes.
+5. Enable Gate C DB-API transaction mode only after the native suite passes.
 
-== Phase 4: SQLAlchemy and PyPI release
+== Phase 5: SQLAlchemy and PyPI release
 
-1. Implement the `zxlite://` SQLAlchemy dialect and `NullPool` default.
+1. Implement the `zxlite://` SQLAlchemy dialect with local `NullPool` and
+   remote `StaticPool` defaults.
 2. Run the SQLAlchemy 2.0/2.1 and Alembic acceptance suites on installed
    wheels.
 3. Publish documentation that distinguishes supported sqlite3, DB-API,
@@ -1365,6 +1864,28 @@ live DB-API transaction.
 Rejected as the final SQLAlchemy path. It is a useful first gate, but ORM
 rollback and unit-of-work semantics require a real transaction boundary.
 
+== One locked remote client connection
+
+Rejected as the remote implementation. It would reuse the current
+`ClusterConnection` directly and provide seed failover, but every Python
+thread would wait behind one socket. The bounded pool preserves each native
+client's single-call discipline while permitting independent reads.
+
+== Balance linearizable reads across followers
+
+Rejected. A follower cannot complete the current linearizable read fence.
+Routing a linearizable request as `any` would be a silent consistency
+regression. Linearizable and leader reads may use concurrent physical
+connections, but they still execute on the leader.
+
+== Python-only endpoint and thread pool
+
+Rejected as the primary scheduler. It would duplicate authenticated redirect,
+cancellation, health, and database-identity state in Python while the GIL is
+released around the actual socket operation. The native pool keeps socket
+ownership and retry state in one reviewed layer; Python exposes configuration
+and DB-API objects.
+
 == Distributed live DB-API transactions
 
 Deferred to a separate design. A leader can change while a Python application
@@ -1374,7 +1895,7 @@ are not implied by local transaction support.
 
 = Resolved Design Decisions
 
-#block(breakable: false)[
+#block(breakable: true)[
   #set text(size: 8pt)
   #table(
     columns: (1.2fr, 2fr, 2.05fr),
@@ -1396,10 +1917,11 @@ are not implied by local transaction support.
     [Live DB-API transactions are local embedded and single-member only.],
     [Cluster transaction semantics require a separate ZDS.],
     [Q5: SQLAlchemy],
-    [A dedicated `zxlite://` dialect after Gate B.],
+    [A dedicated `zxlite://` dialect after Gate C.],
     [SQLAlchemy 2.0 and 2.1 Core/ORM acceptance on every release platform.],
     [Q6: packaging],
-    [Static native extension, Zig TLS disabled, wheel-only first release.],
+    [Static native extension, TLS enabled with pinned OpenSSL 3, wheel-only
+    first release.],
     [manylinux2014 x86_64/AArch64, macOS x86_64/AArch64, Windows AMD64.],
     [Q7: result model],
     [Opaque materialized typed results in the C ABI and Python cursors.],
@@ -1415,10 +1937,25 @@ are not implied by local transaction support.
     [The native validator owns identifiers, embedding shape, fusion weights,
     metadata projection, and the `candidate_count <= 4096` gate. The Python
     package adds no NumPy or model-runtime dependency.],
+    [Q10: remote DSN],
+    [`zxlite://host:port,host:port/` or repeated SQLAlchemy `seed=` values
+    supply 1 to 36 redundant seeds; mTLS paths remain separate arguments.],
+    [Open after one authenticated seed succeeds; pin its database ID and
+    validate every later endpoint before use.],
+    [Q11: threaded reads],
+    [A bounded native pool uses least-in-flight or round-robin only for
+    explicit `any` reads.],
+    [`threadsafety = 2`; distinct cursors may overlap. `leader` and
+    `linearizable` remain leader-only, and the default is linearizable.],
+    [Q12: remote writes],
+    [One serialized write lane uses a replicated session and monotonic
+    sequence numbers across redirects and reconnects.],
+    [An ambiguous deadline retains `write_pending`; no different write may
+    advance the sequence until `resolve_pending()` completes.],
   )
 ]
 
-These decisions close the implementation choices for the first two release
+These decisions close the implementation choices for the three release
 gates. PyPI project-name ownership for `zxlite` is an external administrative
 prerequisite. The distribution name, import namespace, SQLAlchemy dialect
 name, and connection URL remain aligned as `zxlite`; a different fallback
@@ -1447,6 +1984,8 @@ name requires this record to be updated before publication.
   SQLAlchemy 2.0 SQLite dialect]
 - #link("https://docs.sqlalchemy.org/en/21/dialects/sqlite.html")[
   SQLAlchemy 2.1 SQLite dialect]
+- #link("https://docs.sqlalchemy.org/en/21/core/engines.html#database-urls")[
+  SQLAlchemy database URLs and repeated query parameters]
 - #link("https://www.sqlite.org/c3ref/last_insert_rowid.html")[
   SQLite last inserted row ID]
 - #link("https://www.sqlite.org/lang_returning.html")[SQLite `RETURNING`]
