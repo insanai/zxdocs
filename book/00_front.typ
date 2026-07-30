@@ -35,7 +35,7 @@ Lamport has its own copyright. A local copy is present for study.
 
 #v(1fr)
 #align(center, text(size: 8.5pt, fill: gray)[
-  Version 0.1.2. Built with Typst 0.15 or later.
+  Version 0.2.0. Built with Typst 0.15 or later.
 ])
 
 #pagebreak()

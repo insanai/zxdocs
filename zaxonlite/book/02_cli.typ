@@ -187,7 +187,7 @@ results taller than the screen open in a pager (arrows scroll, `q` returns).
 
 ```console
 $ zaxon sql --data ./mydb
-zaxonlite 0.1.2 — interactive shell
+zaxonlite 0.2.0 — interactive shell
 Statements end with ';'. Type .help for commands and keys.
 zaxon> select id, author from notes where id < 3;
 ┌────┬────────┐

@@ -38,7 +38,7 @@ crosses the boundary is a fixed-width type from `<stdint.h>` or
 changes require a new symbol suffix or a major library version. Additive
 JSON response fields are compatible, and you must ignore fields you do
 not use. `zaxonlite_version()` returns the library version string. Release
-0.1.2 returns `"0.1.2"`.
+0.2.0 returns `"0.2.0"`.
 
 #api_anchor([`zaxonlite_open` / `zaxonlite_close`],
   [Opens (or creates) one node data directory and releases it.],
