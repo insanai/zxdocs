@@ -223,7 +223,7 @@ value ≤ 64 MiB), and every out-parameter is set to a safe empty value
 on every path; chapter 11 states the full boundary contract.
 
 #table(
-  columns: (auto, 1fr),
+  columns: (1.35fr, 1.65fr),
   table.header([*Function*], [*Purpose*]),
   [`zaxonlite_version`], [Return the library version string.],
   [`zaxonlite_open`, `_close`], [Own one node data directory. A second
@@ -292,9 +292,10 @@ on every path; chapter 11 states the full boundary contract.
   [`zaxonlite_remote_open`, `_close`], [Own a pooled external client
     to an existing cluster: 1 to 64 slots, no data directory, no
     listener, database identity pinned per slot.],
-  [`zaxonlite_remote_exec`, `_query`], [Exactly-once writes on one
+  [`zaxonlite_remote_exec`, `_query`, `_search`], [Exactly-once writes on one
     FIFO write lane with a replicated session; typed reads at level 0
-    (`any`), 1 (`leader`), or 2 (`linearizable`).],
+    (`any`), 1 (`leader`), or 2 (`linearizable`), including search
+    through the validated native planner.],
   [`zaxonlite_remote_resolve_pending`], [Drive a retained pending
     write to a definitive outcome after its deadline expired.],
   [`zaxonlite_remote_status_json`, `_last_error`,

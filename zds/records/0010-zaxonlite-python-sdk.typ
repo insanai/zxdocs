@@ -1101,12 +1101,19 @@ typedef struct zaxonlite_remote_options {
     uint64_t operation_timeout_ms;
     bool has_expected_database_id;
     uint8_t expected_database_id[16];
+    uint64_t write_admission_timeout_ms;
 } zaxonlite_remote_options;
 
 int zaxonlite_remote_open(
     const zaxonlite_remote_options *options,
     zaxonlite_remote **out_remote);
 void zaxonlite_remote_close(zaxonlite_remote *remote);
+int zaxonlite_remote_search(
+    zaxonlite_remote *remote,
+    const zaxonlite_search_options *options,
+    int level,
+    uint64_t freshness_ms,
+    zaxonlite_result **out_result);
 ```
 
 The remote execute, query, and search functions use the same
@@ -1546,14 +1553,11 @@ It returns a normal materialized `Cursor`, so `description`, row factories,
 iteration, and all fetch methods behave exactly as for `execute()`.
 Lexical-only search requires `fts_table` and `text`. Vector-only search
 requires `vec_table` and `embedding`. Hybrid search supplies both branches.
-The first Gate B release defers the typed remote search RPC: a remote
-connection raises `NotSupportedError` from `search()` and serves search
-through the documented raw SQL path, which the read pool already
-handles; the typed path arrives with a dedicated search client RPC.
-For a remote connection (once that RPC exists), omitted read options
-inherit the DSN defaults;
-explicit options apply to this call only. A local connection rejects
-non-null `read_level` or `freshness_ms`.
+The Gate B typed remote search RPC sends the request to the server's `search`
+operation with `format:"typed-v1"`. The server applies the same native
+planner and returns typed result cells through the read pool. Omitted read
+options inherit the DSN defaults; explicit options apply to this call only.
+A local connection rejects non-null `read_level` or `freshness_ms`.
 
 `embedding` accepts `bytes`, `bytearray`, or a contiguous `memoryview`.
 Bytes-like input is interpreted as raw little-endian float32. The base
@@ -1814,11 +1818,13 @@ as its PEP 517 backend with a focused `build_ext` subclass:
    sibling layout as the published repository's CI;
 2. invoke the pinned Zig 0.16.0 build for the static zaxonlite C library with
    `-Doptimize=ReleaseSafe -Dtls=true`;
-3. compile the CPython shim with `Py_LIMITED_API=0x030C0000`;
-4. link the shim, zaxonlite, pinned SQLite, sqlite-vec, pinned OpenSSL 3, the
+3. consume the exact `libsqlite3` archive installed by that same Zig product
+   graph, never an archive guessed from cache timestamps;
+4. compile the CPython shim with `Py_LIMITED_API=0x030C0000`;
+5. link the shim, zaxonlite, pinned SQLite, sqlite-vec, pinned OpenSSL 3, the
    platform C runtime, and required platform system libraries into `_zxlite`;
-5. mark the extension `py_limited_api=True`;
-6. copy it under `src/zxlite` with the platform's `abi3` extension suffix.
+6. mark the extension `py_limited_api=True`;
+7. copy it under `src/zxlite` with the platform's `abi3` extension suffix.
 
 TLS is enabled because Gate B is a production remote client and zaxonlite
 requires mutual TLS for production TCP. Release builds pin OpenSSL 3, link or

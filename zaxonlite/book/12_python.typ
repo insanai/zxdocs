@@ -121,6 +121,11 @@ parsing message text:
 
 Exceptions expose the category as `exception.category`, so a program
 that must branch on a cause has a stable token to branch on.
+Operating failures also follow the repository's Elm-style diagnostic
+shape: a boundary such as `-- DATABASE UNAVAILABLE --`, a plain-English
+explanation, and a concrete `Hint:`. SQL and DB-API programming errors
+retain sqlite-shaped wording where compatibility is the useful contract;
+applications branch on categories rather than parsing either form.
 
 == Writes queue; they do not fail
 
@@ -227,9 +232,11 @@ candidate cap of 4096, fusion weights, and embedding shape are all
 enforced by the Zig planner, never rebuilt with string interpolation.
 Embeddings are raw little-endian float32 bytes — NumPy callers pass
 `numpy.asarray(v, dtype="<f4").tobytes()`; the base package depends on
-nothing outside the standard library. Raw FTS5 and vec0 SQL through
-ordinary `execute()` remains fully supported, and is currently the
-search path for remote connections.
+nothing outside the standard library. Remote connections send the same
+typed request to the server planner and schedule it like an ordinary
+read, so `read_level` and `freshness_ms` retain their usual meanings.
+Raw FTS5 and vec0 SQL through ordinary `execute()` also remains fully
+supported.
 
 == Hosting a backend from Python
 
@@ -390,9 +397,9 @@ percentage. The load-bearing exclusions:
   [`backup` to another connection],
   [Replaced by `Connection.backup(path)`, the consistent logical
   backup.],
-  [Remote `executescript()`, remote typed `search()`],
-  [`NotSupportedError` today; the wire carries one statement per
-  write, and the typed search RPC is local-only so far.],
+  [Remote `executescript()`, remote `RETURNING`],
+  [`NotSupportedError` today; the write wire carries one statement and
+  replay records do not yet retain returned rows.],
   [`text_factory`, adapters, converters, `asyncio`],
   [Deferred; the first contract is the five native types,
   synchronously.],
