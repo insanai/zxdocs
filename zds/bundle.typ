@@ -139,3 +139,16 @@
 #document("pdf/zds-0010-zaxonlite-python-sdk.pdf")[
   #include "records/0010-zaxonlite-python-sdk.typ"
 ]
+
+#document(
+  "zds/0011-global-slots-certified-log-trimming.html",
+  title: [ZDS 0011: Global Slots and Certified Log Trimming],
+  author: ("Zaxon Contributors",),
+  description: [Remove the 2,044-commit rollover by separating Paxos progress, log retention, and SQLite state transfer],
+)[
+  #include "records/0011-global-slots-certified-log-trimming.typ"
+]
+
+#document("pdf/zds-0011-global-slots-certified-log-trimming.pdf")[
+  #include "records/0011-global-slots-certified-log-trimming.typ"
+]
