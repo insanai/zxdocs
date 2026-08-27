@@ -23,7 +23,7 @@ no external SQLite install, no separate shell tool, no agent.
 
 == Build the binary
 
-Zaxonlite lives inside the paxos-zig monorepo and builds with Zig 0.16:
+Zaxonlite builds with Zig 0.16:
 
 ```console
 $ cd zaxonlite
@@ -61,8 +61,8 @@ checksummed journal, and synced to disk before `ok` came back.
   Decide before you try it.
 ])
 
-The database file is disposable. On the next start Zaxonlite discards the
-materialized image, copies the last verified snapshot, and replays the
+The database file is disposable. On the next start Zaxonlite rebuilds the
+materialized image from the last durable state anchor and replays the
 committed journal suffix. The journal is the truth. The `.db` file is a cache
 of it. Chapter 6 walks through this recovery in detail.
 
