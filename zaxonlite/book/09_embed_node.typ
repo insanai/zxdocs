@@ -87,13 +87,14 @@ single node. `open` refuses to proceed when anything disagrees:
 )
 
 The directory is the database. It holds the identity file, the
-exclusive `LOCK`, one `paxos-*.log` journal per epoch, the
-content-addressed `payloads/` store, the `snapshots/` directory with
-its `CURRENT` pointer, and the materialized `current.db` image. The
-journal and the payload store are authoritative. The SQLite image is
-not. Every `open` deletes the image and rebuilds it from the verified
-snapshot plus the committed journal suffix. A tampered or deleted image
-therefore never outranks Paxos state.
+exclusive `LOCK`, the segmented `consensus/` journal with its
+`MANIFEST`, the alternating `APPLIED.0`/`APPLIED.1` state anchors and
+the `TRIM` record, the content-addressed `payloads/` store, and the
+materialized `current.db` image. The journal, the payload store, and
+the anchored image are authoritative; the image's tail above the anchor
+is not. Every `open` discards the SQLite WAL and replays the committed
+journal suffix above the newest valid anchor. A tampered image fails
+its checks and never outranks Paxos state.
 
 A one-member node campaigns during `open`. A one-member quorum
 completes immediately, so `open` returns ready to serve. The
@@ -159,9 +160,10 @@ call repairs it automatically.
   rebuilds from the verified journal.
 ]
 
-One more refusal matters here. A sealed epoch returns
-`error.LogSealed`. A one-member node avoids it by checkpointing
-automatically as its 2,048-slot epoch fills.
+One more refusal matters here. `error.LogSealed` now means exactly one
+thing: a membership change is pending, so no new SQL may take a slot
+until the handover completes. Global slots never run out; the in-memory
+consensus window recycles as decided slots become durable and applied.
 
 == Prepared statements: `execPrepared`
 
@@ -287,12 +289,21 @@ definition current, so every read is linearizable.
 #table(
   columns: (auto, 1fr),
   table.header([*Call*], [*Contract*]),
-  [`snapshot()`], [Online checkpoint. It materializes every committed
-    frame, seals the epoch with a stop sign, installs the snapshot
-    generation, and starts the next epoch. One-member only (asserted).
-    Cluster hosts call `prepareCheckpoint()` and finish with
-    `completeClusterRollover()` once the stop sign is decided. No write
-    may be in flight (`error.WriteInFlight`).],
+  [`createStateAnchor()`], [Publishes a durable state anchor: it
+    checkpoints the SQLite WAL, synchronizes `current.db`, and writes
+    the alternating `APPLIED` record for the applied slot. On a
+    one-member node it also chooses the degenerate trim and reclaims
+    inline. `maybeCreateStateAnchor()` is the cadence-aware form the
+    server pump calls: it anchors promptly after the first applied
+    write, then every 10,000 slots. No write may be in flight
+    (`error.WriteInFlight`).],
+  [`proposeTrim(candidate)` / `reclaim()` / `frontier()`], [The
+    cluster-host trimming surface. `frontier()` reports this replica's
+    durable, executed, and persisted slots for state reports; a leader
+    host feeds collected frontiers to `trim.candidate` and proposes the
+    result; `reclaim()` unlinks segments below the local delete floor
+    and runs payload GC. The `Embedded` facade and `zaxon serve` drive
+    all three for you.],
   [`backup(destination)`], [Streams a consistent logical backup
     (`VACUUM INTO`) to a path. `openBackup()` instead returns a
     `BackupHandle` carrying the file, its size, and its SHA-256 for
@@ -302,14 +313,16 @@ definition current, so every read is linearizable.
     database content. Identical applied history gives an identical
     digest.],
   [`integrityCheck() !IntegrityReport`], [Verifies three things: the
-    SQLite image (`sqlite_ok`), the descriptor chain across the decided
-    epoch (`chain_ok`), and payload availability plus descriptor
-    agreement (`payloads_ok`). `report.ok()` folds the three.],
+    SQLite image (`sqlite_ok`), the descriptor chain across the
+    retained decided history (`chain_ok`), and payload availability
+    plus descriptor agreement (`payloads_ok`). `report.ok()` folds the
+    three.],
   [`status() Status`], [A point-in-time view returned by value: node
     and database identity, configuration id, protocol role and product
-    node type, leader, ballot, decided and applied slots, journal
-    record count, the 2,048-slot epoch capacity, chain hash, page size,
-    and installed snapshot name. The `role` and `node_type` strings are
+    node type, leader, ballot, the decided, applied, and durable-state
+    slots, the memory floor, the chosen trim and retained-first slots,
+    journal record, segment, and byte counts, the chain and history
+    hashes, and page size. The `role` and `node_type` strings are
     static. The membership fields a registry-backed `zaxon serve`
     status adds (`phase`, `quorum_available`, `installation_state`)
     belong to the served surface (chapter 13), not to this embedded
@@ -353,7 +366,8 @@ The remaining obligations are flags the host must poll and obey:
 + `needsResync()` demands `resyncImage()` before further service.
 + `ensureWriter()` opens the capture connection when leadership is
   gained.
-+ `epochNearlyFull()` demands a checkpoint before the next append.
++ `maybeCreateStateAnchor()` should run on the pump so recovery stays
+  cheap and trimming stays live.
 + `storageFailed()` means stop voting and stop serving. Talking after
   a failed fsync would violate the effects contract.
 
