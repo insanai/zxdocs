@@ -1878,6 +1878,59 @@ already runs is completed history: it neither re-arms the membership
 handover nor seals the log. Without this, a restarted survivor looped
 forever trying to complete a handover that had already completed.
 
+== The closed prefix is enforced at the acceptor
+
+An external audit found that `onAccept` and the commit-install path
+guarded only the memory floor, while `GlobalTrim.tla` guards `Vote` and
+`Learn` with `slot > anchor[n]`. The certified trim anchor can run ahead
+of the memory floor until the host consumes, and in that gap a late
+accept could re-tag a released cell with an accepted-only occupant that
+eviction can never clear. Both handlers now drop messages at or below
+the acceptor's own trim anchor, restoring the model's closed-prefix
+rule; a protocol test pins the floor-behind-anchor shape directly.
+
+== In-place transfer preserves acceptor obligations
+
+The same audit found that installing a transferred image restored the
+core from an empty durable state, discarding the receiver's promise and
+its votes above the transfer anchor -- state the lifetime journal still
+held, so a restart would resurrect what the live node had forgotten.
+The model never covered this: `InstallJoiner` requires an empty
+consensus state. Installation now carries the current durable state
+into the restored core -- the promise and every vote above the anchor
+survive; votes at or below it are discharged by the anchor and the
+reported `chosen_through` fence -- so a transfer can never let an older
+ballot win a slot the receiver already helped choose. Restores scrub
+accepted-only cells at or below the restore floor for the same reason
+they may be dropped: the slot is inside a certified chosen prefix, and
+a wedged accepted-only occupant would block its cell forever. Modeling
+the in-place install as its own TLA+ action remains open spec work.
+
+== Recovery authorities are reconciled at open
+
+Open now cross-checks the durable trim authorities instead of trusting
+each independently: the TRIM file and the journal's replayed anchor
+must agree (a file one record ahead re-installs, since it is written
+first; twins under one id and a journal ahead of the file fail closed),
+manifest segment ranges must chain contiguously with the oldest
+retained segment allowed to straddle the anchor (reclamation removes
+only whole segments, so the straddle is the common cluster shape --
+requiring an exact anchor boundary made any lagging delete floor
+unopenable), sealed segments must chain their predecessor digests and
+match the manifest's ranges, a resumed active segment must name this
+database and chain onto the last sealed digest, and an anchored image
+whose retained journal no longer reaches it fails closed instead of
+serving stale state. Suffix replay applies commits in one streaming
+pass through a window-sized reorder ring (the core only journals
+in-window commits, so the reorder distance is bounded), and folds each
+entry's history leaf under the configuration that chose it by advancing
+a cursor across replayed stop entries -- restoring the byte-exact hash
+the live handover produces. A cluster regression that restarts a
+survivor across a handover and then drives trim coordination (the
+observable a diverged hash poisons) remains open test work; the
+voter-replacement suite restarts survivors but stops short of the trim
+round.
+
 == Transfer crash windows have no dedicated failpoint matrix
 
 The fifteen-case crash matrix covers the write, anchor, trim,
