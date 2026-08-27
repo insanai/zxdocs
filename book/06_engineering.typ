@@ -44,10 +44,11 @@ name the failure schedule and the invariant it protects.
 + leader election and consecutive stable-leader proposals;
 + duplicate prepare and accept messages;
 + reordered phase-one entry/completion messages and highest-vote recovery;
-+ bounded exhaustion, one-node quorums, batches, ticks, and heartbeats;
++ window backpressure, one-node quorums, batches, ticks, and heartbeats;
 + replay rejection of conflicting values and commits;
-+ contiguous learner delivery and same-epoch catch-up;
-+ stop-sign sealing, checkpoint metadata, and restore behavior.
++ contiguous learner delivery and chunk-bounded catch-up;
++ tagged-cell reuse, memory floors, trim anchors, and lifetime-journal folds;
++ stop-sign sealing, reconfiguration metadata, and restore behavior.
 
 These are deterministic hand-written schedules. `zig build test` additionally
 runs the seeded simulator in `sim/simulation.zig` (below) across three-node
@@ -68,8 +69,8 @@ contract gates:
 
 The repository still lacks end-to-end tests against a real crash-safe
 journal, corrupted/truncated records, codec version skew, authenticated
-transport, snapshot transfer, client retry recovery, and multi-epoch process
-restart.
+transport, state-image transfer, client retry recovery, and
+multi-configuration process restart.
 
 #warning([A useful critique], [
   The core protocol tests often update in-memory `Node` state and a separate
@@ -89,7 +90,11 @@ command at the leader, cutting or healing a link, reconnecting, and crashing a
 node at one of three host commit points: before any write is persisted, after
 a durable *prefix* of the writes with no message sent, or after all writes
 with only a prefix of the messages sent. Restart replays the journal through
-`DurableState.apply` and any replay error is itself a failure.
+`DurableState.apply` and any replay error is itself a failure. The harness
+also plays the window host: it advances each node's memory floor with a
+deliberate lag behind the decided prefix, so tagged-cell reuse is exercised,
+and it answers `serve_range` requests from the per-node journal so catch-up
+below a memory floor is covered too.
 
 After every observed transition the harness checks: all non-null committed
 values for a slot agree with a golden first-commit table, committed values

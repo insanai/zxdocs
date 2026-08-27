@@ -31,11 +31,16 @@ each part is tested on its own.
   columns: (auto, 1fr),
   table.header([*Module*], [*Responsibility*]),
   [`node.zig`], [The host: lifecycle, the write path ordering contract,
-    effect handling, recovery, snapshots, epoch rollover, and the
+    effect handling, recovery, state anchors, trimming, and the
     leader/follower split of the materialized image.],
-  [`journal.zig`], [The framed, CRC-checksummed, append-only protocol
-    journal; replay with torn-tail truncation and interior-corruption
-    rejection.],
+  [`journal.zig` / `segment.zig` / `manifest.zig`], [The segmented,
+    manifest-governed consensus journal under `consensus/`: framed,
+    CRC-checksummed records in immutable sealed segments, streaming
+    replay with torn-tail truncation and interior-corruption rejection,
+    rename-free rotation, and trim unlinking.],
+  [`applied_anchor.zig` / `trim.zig` / `history.zig`], [The alternating
+    durable state anchor (`APPLIED.0/1`), the conservative trim policy
+    with its durable `TRIM` record, and the global history hash chain.],
   [`payload_store.zig`], [Content-addressed immutable payloads under
     `payloads/aa/<hash>`, installed with write-temp/sync/link.],
   [`wal.zig`], [WAL frame capture from SQLite's `-wal` file and the
@@ -73,7 +78,7 @@ fixed-size descriptor:
 TransactionBatch {
     database_id:       u128,   // cluster-wide database identity
     batch_id:          u128,   // random identity of this execution
-    base_data_slot:    u64,    // previous data slot in the epoch
+    base_data_slot:    u64,    // previous data-bearing global slot
     base_chain_hash:   [32]u8, // cumulative history before this batch
     result_chain_hash: [32]u8, // cumulative history after this batch
     payload_hash:      [32]u8, // SHA-256 name of the frame payload
