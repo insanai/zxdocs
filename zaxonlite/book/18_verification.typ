@@ -80,7 +80,7 @@ tail. So we keep both, and everything between.
   [Fuzz], [Do seeded random bytes break the decoders, the journal
     files, or a whole node under random SQL, crashes, and a
     rebuild-convergence oracle?], [`zig build fuzz`],
-  [Soak], [Does sustained mixed load, with restarts and snapshots,
+  [Soak], [Does sustained mixed load, with restarts and state anchors,
     ever drift from a live row-count model?], [`zig build soak`],
   [Benchmark], [What do writes, reads, recovery, and rebuild cost in
     ReleaseFast on this machine?], [`zig build benchmark`],
@@ -352,7 +352,7 @@ mode issues `F_FULLFSYNC` on macOS, exactly as Go's file sync does for
 rqlite. Group fsync already consolidates Zaxonlite's per-write flushes
 to one barrier per node per commit point (the journal sync; payload
 installs ride it — see chapter 6). The gap that remains is ordering:
-Protocol v8 retains the v5 barrier overlap. Only phase-two accept requests are
+Protocol v9 retains the v5 barrier overlap. Only phase-two accept requests are
 released before the leader barrier; promises, accepted replies, recovered
 values, commit delivery, and client replies remain behind durable evidence.
 A commit-only local marker is derived from an already durable accepting quorum
