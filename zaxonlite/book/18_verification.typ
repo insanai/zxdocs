@@ -105,7 +105,10 @@ TLA+ models sit in `specs/`: `Paxos.tla` for the core,
 steps, and `GlobalTrim.tla` (ZDS 0011) for the slot-tagged window,
 eviction licensing, trimmed-acceptor election fences, the conservative
 trim, and the joiner lease lifecycle, validated by deliberate-bug
-mutations that TLC must catch.
+mutations that TLC must catch. The library's benchmark family also
+carries a moving-window workload (`u64-3n-moving`: 262,144 values, 256
+window wraps on one slot line) whose recorded percentiles check that
+window reuse adds no wrap-correlated latency spikes.
 
 `zig build test-cluster -Dcluster-runs=N` repeats the whole cluster
 scenario for flake hunting. One hundred consecutive runs are an
