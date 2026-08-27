@@ -136,8 +136,8 @@ relation between the Zig code and the spec is still not established.
 `zig build benchmark-zig` runs a workload matrix through in-memory nodes:
 commit modes (one value synchronously, pipelined windows of 8 and 64,
 batches of 16 and 256), payload sizes (8 B, 64 B, 1 KiB), cluster sizes
-(3 and 5), and a run with twice the needed log slots so the cost of
-exactly-sized arrays is measured instead of assumed. A timing sample aggregates
+(3 and 5), and a run with twice the needed consensus-window cells so the cost
+of exactly-sized arrays is measured instead of assumed. A timing sample aggregates
 16--64 independently initialized stable-leader iterations, making even the
 fastest sample last well beyond the clock's sub-millisecond noise floor. Seven
 samples produce the median and min/max span; a separate instrumented pass
@@ -147,6 +147,13 @@ durable-state mirrors. The LibPaxos3 fixture validates every accept response and
 the learner. All three validate the checksum and logical envelope count.
 `zig build benchmark` adds the pinned OmniPaxos 0.2.2 and LibPaxos3 workloads
 and the durable benchmark below.
+
+A separate moving-window family (`u64-3n-moving`) exercises what the fixed
+matrix cannot: it drives 262,144 values through a 1,024-cell window on one
+global slot line, 256 complete window wraps with memory floors advancing as
+the host consumes, and records batch-level latency percentiles into the same
+results protocol. Its check is periodicity, not raw speed: window reuse must
+cost the same at wrap 256 as at wrap 1, with no wrap-correlated spikes.
 
 `sh benchmarks/run-all.sh` runs everything and writes a machine-readable file
 under `benchmarks/results/`; the dashboard below is rendered from `latest.json`
