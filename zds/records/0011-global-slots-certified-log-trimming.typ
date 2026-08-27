@@ -1945,17 +1945,28 @@ plus the crash coverage the voter-replacement suite applies around the
 handover. A dedicated multi-process transfer crash matrix remains open
 test work.
 
-== The beyond-retention transfer lacks an end-to-end scenario
+== The beyond-retention transfer runs end to end under a crash ladder
 
-The anchor-pinned transfer is implemented and its components are tested
-(the history-probe quorum, the wire codecs, the install guards), but no
-integration scenario yet drives a replica far enough behind a physical
-trim to cross the transfer path end to end: forcing it requires filling
-and reclaiming whole journal segments cluster-wide, which the current
-suites deliberately keep too small. The sender declines the transfer
-whenever range recovery still covers the gap, so the untested path is
-also the rarest one. Building the segment-scale scenario is recorded as
-open test work alongside the transfer crash matrix.
+Forcing the transfer requires filling and reclaiming whole journal
+segments cluster-wide, so `zaxon serve` gained a test-only
+`--segment-records` flag (failpoints-gated, never above the production
+capacity) that shrinks rotation to test scale. The
+`test-transfer-cluster` scenario drives three voters past several
+rotations, certifies a trim, reclaims below it, replaces a voter, and
+forces the replacement through the anchor-pinned transfer: the receiver
+is crashed at each transfer failpoint in sequence (staged image, before
+the install rename, after the rename, after the anchor publish), the
+sender is killed once while pinning its image and another voter
+completes the send, and the final clean start must converge from the
+installed anchor, serve identical rows, accept writes, and survive its
+own restart.
+
+Building the scenario found a liveness gap, not a safety one: a
+stateless joining voter could win the election, and catch-up and
+snapshot escalation both run against the leader, so leadership starved
+its own recovery forever. A joining data voter with nothing applied now
+withholds campaigning (it still votes) until catch-up or an installed
+transfer applies state.
 
 == The ten-million-decision run is partially banked
 
