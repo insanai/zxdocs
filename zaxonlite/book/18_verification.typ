@@ -57,6 +57,11 @@ tail. So we keep both, and everything between.
     one-for-one voter replacement, with admin refusals, a crash inside
     the swap, idempotent retry, and quorum with the new voter? The full
     script follows below.], [`zig build test-replace-cluster`],
+  [Transfer], [When history below the certified trim is physically
+    gone, does a replacement voter recover through the anchor-pinned
+    state transfer while the receiver is crashed at every transfer
+    failpoint and the sender is killed mid-pin?],
+    [`zig build test-transfer-cluster`],
   [Gateway], [Does authenticated RPC pass end to end through a process
     that holds no Paxos or SQLite state?], [`zig build test-gateway`],
   [Adverse network], [Does the cluster stay correct under real TCP
