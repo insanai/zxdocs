@@ -309,43 +309,56 @@ It closes the capture connection, discards the WAL, and rebuilds the image
 from the decided log before serving again. No undecided frame can leak
 into the served database.
 
-#callout(title: [Epoch fencing on the wire], tone: "note")[
+#callout(title: [Configuration fencing on the wire], tone: "note")[
   Every envelope frame carries the sender's configuration id. A frame from
-  an older epoch is dropped. A frame from a newer epoch means this member
-  missed a sealed rollover, and it triggers a snapshot transfer. The Paxos
-  messages themselves never cross epochs.
+  an older configuration is dropped. A frame from a newer configuration
+  means this member missed a decided membership change, and it triggers a
+  state transfer. The Paxos messages themselves never cross
+  configurations.
 ]
 
-== Catch-up and snapshot transfer
+== Catch-up and state transfer
 
 A member can fall behind in two ways. Each way has its own repair.
 
-Within an epoch, the core protocol repairs a lagging voter. Reconnection
-sends `learn`. The leader resends missing commits. The tick loop requests
-catch-up whenever heartbeats reveal a decided slot ahead of the local one.
-A lagging learner is repaired the same way it learns everything else: the
+Within journal retention, the log itself repairs a lagging member.
+Reconnection sends `learn`, and the leader resends missing commits from
+its consensus window. Below the window's memory floor, the member asks
+for bounded ranges (`range_request`, at most 256 records per chunk with
+pipelining credit), and any data replica streams the chosen entries
+straight from its retained journal. The tick loop requests catch-up
+whenever heartbeats reveal a decided slot ahead of the local one. A
+lagging learner is repaired the same way it learns everything else: the
 leader replays voter-certified chosen entries.
 
-Across a sealed epoch, the journal alone is not enough. The member requests
-a snapshot instead. The peer streams the installed generation: the manifest
-first, then the database image in 1-MiB chunks. The receiver verifies the
-digest, installs `CURRENT` and `identity`, starts the new epoch's journal
-empty, rebuilds its image from the snapshot, and catches up the remaining
-suffix normally. The cluster test exercises exactly this path: a member
-stopped across a rollover rejoins and converges to byte-identical content.
+Behind the cluster trim, the retained journal is not enough: the history
+the member needs has been physically deleted. The member requests a
+full-image state transfer instead, and the sender declines it while
+range recovery would still do the job. The sender pins a fresh durable
+anchor: it checkpoints, synchronizes `current.db`, publishes the anchor,
+and makes a private byte-exact copy of the image while holding the
+writer mutex. It streams the decided registry blob first (a joining
+replacement needs it), then a `snapshot_begin` manifest binding the
+anchor slot, the history hash, the image size and SHA-256, the page
+geometry, and the batch-chain cursor, then the image in 1-MiB chunks.
 
-#callout(title: [Snapshot transfer confirms the existing proof], tone: "note")[
-  Normal rollover already gets consensus on the physical snapshot: the
-  versioned stop metadata (`zx1 <name> <manifest-sha256>` on a
-  registry-less host, `zx2` with the next-registry digest on a
-  registry-backed server) is the decided Paxos stop sign, and every
-  caught-up member independently requires the same digest. The receive
-  path carries a canonical `ZXP2` proof encoding of that stop sign. The
-  authenticated source counts as one matching voter report, and the receiver
-  obtains enough independent matching probe replies to form a read quorum
-  before replacing state. It then verifies the manifest and physical image.
-  This is neither a second consensus phase nor signatures over SQLite files.
+#callout(title: [State transfer trusts a quorum, not a sender], tone: "note")[
+  Before staging a single image byte, the receiver probes the current
+  voters with `(anchor_slot, history_hash)` and waits for matching
+  replies from a read quorum. Each voter vouches only for anchors it can
+  still verify: a recent per-slot history mark, its own durable anchor,
+  or the chosen trim anchor. After the stream ends, the receiver hashes
+  the staged file and requires the manifest's SHA-256 before installing
+  it and resuming at the anchor slot. This is neither a second consensus
+  phase nor signatures over SQLite files; it confirms history Paxos
+  already chose.
 ]
+
+Because a transfer receiver reports a zero or stale durable frontier
+until it anchors, the conservative trim freezes while the transfer runs,
+so the suffix above the pinned anchor stays retained even if the
+original sender dies; the receiver simply resumes from another data
+replica.
 
 == Failpoints
 
