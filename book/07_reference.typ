@@ -12,18 +12,21 @@
 #table(
   columns: (auto, 1.2fr, 1.55fr),
   table.header([*Message*], [*Fields*], [*Meaning*]),
-  [`prepare`], [`ballot, decided_through`], [Ask an acceptor to promise this
-    ballot and report accepted state above the candidate's prefix.],
+  [`prepare`], [`ballot, first`], [Ask an acceptor to promise this ballot and
+    answer the recovery chunk starting at `first`.],
   [`promise`], [`ballot, slot, accepted`], [Report one accepted slot for
     phase-one recovery.],
-  [`promise_done`], [`ballot, accepted_count, decided_through`], [State the
-    number of distinct entries that completes this acceptor's reply.],
+  [`promise_range`], [`ballot, anchor, chosen_through, first, last,
+    accepted_count, more`], [Describe the answered chunk: how many `promise`
+    entries complete it, the acceptor's chosen prefix and trim anchor, and
+    whether it knows state above `last`.],
   [`accept`], [`ballot, slot, value`], [Ask an acceptor to vote.],
   [`accepted`], [`ballot, slot, decided_through`], [Acknowledge a durable vote
     and report the local released prefix.],
   [`commit`], [`slot, value`], [Teach a value that a correct sender knows was
     chosen.],
-  [`learn`], [`from_slot`], [Request known commits from a nonzero slot.],
+  [`learn`], [`from_slot, count`], [Request known commits in a chunk-bounded
+    range from a nonzero slot.],
   [`nack`], [`rejected, promised, decided_through`], [Reject a stale ballot and
     report the higher promise and local prefix.],
   [`heartbeat`], [`ballot, decided_through`], [Leader traffic for a matching
@@ -35,12 +38,14 @@
 #table(
   columns: (auto, 1.1fr, 1.65fr),
   table.header([*Write*], [*Fields*], [*Must be durable before*]),
-  [`promise`], [`ballot`], [`promise`, `promise_done`, or other evidence that
+  [`promise`], [`ballot`], [`promise`, `promise_range`, or other evidence that
     depends on the promise.],
   [`accept`], [`ballot, slot, value`], [`accepted` and any later claim based on
     that vote.],
   [`commit`], [`slot, value`], [Commit broadcast from the leader, application
     delivery, and catch-up claims based on that record.],
+  [`trim_anchor`], [`trim_id, chosen_trim_slot, history_hash`], [Any phase-one
+    answer that vouches the released prefix from the adopted anchor.],
 )
 
 Consume one batch as: append writes in order; sync the batch; call
@@ -61,8 +66,11 @@ confirmWritesDurable`, and resetting an unconfirmed batch stops it with
     `Value` must contain no pointer, slice, or reference recursively.],
   [`Membership.init(ids)`], [Validates nonzero unique IDs and quorum sizes.],
   [`Node.init`, `initWithPriority`], [Bootstrap an empty member.],
-  [`Node.restore`, `restoreWithPriority`], [Restore protocol durable state;
-    application state remains host-owned.],
+  [`Node.restore`, `restoreWithPriority`, `restoreAt`], [Restore protocol
+    durable state, optionally resuming floor and delivery at the host's
+    consumed prefix; application state remains host-owned.],
+  [`Node.continueAt`], [Start an empty node at a floor on the same global slot
+    line with an inherited trim anchor.],
   [`campaign(noop)`, `tick(noop)`], [Start phase one explicitly or advance
     deterministic liveness counters.],
   [`step(envelope)`], [Process one authenticated, decoded member envelope for
@@ -75,6 +83,11 @@ confirmWritesDurable`, and resetting an unconfirmed batch stops it with
     application read protocol.],
   [`currentLeader`, `decidedThrough`], [Diagnostic leader hint and contiguous
     released prefix.],
+  [`advanceMemoryFloor`, `memoryFloor`], [Record that the host durably
+    consumed the released prefix, licensing tagged-cell reuse below it.],
+  [`installChosenTrim`, `trimAnchor`, `beginRecovery`], [Adopt a chosen trim
+    anchor, read it back, or reset onto an installed state image at an
+    anchor.],
   [`Effects.init/reset`], [Initialize or clear active counts without clearing
     backing storage. Public transitions reset automatically. `reset` stops the
     process if the batch holds unconfirmed writes.],
