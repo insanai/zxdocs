@@ -91,7 +91,7 @@ supplies the replicated database itself. That means the node and facade
 libraries, the C ABI, and the `zaxon` command line with its serve and
 client modes. It also means shared-secret, integrity-protected TCP framing,
 a mutual TLS 1.3 transport with per-node certificates,
-snapshots, logical backup streaming, `zaxon integrity-check`,
+durable state anchors, logical backup streaming, `zaxon integrity-check`,
 `zaxon recover`, and `zaxon status --json` for automation. The shared
 secret alone is not a production identity boundary; the TLS mode is,
 once you provision its certificates.
@@ -166,8 +166,8 @@ Zaxonlite is a host of the paxos-zig library, and this book deliberately
 does not re-prove consensus. Why a quorum intersects, why a promised
 ballot never moves backward, and why a later leader must adopt the highest
 accepted value are all proved in the zig-paxos book in `docs/book/`. So
-are the effect-machine design of `paxos.Protocol` and the sealed epochs of
-`paxos.ReplicatedLog`. This book treats the library as a component with a
+are the effect-machine design of `paxos.Protocol` and the slot-tagged
+consensus window of `paxos.ReplicatedLog`. This book treats the library as a component with a
 contract. Effects come out in order. Every dependent message is sent only
 after its write is durably synced. When a Zaxonlite chapter says "the log
 chose slot $n$", the zig-paxos book is where "chose" is defined and

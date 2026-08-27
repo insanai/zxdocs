@@ -99,9 +99,9 @@ evidence includes unit tests, single-process durability tests, and a
 three-process loopback cluster scenario with a SIGKILL failpoint. It also
 includes a CLI contract test, a C ABI smoke test, seeded property fuzzing,
 a soak run, role, gateway, and adverse-network integration tests, and
-benchmarks. Protocol v8 uses mutual TLS for production, binds peer node IDs,
+benchmarks. Protocol v9 uses mutual TLS for production, binds peer node IDs,
 encrypts traffic, confines the disclosed PSK-only development mode to numeric
-loopback, quorum-confirms transferred checkpoint proofs, and pipelines durable
+loopback, quorum-confirms transferred state anchors, and pipelines durable
 phase-two storage. It also carries the bounded one-time token/CSR enrollment
 exchange for nodes already named in the decided registry. Network-hosted
 clusters persist that registry durably, and it backs the decided one-for-one

@@ -79,10 +79,11 @@ promise {
 ```
 
 This is the abstract single-decree reply. The library uses Multi-Paxos framing:
-zero or more `promise { ballot, slot, accepted }` envelopes followed by
-`promise_done { ballot, accepted_count, decided_through }`. A candidate counts
-an acceptor only after the stated number of distinct entries has arrived. Part
-III explains why the separate completion marker is necessary.
+zero or more `promise { ballot, slot, accepted }` envelopes followed by a
+`promise_range` descriptor that states which slot range was answered and how
+many accepted entries it contains. A candidate counts an acceptor only after
+the stated number of distinct entries has arrived. Part III explains why the
+separate range descriptor is necessary.
 
 The promise has a powerful meaning: *"I promise never to accept any future proposal that has a ballot number lower than $B$. Also, here is the highest ballot I have accepted so far ($B_("last")$), along with the value I voted for ($V_("last")$)."*
 
@@ -100,7 +101,7 @@ The candidate waits for a quorum of complete promise replies. Once it has a quor
 The candidate is now the prepared leader. It can proceed to Phase Two.
 
 #predict([
-  A candidate receives `promise_done` before the corresponding `promise`
+  A candidate receives `promise_range` before the corresponding `promise`
   entry because the transport reordered them. May it count that acceptor
   toward its phase-one quorum? Write the safety fact that would be lost if it
   did.
@@ -174,7 +175,7 @@ to propose `tea` using ballot `(1, 0, 1)`.
   [1], [N1], [Chooses ballot `(1, 0, 1)` and enqueues `prepare` to all nodes,
     including itself.],
   [2], [N1], [Consumes its loopback prepare, writes promise `(1, 0, 1)`, then
-    emits `promise_done`.],
+    describes its empty log with `promise_range`.],
   [3], [N2], [Receives `prepare`, writes promise `(1, 0, 1)`, then replies with
     no past votes.],
   [4], [N1], [Collects promises from N1 and N2 (a quorum). No old value was reported.],
