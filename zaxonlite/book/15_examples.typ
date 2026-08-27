@@ -222,7 +222,7 @@ from the local image, because you asked for no promise. A
 budget and exits 4, because no quorum can fence a read. Restart the three
 voters and the bounded read recovers on its own.
 
-=== Drill 3: wipe a follower, then resync across a sealed epoch
+=== Drill 3: wipe a follower, then watch the trim frontier
 
 Stop node 2 and destroy its materialized image:
 
@@ -231,27 +231,31 @@ zaxon stop --connect 127.0.0.1:7102
 rm ./lab/n2/current.db
 ```
 
-Restart node 2 with its original `serve` command. It rebuilds the image
-from its snapshot plus its journal, then rejoins. Prove it: read
-`applied_slot` from `zaxon status --connect 127.0.0.1:7101 --json`, wait
-with `zaxon wait --connect 127.0.0.1:7102 --applied <slot>`, and compare
-`chain` in both nodes' `status --json`. Equal chains mean identical applied
-history.
+Restart node 2 with its original `serve` command. In this small lab the
+journal still physically retains slot one — segments unlink only when a
+whole 16,384-record segment falls below the chosen trim — so the node
+rebuilds the image from the retained journal, then rejoins. Prove it:
+read `applied_slot` from `zaxon status --connect 127.0.0.1:7101 --json`,
+wait with `zaxon wait --connect 127.0.0.1:7102 --applied <slot>`, and
+compare `chain` in both nodes' `status --json`. Equal chains mean
+identical applied history.
 
-Now make the follower miss a whole epoch instead of a file:
+Now watch the retention machinery itself:
 
 ```sh
 zaxon stop --connect 127.0.0.1:7102
-zaxon exec --connect $V --sql "insert into drills(note) values ('pre-roll')"
-zaxon snapshot --connect $V
-zaxon exec --connect $V --sql "insert into drills(note) values ('post-roll')"
+zaxon exec --connect $V --sql "insert into drills(note) values ('while-down')"
+zaxon status --connect $V --json
 ```
 
-Restart node 2 again. Its journal ends in an epoch the cluster has sealed,
-so a journal suffix alone cannot catch it up. Watch `status --json` on port
-7102: the configuration id jumps when the transferred snapshot installs, and
-`applied_slot` then climbs through the new epoch. Both writes are present at
-the end, and the chains converge again.
+With node 2 down, `chosen_trim_slot` stops advancing on the survivors:
+the conservative trim is the minimum durable frontier over every data
+replica, and node 2 has stopped reporting. Restart node 2 and watch the
+field move again once it anchors. On a production database whose gap
+exceeds the retained journal, this restart would instead run the
+anchor-pinned state transfer of chapter 7: watch `installation_state`
+in `status --json` move through `transferring` and `verifying` to
+`installed`, with `applied_slot` climbing afterward.
 
 === Drill 4: the full-cluster restart
 
@@ -317,7 +321,7 @@ One workable shape:
 Gaps deliberately left for you: the queue's backpressure rule when the
 database thread falls behind; whether reads bypass the queue on a second
 read-only path; how sequences are assigned when several loop tasks share one
-session; and when periodic `zaxonlite_snapshot` and
+session; and when periodic `zaxonlite_state_anchor` and
 `zaxonlite_expire_sessions` calls run so they never race a burst of writes.
 
 #exercise([15.1], [
