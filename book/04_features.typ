@@ -6,8 +6,8 @@
 #objectives([
   By the end of this chapter you should be able to tune logical timers without
   confusing them with safety, validate flexible quorum arithmetic, repair a
-  same-epoch follower, and use `ReplicatedLog` without attributing host-owned
-  snapshot work to the library.
+  lagging follower, and use `ReplicatedLog` without attributing host-owned
+  journal and state-transfer work to the library.
 ])
 
 == Logical Time: The Power of Ticks
@@ -76,7 +76,7 @@ The options are compile-time constants, but validation occurs when
 ```zig
 const P = paxos.Protocol(Command, .{
     .max_members = 5,
-    .max_slots = 8192,
+    .window_slots = 8192,
     .read_quorum_size = 4, // Phase 1
     .write_quorum_size = 2, // Phase 2
 });
@@ -89,11 +89,11 @@ When we need to change membership (e.g., adding node 6), we must not let two dif
 We solve this using a *Stop Sign* entry. A Stop Sign is a special command proposed in the log:
 
 ```zig
-const next_epoch_members = [_]NodeId{ 2, 3, 4, 5, 6 };
+const next_members = [_]NodeId{ 2, 3, 4, 5, 6 };
 const slot = try node.reconfigure(
-    next_epoch_id,
-    &next_epoch_members,
-    "checkpoint_hash",
+    next_configuration_id,
+    &next_members,
+    "registry_digest",
     &effects,
 );
 ```
@@ -104,9 +104,11 @@ When a stop sign enters the log:
    later be cleared by recovery if a higher ballot chose a command instead.
 2. *Order Conservation*: It continues processing network messages to help decide and commit all slots up to the Stop Sign.
 3. *Clean handover*: Once `isReconfigured()` returns the decided stop, the host
-   transfers application state and creates a new instance at Slot 1.
+   calls `initFromStop` with the stop, its slot, and the current trim anchor.
+   The new configuration continues the same global slot line at the slot after
+   the stop; slots do not restart.
 
-This epoch-based design ensures that configuration changes are totally ordered alongside regular writes, preserving safety.
+Placing the stop inside the log ensures that configuration changes are totally ordered alongside regular writes, preserving safety.
 
 == Catch-Up and Reconciliation
 
@@ -116,12 +118,16 @@ If a node gets partitioned and falls behind, it does not need to run a complex r
 try node.requestCatchUp(peer_id, first_missing_slot, &effects);
 ```
 
-The peer replies with every committed entry it still represents from that slot.
-The lagging node may receive them out of order, but releases only a contiguous
-prefix. The current bounded core does not compact within an epoch. If the old
-epoch instance is no longer available, `requestCatchUp` cannot cross that
-boundary; the host must transfer and verify the snapshot named by the decided
-stop sign, then initialize the appropriate epoch.
+The request is chunk-bounded: the peer replies with the committed entries it
+still holds in its window, at most `recovery_chunk_slots` per exchange, and
+the lagging node asks again as its prefix advances. It may receive entries out
+of order, but releases only a contiguous prefix. History below the peer's
+memory floor has left the window entirely; for that range the peer's core
+emits a `serve_range` host request, and the peer's host replies with commit
+envelopes read from its journal. Only a gap below the cluster's chosen trim
+anchor, where journal bytes may be deleted, requires the host to install a
+verified state image at an anchor (`beginRecovery`) and replay the retained
+suffix.
 
 #exercise([14.1], [
   For seven members, choose uniform phase-one and phase-two sizes optimized for

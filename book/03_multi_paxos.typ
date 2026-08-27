@@ -12,7 +12,7 @@
   By the end of this chapter you should be able to lift the single-decree rule
   across slots, explain complete phase-one replies under packet reordering,
   recover holes with a host-supplied no-op, and describe exactly what a stop
-  sign and checkpoint do—and do not do.
+  sign and the memory floor do—and do not do.
 ])
 
 == Why Multi-Paxos?
@@ -25,7 +25,7 @@ But this is slow! Every slot would require:
 
 This means every single log append takes at least two network round trips and two disk syncs.
 
-Multi-Paxos is an elegant optimization. Instead of running Phase One for each slot, a candidate campaigns for *all slots in the log* at the same time. Once the candidate wins a quorum of promises for the entire log, it becomes the stable leader. 
+Multi-Paxos is an elegant optimization. Instead of running Phase One for each slot, a candidate campaigns for *every unresolved slot* at the same time. Once the candidate wins a quorum of promises covering them, it becomes the stable leader.
 
 For all subsequent slots, the leader can skip Phase One entirely and propose values in Phase Two directly! The cost of a log append drops to a single network round trip.
 
@@ -37,27 +37,42 @@ For all subsequent slots, the leader can skip Phase One entirely and propose val
 
 == Combining the Phase One Replies
 
-How does a candidate query the entire log? In Phase One, it sends a single `prepare` message. Acceptors reply with all of their accepted votes across all slots in a sequence of messages:
+How does a candidate query a log whose slots never end? It cannot ask for
+"everything": slots are 64-bit and never reset, so a complete answer could be
+unbounded. Phase one therefore runs in chunks. The candidate sends
+`prepare (ballot, first)`, naming the first slot it wants resolved. Each
+acceptor replies with its accepted votes inside that chunk, then describes
+the chunk it answered:
 
 ```text
-promise (ballot, slot 1, accepted_ballot 3, value "A")
-promise (ballot, slot 3, accepted_ballot 4, value "C")
-promise_done (ballot, accepted_count 2)
+promise (ballot, slot 101, accepted_ballot 3, value "A")
+promise (ballot, slot 103, accepted_ballot 4, value "C")
+promise_range (ballot, first 101, last 164, accepted_count 2, more false)
 ```
 
-Because the network can reorder packets, the final `promise_done` marker might arrive before the individual slot `promise` entries. If the leader immediately declared itself ready, it might miss some accepted entries, violating safety!
+Because the network can reorder packets, the `promise_range` descriptor might arrive before the individual slot `promise` entries. If the leader immediately declared itself ready, it might miss some accepted entries, violating safety!
 
-To prevent this, the candidate tracks the expected entry count from `promise_done` and waits until it has received every single entry:
+To prevent this, the candidate tracks the expected entry count from `promise_range` and waits until it has received every single entry:
 
 ```zig
-// Equivalent to Protocol.Node.maybeBecomeLeader.
-if (!self.promise_done[member]) continue;
-if (self.promise_received[member] == self.promise_expected[member]) {
+// Equivalent to Protocol.Node.maybeResolveChunk.
+if (!peer.range_described) continue;
+if (peer.received_in_range >= peer.expected_in_range) {
     complete += 1;
 }
 ```
 
 A member's reply is counted toward the quorum only when it is complete. This count-based tracking makes the protocol transport-independent: we do not assume TCP FIFO ordering for correctness.
+
+When a counted member reports `more`, the candidate resolves the current
+chunk and prepares again at the next one. A chunk holds at most
+`recovery_chunk_slots` slots, so every recovery message and buffer is bounded
+by the chunk, never by history. The descriptor also carries two fences:
+`chosen_through`, the acceptor's contiguous chosen prefix, and `anchor`, its
+adopted trim anchor. The elected leader takes the greatest fence reported by
+the quorum and never fills, proposes, or accepts a client value at or below
+it. A missing vote down there means the slot was released, not that it is
+open.
 
 == Holes and the No-Op Value
 
@@ -94,12 +109,16 @@ A stable leader can have multiple proposals in flight at the same time. This is 
 
 However, pipelining introduces the risk of unbounded memory usage. If clients send writes faster than the disk can sync them, the queue of uncommitted proposals will grow forever.
 
-The library prevents unbounded protocol memory by giving the entire epoch a
-static `max_slots` bound. It does not implement a smaller in-flight window or
-client admission policy. A leader may fill the remaining epoch with
-uncommitted proposals; after the last slot it returns
-`error.SlotLimitReached`. The host should impose an earlier in-flight limit,
-apply backpressure, and reserve space for a stop sign or checkpoint.
+The library prevents unbounded protocol memory with a slot-tagged consensus
+window of `window_slots` physical cells, a compile-time power of two. Slot
+`s` lives in cell `s & (window_slots - 1)`, tagged with its slot number, so a
+reused cell can never be mistaken for an earlier occupant. A cell is reused
+only after the host licenses it: `advanceMemoryFloor(through)` records that
+every released entry through `through` has been durably consumed. When
+`next_slot - memory_floor` would exceed the window, `propose` returns
+`error.WindowFull`. That is transient flow control, not a log limit: retry
+after the floor advances. The host should still impose an earlier in-flight
+limit and apply client backpressure before the window fills.
 
 == Membership Changes: The Stop Sign
 
@@ -120,7 +139,7 @@ Our library implements a safe, clean reconfiguration mechanism called a *Stop Si
 const slot = try node.reconfigure(
     next_configuration_id,
     &.{ 2, 3, 4, 5, 6 }, // New membership IDs
-    "epoch_metadata",
+    "registry_digest",
     &effects,
 );
 ```
@@ -131,35 +150,46 @@ snapshot, start processes, or stop old network traffic. The host must wait for
 `isReconfigured()` to return the *decided* stop before calling `initFromStop`,
 and must prevent the sealed old instance from serving new writes.
 
-== Bounded Logs and Epochs
+== Global Slots on One Line
 
-Because the log size `max_slots` is bounded at compile time, what do we do when we run out of slots? We transition to a new epoch.
+Slots are 64-bit and global: they never reset for the lifetime of the log.
+There is no "log full" event and no snapshot rollover. What the window bounds
+is residency, not history: at most `window_slots` slots live in protocol
+memory, and everything below the memory floor survives only in the host's
+journal and materialized state. Three host duties follow.
 
-1. *Quiesce appends*: Reserve capacity, stop admitting new commands, and let
-   the application reach the decided prefix that the snapshot will represent.
-2. *Snapshot*: Durably write and verify host-owned application state.
-3. *Checkpoint*: Call `node.checkpoint(snapshot_metadata, &effects)`. This is a
-   convenience wrapper that proposes a stop sign with the same members and
-   `configuration_id + 1`; it does not write the snapshot.
-4. *Decide the boundary*: Consume effects until `isReconfigured()` returns the
-   stop sign. The snapshot metadata in that value must identify the durable
-   state through every command before the stop.
-5. *Start the next epoch*: Initialize a fresh `ReplicatedLog.Node` at Slot 1 and
-   restore the host state named by the metadata.
+1. *Advance the floor*: After durably consuming released entries, call
+   `advanceMemoryFloor` so the window keeps moving. A stalled floor
+   eventually turns every proposal into `error.WindowFull`.
+2. *Adopt chosen trims*: When the cluster chooses a trim record, call
+   `installChosenTrim` with its anchor. A trimmed acceptor then answers
+   phase one for the released prefix from the anchor instead of from cells
+   it no longer holds.
+3. *Serve old history*: A peer catching up from below the memory floor cannot
+   be answered from the window. The core emits a `serve_range` host request,
+   and the host replies with commit envelopes read from its own journal.
 
-This epoch design bounds protocol memory and performs no runtime allocation in
-the core. It does not by itself guarantee maximum speed, safe snapshot files,
-or bounded memory in the host.
+An accepted-but-unchosen slot is never evicted, so no vote can be silently
+forgotten. The only terminal condition is `error.GlobalSlotExhausted` at the
+end of the 64-bit slot space; at one million commits per second that takes
+more than 584,000 years.
+
+A stop sign still seals a configuration, but only for membership change. The
+next configuration continues the same slot line: `initFromStop` starts it at
+the stop slot with the inherited trim anchor, and no slot number is ever used
+twice.
 
 #exercise([11.1], [
-  A leader has decided through slot 80, has accepted but not decided commands
-  in slots 81 and 82, and has four free slots. May the host snapshot through
-  80 and immediately start a new epoch? Describe the steps needed to give
-  commands 81 and 82 an unambiguous fate.
+  A leader has delivered through slot 80 and holds accepted but undecided
+  commands in slots 81 and 82. The window has 64 cells and the host has
+  advanced the memory floor only to slot 40. How many new slots can the
+  leader propose before `WindowFull`? What must the host do to free more,
+  and why can the cells holding slots 81 and 82 never be reclaimed to do it?
 ])
 
 #teach_back([
-  On blank paper draw three boxes labeled old epoch, stop sign, and new epoch.
-  Explain which box the library writes, which state the host writes, and the
-  exact observation that permits the new epoch to start.
+  On blank paper draw one row of eight window cells and a longer slot line
+  above it. Mark the memory floor, the delivered prefix, and one accepted but
+  undecided slot. Explain which cells may be retagged for later slots, what
+  licenses that, and why the accepted cell must stay.
 ])

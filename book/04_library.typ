@@ -58,7 +58,7 @@ const Command = struct {
 // Instantiate the protocol module
 const Consensus = paxos.Protocol(Command, .{
     .max_members = 5,
-    .max_slots = 16_384,
+    .window_slots = 16_384,
 });
 ```
 
@@ -73,11 +73,12 @@ To protect you from this class of bugs, our library uses *comptime metaprogrammi
   still define a versioned, canonical wire and journal encoding and validate
   decoded lengths and enum tags before constructing an envelope.
 
-Invalid capacity and timer options fail the same way. A zero `max_slots`, a
+Invalid capacity and timer options fail the same way. A zero or
+non-power-of-two `window_slots`, a `recovery_chunk_slots` above the window, a
 member bound that does not fit its wire type, a zero tick interval, or a
 derived effect capacity that would overflow `usize` each stop compilation
 with a named message such as
-`paxos Protocol option max_slots must be greater than zero`. The
+`paxos Protocol option window_slots must be a power of two`. The
 `ReplicatedLog` and `Learner` factories validate their options with the same
 mechanism. Quorum sizes stay a runtime check because the member slice is
 supplied to `Membership.init` at runtime.
@@ -123,6 +124,13 @@ effect counts and may overwrite the backing arrays. Application delivery can
 follow the sends, as above, but the host must atomically persist its state
 machine mutation and applied-slot cursor if it needs exactly-once effects.
 
+One more duty closes the loop. Slots are 64-bit and global, and protocol
+memory is a fixed window of `window_slots` tagged cells. Once the host has
+durably consumed released entries, it calls
+`node.advanceMemoryFloor(through)` to license cell reuse below that slot.
+A host that never advances the floor eventually sees `error.WindowFull` on
+every proposal; that is backpressure, not a log limit.
+
 The library enforces this order in every optimize mode, including
 `ReleaseFast` and `ReleaseSmall`. Reading `messagesSlice` before
 `confirmWritesDurable`, or resetting a batch whose writes were never
@@ -164,8 +172,9 @@ enforced factory and has no host-managed variant.
 #table(
   columns: (1.1fr, 1.8fr),
   table.header([*Operation*], [*Host event and result*]),
-  [`init`, `restore`], [Bootstrap empty state or reconstruct protocol state
-    from replayed `DurableState`.],
+  [`init`, `restore`, `restoreAt`], [Bootstrap empty state or reconstruct
+    protocol state from replayed `DurableState`, optionally resuming at the
+    host's consumed floor.],
   [`campaign(noop)`], [Start phase one explicitly.],
   [`tick(noop)`], [Advance logical failure detection, heartbeat, and resend
     counters by one host-defined interval.],
@@ -178,6 +187,11 @@ enforced factory and has no host-managed variant.
     reads, not linearizable application reads.],
   [`currentLeader`, `decidedThrough`], [Return diagnostic hints and the released
     contiguous prefix.],
+  [`advanceMemoryFloor`, `memoryFloor`], [License consensus-cell reuse below
+    the durably consumed prefix; read the current floor.],
+  [`installChosenTrim`, `trimAnchor`, `beginRecovery`], [Adopt a chosen trim
+    anchor, read it back, or reset onto an installed state image at an
+    anchor.],
 )
 
 Every operation can return an error before producing a useful batch. Initialize
@@ -233,12 +247,25 @@ Upon restore, the node is a follower. A later heartbeat can identify a leader;
 enough `tick` calls can start a campaign. Phase one recovers accepted protocol
 values from a complete read quorum.
 
-`restore` does not restore your database, client sessions, snapshot files,
+`restore` does not restore your database, client sessions, state images,
 transport queues, or authentication state. It also resets the volatile
-delivery cursor. Restore the application state and its applied slot from the
-host's own durable data; if that cursor trails committed journal records,
-replay those values idempotently before serving traffic. Do not wait for
-`committedSlice()` to reconstruct the entire old application state.
+delivery cursor: `decidedThrough()` reports zero until this node next
+observes a commit or wins an election. A host that has already durably
+consumed a prefix uses `restoreAt(id, membership, durable, floor, priority)`
+instead; the memory floor and delivery cursor resume at that floor, which
+keeps a replayed window whose early cells were reused deliverable. Restore
+the application state and its applied slot from the host's own durable data;
+if that cursor trails committed journal records, replay those values
+idempotently before serving traffic. Do not wait for `committedSlice()` to
+reconstruct the entire old application state.
+
+`DurableState.apply` replays one configuration's journal strictly: a
+regressed promise or conflicting value is corruption and stops the node. A
+journal that spans configuration changes legitimately contains ballots from
+older lines, so lifetime replay uses `DurableState.replayFold` instead:
+promises fold to their maximum, accepts whose cells were reused by newer
+slots are skipped as dead history, and commits and trim anchors keep their
+strict rules.
 
 #teach_back([
   Draw a vertical boundary labeled library/host. Place `Node`, `Effects`,

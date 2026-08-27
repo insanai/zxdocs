@@ -31,7 +31,7 @@ const Command = struct {
 
 const P = paxos.Protocol(Command, .{
     .max_members = 3,
-    .max_slots = 32,
+    .window_slots = 32,
 });
 ```
 
@@ -157,7 +157,7 @@ commands by a stable routing key and run one sealed log per shard:
 ```zig
 const Shard = paxos.ReplicatedLog(Command, .{
     .max_members = 5,
-    .max_entries = 32_768,
+    .window_slots = 32_768,
     .max_batch = 64,
     .max_metadata_bytes = 96,
 });
@@ -182,9 +182,11 @@ default majority and campaign. The isolated two cannot make progress and must
 not accept service writes. They may serve versioned stale reads only if that is
 an explicit control-plane policy.
 
-After healing, `reconnected` and same-epoch `requestCatchUp` can repair missing
-commits. If the active side moved to a new epoch, the host must install the
-verified snapshot and configuration chain before a returning node votes.
+After healing, `reconnected` and `requestCatchUp` can repair missing commits;
+history below a peer's memory floor is served by that peer's host from its
+journal through `serve_range` requests. If the returning node fell below the
+cluster's chosen trim anchor, the host must install a verified state image at
+an anchor and replay the retained suffix before the node votes.
 
 #teach_back([
   Explain the regional design to an operator using three columns: guaranteed by
