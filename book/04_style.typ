@@ -71,8 +71,9 @@ Consensus transitions should be obvious. We enforce the following control flow g
 == Functions and Names
 
 - A function should do exactly one protocol action.
-- Keep functions at or below 70 lines (exempting generic factories, though their nested functions are checked).
+- Keep functions at or below 70 lines. Generic factories are exempt, and `tools/check-style.awk` currently also exempts a fixed list of large host modules whose oversized functions are recorded debt, not policy.
 - Keep source lines at or below 100 columns.
+- Keep every file at or below 2,800 lines of code, counting neither comment-only lines nor blanks. Two host modules exceed this today and are pinned in the checker at their current size, so they can only shrink; new files never get a pin.
 - Use names directly from the protocol: `promised`, `accepted`, `committed`, and `ballot`.
 - Include units or domains in names when confusion is possible.
 - Avoid abbreviations except for established protocol terms.
