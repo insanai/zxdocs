@@ -92,7 +92,7 @@ The boundary matters. The repository contains:
 
 + `paxos.Protocol`, a bounded Paxos/Multi-Paxos effect machine;
 + `paxos.ReplicatedLog`, a stop-sign layer for sealed configurations and
-  snapshot epochs;
+  membership handover on one global slot line;
 + one complete in-memory three-node counter in `examples/counter.zig`;
 + deterministic unit tests for ballots, recovery, duplicates, catch-up,
   batching, timeouts, reconfiguration, and bounded capacity;

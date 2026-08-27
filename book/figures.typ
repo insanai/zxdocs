@@ -276,7 +276,7 @@
   edge((1, 1), (2, 1.5), "-|>"),
 )
 
-#let epoch_flow() = diagram(
+#let reconfiguration_flow() = diagram(
   spacing: (29mm, 16mm),
   node-stroke: 0.8pt + blue,
   edge-stroke: 0.8pt + gray,

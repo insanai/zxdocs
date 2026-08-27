@@ -145,10 +145,12 @@ const slot = try node.reconfigure(
 ```
 
 By placing the stop inside the log, the old configuration agrees on the
-boundary relative to commands. The library does not automatically transfer a
-snapshot, start processes, or stop old network traffic. The host must wait for
-`isReconfigured()` to return the *decided* stop before calling `initFromStop`,
-and must prevent the sealed old instance from serving new writes.
+boundary relative to commands. The library does not automatically transfer
+application state, start processes, or stop old network traffic. The host must
+wait for `isReconfigured()` to return the *decided* stop before calling
+`initFromStop`, and must prevent the sealed old instance from serving new
+writes. The next configuration continues the same global slot line at the
+stop slot; slot numbering never restarts.
 
 == Global Slots on One Line
 

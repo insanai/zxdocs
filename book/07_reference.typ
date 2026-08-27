@@ -77,8 +77,8 @@ confirmWritesDurable`, and resetting an unconfirmed batch stops it with
     this recipient.],
   [`propose`, `proposeBatch`], [Assign slots after phase one; return
     `NotLeader` otherwise.],
-  [`reconnected`, `requestCatchUp`], [Repair one peer path or emit a same-epoch
-    `learn` request.],
+  [`reconnected`, `requestCatchUp`], [Repair one peer path or emit a
+    chunk-bounded `learn` request.],
   [`committedAt`, `readDecided`], [Inspect the local decided log; not an
     application read protocol.],
   [`currentLeader`, `decidedThrough`], [Diagnostic leader hint and contiguous
@@ -120,12 +120,11 @@ to the core and adds `max_batch` and `max_metadata_bytes`.
   [`reconfigure(id, members, metadata)`], [Propose a strictly newer stop sign
     and seal local appends; the only sealing path.],
   [`isReconfigured()`], [Return the *decided* stop, which permits host
-    handover.],
+    handover. A replayed or served stop naming a configuration the node
+    already runs is completed history and never re-seals the log.],
   [`initFromStop(id, stop, stop_slot, anchor, membership, priority)`],
     [Validate the stop's member slice and start its configuration at the stop
-    slot on the same global slot line, carrying the inherited trim anchor. A
-    replayed stop naming a configuration the node already runs is completed
-    history and is ignored.],
+    slot on the same global slot line, carrying the inherited trim anchor.],
   [`continueAt`, `restoreAt`], [Continue or restore a configuration at a floor
     on the same slot line.],
   [`advanceMemoryFloor`, `installChosenTrim`, `trimAnchor`, `beginRecovery`],
@@ -142,15 +141,19 @@ to the core and adds `max_batch` and `max_metadata_bytes`.
   columns: (auto, 1fr, auto),
   table.header([*Field*], [*Meaning*], [*Lifetime*]),
   [`durable.promised`], [Highest ballot this acceptor permits.], [Durable],
-  [`durable.accepted`], [Highest stored ballot/value per slot.], [Durable],
-  [`durable.committed`], [Known chosen value per slot.], [Durable],
+  [`durable.anchor`], [Adopted chosen-trim anchor.], [Durable],
+  [`durable.cells[].accepted`], [Highest stored ballot/value per resident
+    slot; cells are slot-tagged.], [Durable],
+  [`durable.cells[].committed`], [Known chosen value per resident slot.], [Durable],
   [`role`, `ballot`, `leader_hint`], [Local leadership state.], [Volatile],
   [`highest_observed_round`], [Largest round seen in higher traffic.], [Volatile],
-  [`next_slot`], [Next proposal slot or zero.], [Rebuilt],
+  [`next_slot`], [Next proposal slot.], [Rebuilt],
   [`delivered_through`], [Prefix released in this process.], [Volatile],
-  [`promise_*`, `recovered`], [Phase-one completion and recovery state.], [Volatile],
-  [`proposals`, `acknowledgements`], [Leader state per active slot.], [Volatile],
-  [`configuration_id`], [Replicated-log epoch identity.], [Host must persist],
+  [`memory_floor`], [Host-licensed cell-reuse floor.], [Rebuilt via `restoreAt`],
+  [`election`, `promise_seen`, `recovered`], [Phase-one chunk and recovery
+    state.], [Volatile],
+  [`lead`], [Leader proposal and acknowledgement state per live slot.], [Volatile],
+  [`configuration_id`], [Replicated-log configuration identity.], [Host must persist],
   [`stop_pending`, `stop_sign`], [Seal state derived from core state/effects.], [Rebuilt],
 )
 
@@ -166,16 +169,33 @@ to the core and adds `max_batch` and `max_metadata_bytes`.
   [`NonIntersectingQuorums`], [`read + write <= member_count`.],
   [`NotMember`, `WrongRecipient`, `InvalidPeer`], [Invalid envelope or peer
     identity for this operation.],
+  [`NotVoter`, `NotLearner`, `LearnerIsVoter`, `LearnerMessageForbidden`],
+    [A role-restricted operation or message reached the wrong kind of node.],
+  [`ConfigurationMismatch`], [The message's configuration ID differs from the
+    local one.],
   [`NotLeader`], [Proposal attempted before completed phase one.],
+  [`CampaignDisabled`], [This voter is configured to never start elections.],
   [`BallotExhausted`], [No greater `u64` round exists.],
-  [`InvalidSlot`, `SlotLimitReached`], [Slot zero or no remaining bounded slot.],
+  [`InvalidSlot`], [Slot zero, or a floor or trim claim above the delivered
+    prefix.],
+  [`WindowFull`], [Every consensus cell holds a live slot. Transient
+    backpressure: retry after the memory floor advances.],
+  [`Trimmed`], [The requested history is below the memory floor; recover it
+    from the host journal, never from a reused cell.],
+  [`GlobalSlotExhausted`], [The 64-bit global slot space is exhausted; it
+    never wraps. Terminal.],
   [`EmptyBatch`, `SlotBufferTooSmall`, `BatchTooLarge`], [Invalid batch input or
     output capacity.],
   [`ReadBufferTooSmall`], [Caller output cannot hold the available prefix.],
   [`InvalidPromise`, `MissingNoop`, `MissingProposedValue`], [Incomplete or
     inconsistent leader recovery state.],
-  [`PromiseRegression`, `ConflictingValue`, `ConflictingCommit`], [Replay or
-    transition contradicts durable monotonicity.],
+  [`PromiseRegression`, `ConflictingValue`, `ConflictingCommit`,
+    `ConflictingChosenValue`], [Replay or transition contradicts durable
+    monotonicity or value uniqueness.],
+  [`TrimRegression`], [A trim anchor moved backward or conflicts with the
+    adopted one.],
+  [`WindowOverrun`], [A journal record addresses a cell still occupied by an
+    earlier slot: the journal ran past the window without an anchor.],
   [`InvalidConfigurationId`, `ConfigurationIdRegression`], [Zero or non-newer
     configuration ID.],
   [`ConfigurationIdExhausted`], [No next `u64` configuration ID.],
@@ -197,8 +217,8 @@ storage or transport context.
   [Uniform flexible safety], [`Q1 + Q2 > N`], [`4 + 2 > 5`.],
   [Stable-path logical messages], [`3(N - 1)`], [`N=3` gives 6: accepts,
     accepted replies, commits.],
-  [Approximate epoch duration], [`remaining_slots / peak_slot_rate`], [Reserve
-    capacity for recovery and the stop sign.],
+  [Window backpressure bound], [`next_slot - memory_floor <= window_slots`],
+    [Beyond it, `propose` returns `WindowFull`.],
   [Accept payload egress], [`payload_bytes * peers * proposals_per_second`],
     [Excludes headers, retransmits, and commit payloads.],
 )
@@ -216,8 +236,10 @@ storage or transport context.
 7. A committed slot never changes value.
 8. Application release is a contiguous slot prefix.
 9. Every effect-dependent message waits for all writes in its batch to sync.
-10. Slots are not reused within an epoch, and a new epoch begins only after a
-    decided stop sign and correct host state transfer.
+10. A global slot number is never reused. A physical cell is retagged only
+    for a chosen slot the host has released below the memory floor, and an
+    elected leader never proposes at or below the greatest quorum-reported
+    trim anchor or chosen prefix.
 
 == Answers to selected exercises
 
@@ -242,9 +264,12 @@ broadcast. Durable accepted records in every future intersecting recovery
 quorum force later leaders to preserve `tea`; `coffee` cannot be chosen.
 
 === Exercise 11.1
-Do not start a new epoch at prefix 80. Stop new appends, recover and decide the
-accepted slots (or have a higher ballot lawfully select their values), apply
-the complete prefix, snapshot it, decide the stop sign, and only then hand over.
+Twenty-two: slots 83 through 104. At slot 105, `next_slot - memory_floor`
+would exceed the 64-cell window and `propose` returns `WindowFull`. The host
+frees cells by durably consuming released entries and calling
+`advanceMemoryFloor`. The cells for 81 and 82 hold accepted but unchosen
+votes; an accepted-only cell is never evicted, because discarding the vote
+could let a later leader choose a different value for those slots.
 
 === Exercise 14.1
 With `N=7` and `Q2=3`, phase one must satisfy `Q1+3>7`, so `Q1=5` is the
@@ -260,13 +285,21 @@ minimum. Leader replacement can tolerate two unavailable members.
   [Committed], [A learner durably recorded a value known to be chosen.],
   [Applied], [The host state machine executed a committed entry.],
   [Ballot], [A unique ordered proposal attempt `(round, priority, node)`.],
-  [Epoch], [One bounded configuration with fixed membership and fresh slots.],
+  [Configuration], [One fixed voter set, sealed only by a decided stop sign;
+    the next configuration continues the same slot line.],
   [Leader], [A candidate that completed phase one for its ballot.],
+  [Memory floor], [The greatest slot whose released entry the host has durably
+    consumed, licensing cell reuse below it.],
   [No-op], [A host-defined value that consumes a slot without application work.],
   [Promise], [A durable refusal to accept lower ballots.],
   [Quorum], [A voter subset participating in a phase.],
-  [Slot], [A one-based position in the bounded log.],
+  [Slot], [A one-based `u64` position on the global log; never reset or
+    reused.],
   [Stop sign], [A decided entry that names the next configuration and seals the old one.],
+  [Trim anchor], [A chosen record stating that every slot at or below it is
+    chosen under a bound history hash.],
+  [Window], [The fixed array of slot-tagged cells holding resident consensus
+    state; it bounds residency, not history.],
 )
 
 == Research and design sources
