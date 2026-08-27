@@ -36,7 +36,8 @@ protocol error. The first frame on any connection must be a `hello`:
   [7, 16], [`database_id`], [The cluster's database identity, derived
     once at bootstrap and carried by the node's durable state
     afterwards. Clients send 0.],
-  [23, 8], [`configuration_id`], [The sender's epoch. Clients send 0.],
+  [23, 8], [`configuration_id`], [The sender's configuration. Clients
+    send 0.],
 )
 
 The encoded hello is 31 bytes. The server answers nothing on success.
@@ -50,7 +51,7 @@ one bounded `enrollment_request`, not arbitrary RPC.
 When the server is configured with a pre-shared secret, the client's
 `hello` is immediately followed by a challenge-response handshake. The
 implementation is `zaxonlite/src/transport_auth.zig`, specified in the
-format contract under Network protocol v8. From the client's
+format contract under Network protocol v9. From the client's
 perspective:
 
 + Read one `auth_challenge` frame. It carries a fresh 32-byte nonce and
@@ -135,7 +136,7 @@ fields are compatible, so ignore fields you do not use. The dispatch in
     the validated native planner.],
   [`session`], [Opens a replicated client session.],
   [`wait`], [Blocks until the node reaches a condition you name.],
-  [`snapshot`], [Takes an online snapshot and seals the journal epoch.],
+  [`anchor`], [Publishes a durable state anchor for fast recovery.],
   [`enable-search-feature`], [Records the search-feature version in an
     image that predates it.],
   [`integrity`], [Verifies the image, chain, and payload store.],
@@ -157,7 +158,7 @@ fields are compatible, so ignore fields you do not use. The dispatch in
 The subsections that follow give each op's request fields and success
 response. A field not marked optional is required.
 
-Protocol v8 applies no permission matrix to this list, with one exception:
+Protocol v9 applies no permission matrix to this list, with one exception:
 `replace-voter` requires an administrator certificate, described in the
 membership section below. Everything else matches the single-application
 design: possession of the embedded handle or access to the service means
