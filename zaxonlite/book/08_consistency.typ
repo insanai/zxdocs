@@ -221,17 +221,21 @@ The full matrix pins each boundary:
     the choice from durable accepts and contiguous replay applies it once.],
   [After apply, before reply], [unknown], [The same sequence returns the
     stored result. It never applies twice.],
-  [During snapshot install], [existing traffic unaffected], [Restart
-    picks a complete generation, old or new, and never a `tmp-*`
-    directory.],
+  [During an anchor, trim, or reclamation step], [existing traffic
+    unaffected], [Restart selects the newest valid `APPLIED` generation,
+    the `MANIFEST` names a complete segment set, and the orphan sweep
+    removes the debris. Replaying an already-applied suffix rewrites
+    identical pages.],
 )
 
 One honesty note. The hooks and harnesses exist, but the current
 automated suite does not yet exercise every row in both one-node and
 three-node roles. It covers torn tails, stale and corrupt image
-replacement, both snapshot transition prefixes, and the cluster leader
-kill after choice and before reply. Completing the remaining rows with
-the required schedule counts is a release blocker in the product plan.
+replacement, the fifteen-case single-process crash matrix over the
+write, anchor, trim, reclamation, and payload-GC failpoints, and the
+cluster leader kill after choice and before reply. Completing the
+remaining rows with the required schedule counts is a release blocker
+in the product plan.
 
 #exercise(8, [
   Take the crash matrix and mark every row where the write may actually
