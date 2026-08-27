@@ -1878,6 +1878,32 @@ already runs is completed history: it neither re-arms the membership
 handover nor seals the log. Without this, a restarted survivor looped
 forever trying to complete a handover that had already completed.
 
+== Transfer crash windows have no dedicated failpoint matrix
+
+The fifteen-case crash matrix covers the write, anchor, trim,
+reclamation, and payload-GC ladders. The state-transfer family of
+failpoints named by the verification plan (after the lease choice, the
+pin copy, each chunk, the digest, the install rename, the receiver
+acknowledgment) is not implemented: the transfer path's crash safety
+rests on its verify-then-install shape -- the receiver stages into a
+private file, installs only after the digest matches and a read quorum
+vouches the anchor binding, and the sender's pin is a disposable copy --
+plus the crash coverage the voter-replacement suite applies around the
+handover. A dedicated multi-process transfer crash matrix remains open
+test work.
+
+== The beyond-retention transfer lacks an end-to-end scenario
+
+The anchor-pinned transfer is implemented and its components are tested
+(the history-probe quorum, the wire codecs, the install guards), but no
+integration scenario yet drives a replica far enough behind a physical
+trim to cross the transfer path end to end: forcing it requires filling
+and reclaiming whole journal segments cluster-wide, which the current
+suites deliberately keep too small. The sender declines the transfer
+whenever range recovery still covers the gap, so the untested path is
+also the rarest one. Building the segment-scale scenario is recorded as
+open test work alongside the transfer crash matrix.
+
 == Statistical benchmark gate deferred
 
 The Hodges-Lehmann shift gate with bootstrap confidence intervals is not
