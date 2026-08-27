@@ -464,7 +464,7 @@ representations, bounded `usermerge`/`merge` maintenance, and an
 payloads alone and compares every byte. The three-process cluster
 scenario repeats the point end to end: a hybrid coarse-scan-plus-rerank
 query must answer identically on the leader, both followers, and after
-snapshot transfer and total restart.
+image rebuild and total restart.
 
 *Is the SIMD real?* `zig build disasm-probe` emits the ReleaseFast
 cosine kernel as an object file, and `benchmarks/verify-simd.sh` greps
