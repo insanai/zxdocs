@@ -41,14 +41,15 @@ tail. So we keep both, and everything between.
     payload-store faults, and the WAL capture spike behave at the byte
     level?], [`zig build test`],
   [Single process], [Does one real node survive restart, rebuild a
-    deleted or stale image, expire sessions, roll snapshots, and
+    deleted or stale image, expire sessions, publish state anchors, and
     isolate failed SQL?], [`zig build test-single`],
-  [Crash points], [When a real process dies at each write-pipeline
-    failpoint, does recovery ever invent a false success?],
+  [Crash points], [When a real process dies at each of the fifteen
+    write, anchor, trim, reclamation, and payload-GC failpoints, does
+    recovery ever invent a false success or lose a committed row?],
     [`zig build test-crash`],
   [Cluster], [Do three real processes elect, fail over, catch up,
-    transfer snapshots, and survive a total restart? The full script
-    follows below.], [`zig build test-cluster`],
+    trim, rebuild a wiped image, and survive a total restart? The full
+    script follows below.], [`zig build test-cluster`],
   [Roles], [Do the witness, standby, and read replica obey their read
     restrictions and bounded-freshness refusals?],
     [`zig build test-roles`],
@@ -60,7 +61,15 @@ tail. So we keep both, and everything between.
     that holds no Paxos or SQLite state?], [`zig build test-gateway`],
   [Adverse network], [Does the cluster stay correct under real TCP
     loss, duplication, reordering, seven-byte fragmentation, and
-    delayed durable sync?], [`zig build test-fault-network`],
+    delayed durable sync? Every retried write is sessioned, because an
+    acknowledged failure under frame loss is ambiguous and only the
+    session sequence makes the retry safe.],
+    [`zig build test-fault-network`],
+  [Long run], [Does one durable node, driven through enough writes to
+    rotate journal segments several times, keep retention bounded,
+    physically reclaim below the chosen trim, and restart from the
+    durable anchor plus the retained suffix even though history below
+    the anchor is gone?], [`zig build test-longrun`],
   [CLI contract], [Do exit codes, JSON shapes, session flags, the
     scripted shell, locking, loopback-only development PSK, startup/leader
     logs, enrollment/revocation, and single-seed mTLS redirects match the
@@ -88,11 +97,15 @@ ReleaseSmall, and invalid compile-time options must fail compilation.
 Zaxonlite's write path relies on that contract; the matrix proves the
 contract holds in the optimize modes Zaxonlite actually ships. The library
 also carries the replacement's consensus-level evidence: changed-member
-rollover unit tests, and a one-for-one replacement simulation in
+handover unit tests, and a one-for-one replacement simulation in
 `sim/reconfiguration.zig` that drives sixteen seeded schedules through
-drop, duplication, and reordering with a restart oracle. A bounded TLA+
-host model, `specs/VoterReplacement.tla`, sits beside `specs/Paxos.tla` as
-the host-level model of the replacement's stop-sign and activation steps.
+drop, duplication, and reordering with a restart oracle. Three bounded
+TLA+ models sit in `specs/`: `Paxos.tla` for the core,
+`VoterReplacement.tla` for the host-level stop-sign and activation
+steps, and `GlobalTrim.tla` (ZDS 0011) for the slot-tagged window,
+eviction licensing, trimmed-acceptor election fences, the conservative
+trim, and the joiner lease lifecycle, validated by deliberate-bug
+mutations that TLC must catch.
 
 `zig build test-cluster -Dcluster-runs=N` repeats the whole cluster
 scenario for flake hunting. One hundred consecutive runs are an
@@ -131,10 +144,12 @@ promised to survive, in one run:
   [7], [Controller], [Retries the same session sequence at the new
     leader.],
   [8], [Oracle], [The retried write must be applied exactly once.],
-  [9], [Controller], [Rolls the epoch while another member is
-    stopped. The member must rejoin through a snapshot transfer.],
+  [9], [Controller], [Publishes a state anchor while another member is
+    stopped. The member must rejoin through journal catch-up, and the
+    conservative trim must advance only after every data replica has
+    reported its durable frontier.],
   [10], [Controller], [Deletes one member's `current.db`. The member
-    must rebuild it from snapshot plus committed suffix.],
+    must rebuild it from its anchor plus the committed suffix.],
   [11], [Controller], [Kills all three processes without ceremony,
     then restarts all of them.],
   [12], [Oracle], [153 rows, the failpoint row exactly once, clean
@@ -177,8 +192,10 @@ promises to survive:
     configuration and is refused admission. The stale-flag survivor uses
     the decided registry and converges to the new configuration.],
   [10], [Controller], [Enrolls the replacement: token issuance, `enroll`
-    with a join descriptor, then `serve`. The node fetches and verifies
-    the registry blob and installs its snapshot.],
+    with a join descriptor, then `serve`. The node fetches the decided
+    registry blob, verifies it against the join descriptor's digest —
+    surviving a crash in the middle of that install — and catches up
+    from the retained journal on the same global slot line.],
   [11], [Oracle], [Every member's registry digest is identical after
     restart, and stopping one survivor still leaves a quorum, with the
     replacement voting.],
@@ -189,10 +206,10 @@ tests pin the canonical encoding as stable across input order, reject
 corruption, hold the allocation fence and ring monotonic, replay an
 idempotent retry, refuse `OperationHistoryExpired` and
 `OperationIdExhausted`, and enforce the three-voter floor. A unit test
-pins sealed-set quorum counting: confirmation counts distinct voters of
-the sealed set only, and the proposed next voter never counts toward its
-own admission. Integration crash-window tests kill the process inside the
-rollover write order (snapshot proof, `CURRENT`, `REGISTRY`, identity)
+pins history-probe quorum counting: a state-transfer receiver counts
+matching vouches from distinct current voters only.
+Integration crash-window tests kill the process inside the
+handover write order (registry blob, `REGISTRY`, identity)
 and require bootstrap to re-run when the pointer write is missing,
 recovery to roll `REGISTRY` and identity forward together, and a corrupt
 pointer to fail closed.

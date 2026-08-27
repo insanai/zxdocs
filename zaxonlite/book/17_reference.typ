@@ -145,7 +145,9 @@ only ever added, so additive change stays compatible.
   [`wait`], [`applied`, `leader` (bool), `timeout_ms`], [`applied_slot`,
     `decided_slot`, `leader`, `configuration_id`],
   [`status`], [none], [The full status record: identity, role, `leader`,
-    `ballot`, decided and applied slots, journal, chain, `snapshot`, and
+    `ballot`, the decided, applied, and durable-state slots, the memory
+    floor, the chosen-trim and retained-first slots, journal records,
+    segments, and bytes, `chain`, and
     the search capability manifest (`fts5_enabled`,
     `sqlite_vec_version`, `search_feature_version`, `simd_backend`,
     `mmap_size`, `candidate_hard_limit`), `write_gate` (`fifo-v1`),
@@ -166,7 +168,7 @@ only ever added, so additive change stays compatible.
     and PSK connections are refused.],
   [`leader`], [none], [A `leader` object (`id`, `host`, `port`), or
     `null`.],
-  [`snapshot`], [none], [`configuration_id`. Leader only.],
+  [`anchor`], [none], [`durable_state_slot`, the anchored slot.],
   [`integrity`], [none], [`ok` mirrors the report; `sqlite_ok`,
     `chain_ok`, `payloads_ok`],
   [`hash`], [none], [`chain`, `content`, `applied_slot`],
@@ -201,8 +203,8 @@ redirect.
     answer this way.], [4],
   [`ambiguous`], [The write's fate is unknown after a leader change.
     Retry idempotently with the same session and sequence.], [4],
-  [`retry`], [Transient: an epoch rollover or a leadership change during
-    a fence.], [4],
+  [`retry`], [Transient: a membership handover or a leadership change
+    during a fence.], [4],
   [`timeout`], [An operation, fence, or wait deadline passed.], [4],
   [`too_large`], [The transaction payload exceeds the 64 MiB wire
     limit.], [4],
@@ -268,8 +270,8 @@ on every path; chapter 11 states the full boundary contract.
   [`zaxonlite_statement_parameter_name`], [Copy one bound parameter's
     name (1-based; empty for a positional parameter).],
   [`zaxonlite_free`], [Release a returned JSON buffer.],
-  [`zaxonlite_snapshot`], [Seal the epoch and install a snapshot
-    generation.],
+  [`zaxonlite_state_anchor`], [Publish a durable state anchor for fast
+    recovery; a single-node database also trims below it.],
   [`zaxonlite_backup`], [Write a consistent logical backup to a path.],
   [`zaxonlite_integrity_check`], [Verify the image, the descriptor chain,
     and every referenced payload.],
@@ -341,7 +343,7 @@ token as `exception.category`.
 
 Every connection registers FTS5, the pinned sqlite-vec module, and four
 Zig functions before preparing any statement, so the same SQL works on
-leaders, followers, read replicas, restored snapshots, and backups. All
+leaders, followers, read replicas, transferred images, and backups. All
 four are deterministic, allocation-free, and return `SQLITE_CONSTRAINT`
 with a plain message on a contract violation. NULL input produces NULL.
 
@@ -487,21 +489,29 @@ produces.
   [Search-maintenance payload], [16 MiB target, 32 MiB operational soft
     ceiling, `64 MiB - 73` hard limit], [`command.zig`, ZDS 0009],
   [Administrator name], [`[a-z0-9-]`, at most 32 bytes], [`tls.zig`],
-  [Epoch capacity], [2,048 slots, 4 reserved for the stop sign],
-    [`types.zig`, `node.zig`],
+  [Global slot], [`u64`, monotonic, never reset; exhaustion is
+    explicit, never a wrap], [`types.zig`],
+  [Consensus window], [2,048 slot-tagged cells, recycled at the memory
+    floor], [`types.zig`],
+  [Journal segment], [16,384 records, sealed with a digest trailer],
+    [`segment.zig`],
+  [Retained segments per manifest], [65,536], [`manifest.zig`],
+  [State anchor cadence], [promptly after the first applied write, then
+    every 10,000 slots], [`node.zig`],
+  [Range recovery chunk], [256 records, credit-based pipelining],
+    [`wire.zig`],
+  [Transfer leases], [4 concurrent], [`trim.zig`],
   [Protocol append batch], [16 entries], [`types.zig`],
   [Stop-sign metadata], [512 bytes], [`types.zig`],
   [Wire frame body], [64 MiB], [format contract],
-  [Declared snapshot or backup transfer], [4 GiB default, server
+  [Declared state or backup transfer], [4 GiB default, server
     configurable], [`wire.zig`, `server.zig`],
   [Concurrent server connections], [4 × configured members + 16 default],
     [`server.zig`],
   [Handshake completion deadline], [10 000 ms default, 0 disables],
     [`server.zig`],
   [Mutual TLS protocol version], [TLS 1.3 minimum], [`tls.zig`],
-  [Zaxon wire protocol version], [8, exact match], [`wire.zig`],
-  [Checkpoint proof (`ZXP2`)], [768 bytes encoded],
-    [`checkpoint_proof.zig`],
+  [Zaxon wire protocol version], [9, exact match], [`wire.zig`],
   [Enrollment token lifetime], [600 s default; 86400 s maximum],
     [`enrollment.zig`],
   [Peer certificate common name], [`zaxon-node-<id>`, under 64 bytes],
@@ -532,16 +542,26 @@ produces.
     records, frame metadata, and page images.],
   [Chain hash], [The cumulative SHA-256 identity of the decided history.
     Equal chains mean identical applied history. It is not a file hash.],
-  [Journal], [The per-epoch fsynced record of protocol writes. It is the
-    authoritative state from which everything else rebuilds.],
-  [Materialized image], [`current.db`, a rebuildable projection of the
-    decided history. It is never accepted as evidence over Paxos state.],
-  [Epoch], [One bounded configuration of the replicated log: at most 2,048
-    slots under one configuration ID, sealed by a stop sign.],
-  [Generation], [One installed snapshot, manifest plus database image.
-    The newest fully installed one is named by `CURRENT`.],
-  [`CURRENT` pointer], [The atomically replaced file naming the single
-    installed snapshot generation that recovery may start from.],
+  [Journal], [The lifetime fsynced record of protocol writes, kept as
+    manifest-governed segments under `consensus/`. Above the durable
+    anchor it is the authoritative state from which everything else
+    rebuilds.],
+  [Materialized image], [`current.db`. Above the durable anchor it is a
+    rebuildable projection; through the anchor it is the authoritative
+    base for history whose journal has been trimmed.],
+  [Global slot], [The `u64` Paxos instance number. It increases for the
+    lifetime of the database and never resets, whatever happens to
+    membership.],
+  [State anchor], [One `APPLIED` record binding the synchronized image
+    to a global slot, its history hash, and the batch-chain cursor.
+    Recovery replays only the journal suffix above it.],
+  [Chosen trim], [The consensus-decided prefix boundary `G`: every slot
+    at or below it is chosen, and journal segments wholly below it may
+    be physically unlinked.],
+  [Memory floor], [The greatest slot whose consensus cell the core may
+    recycle: chosen, journal-durable, and consumed by the host.],
+  [History hash], [The domain-separated SHA-256 chain over every chosen
+    entry. Anchors `(s, H_s)` bind state to one exact prefix.],
   [Data voter], [A voter that may campaign, materializes SQLite, and
     serves SQL.],
   [Witness], [A voter that stores durable payloads but never campaigns
