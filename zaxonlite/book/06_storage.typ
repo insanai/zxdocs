@@ -178,12 +178,12 @@ and it drops acknowledged writes on power loss. `syncPathnameTransition` hides
 the difference so no call site has to remember which way round it goes.
 
 A directory sync may still be skipped where a later barrier is named, which is
-the `...BeforeBarrier` contract from the previous section. Both snapshot
-renames qualify: a snapshot becomes authoritative only when the stop sign
-naming it is journaled and synced, and an installed snapshot is followed at
-once by the `CURRENT` write. Transitions with no such successor — enrollment
-tokens, published identities, backups, journal creation — take their barrier
-immediately.
+the `...BeforeBarrier` contract from the previous section. The payload
+install qualifies: an object becomes load-bearing only when a journal
+record names it, and the journal barrier that precedes every vote lands
+both together. Transitions with no such successor — manifest
+generations, anchor records, enrollment tokens, published identities,
+backups, segment creation — take their barrier immediately.
 
 The model needs POSIX rename semantics and a metadata log, so Windows is
 supported from release 1809 and Server 2019 on NTFS. Rather than read a
@@ -197,30 +197,43 @@ built rather than a documented guarantee.
 == The recovery sequence
 
 #book_figure([
-  Restart never trusts the materialized database file. The image is
-  discarded and rebuilt from the snapshot and the committed journal
-  suffix, then checked against the log before the node serves.
+  Restart never trusts the volatile tail of the materialized database
+  file. The image is resumed at the newest valid durable anchor, the
+  committed journal suffix above it is replayed, and the result is
+  checked against the log before the node serves.
 ], recovery_flow())
 
 `Node.open` performs these steps, in this order:
 
 + take the exclusive directory lock;
-+ load or create `identity`;
++ load or create `identity`, honoring a decided registry or a `JOIN`
+  descriptor where one exists;
 + open the payload store;
-+ open the epoch journal and replay it into `DurableState`, truncating
-  a torn final record and refusing to open on interior corruption;
-+ restore the protocol node from the replayed state;
-+ validate the installed snapshot: its identity, its epoch relation,
-  its manifest fields, and its image digest, resuming an interrupted
-  snapshot install if one is pending;
++ refuse to open over any legacy artifact: a `CURRENT` pointer or a
+  `paxos-*.log` journal fails closed as unsupported, with no bridge;
++ open the `consensus/` journal: load the `MANIFEST`, sweep orphan
+  segment files a crashed rotation or trim left behind, resume the
+  active segment (truncating a torn final record, refusing interior
+  corruption), and stream-replay every retained record into
+  `DurableState`, restoring the `max_promised` rollup for history the
+  trim deleted;
++ load the durable `TRIM` state;
++ materialize the image: delete `-wal` and `-shm`, select the newest
+  valid `APPLIED` anchor, and offline-apply the contiguous committed
+  suffix above it. Without a usable anchor, rebuild from slot one when
+  the journal is still retained from genesis, and otherwise refuse and
+  request a state transfer;
++ restore the protocol node at the consumed floor, so its consensus
+  window resumes exactly where the host left off;
 + campaign, in a one-member configuration only;
-+ rebuild the materialized image: always delete `current.db`, `-wal`,
-  and `-shm`, copy the snapshot base, then chain-validate and
-  offline-apply every committed batch;
-+ complete a pending epoch rollover if a decided stop sign was
++ resume a pending membership handover if a decided stop sign was
   replayed;
 + validate that the image's recorded `batch_id` equals the last
   committed descriptor's.
+
+Startup cost follows the anchor cadence, not the history size: the
+replayed suffix is at most the writes since the last anchor, however
+old the database is.
 
 The last step closes the loop from chapter 4. The `batch_id` marker was
 written inside the captured transaction, so a rebuilt image that passes

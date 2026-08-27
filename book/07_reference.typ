@@ -93,8 +93,11 @@ confirmWritesDurable`, and resetting an unconfirmed batch stops it with
     process if the batch holds unconfirmed writes.],
   [`Effects.confirmWritesDurable`], [Host statement that the pending batch is
     durable; required before `messagesSlice` in every optimize mode.],
-  [`DurableState.apply`], [Reference replay semantics for ordered `Write`
-    records; not a disk format.],
+  [`DurableState.apply`], [Strict replay semantics for one configuration's
+    ordered `Write` records; not a disk format.],
+  [`DurableState.replayFold`], [Fold a lifetime journal across configuration
+    changes and window reuse: promises fold to their maximum, stale accepts
+    in reused cells are skipped, commits and trim anchors stay strict.],
   [`host_managed.Protocol(Value, Options)`], [Same types without the runtime
     ordering check; the host owns the durability boundary. An audited
     exception for grouped-barrier hosts only.],
@@ -103,7 +106,8 @@ confirmWritesDurable`, and resetting an unconfirmed batch stops it with
 == Replicated-log API
 
 `ReplicatedLog(Value, Options)` wraps `Protocol` with an `Entry` union of
-`command` and `stop`. Its bound is named `max_entries`, not `max_slots`.
+`command` and `stop`. It forwards `window_slots` and `recovery_chunk_slots`
+to the core and adds `max_batch` and `max_metadata_bytes`.
 
 #table(
   columns: (1.35fr, 1.65fr),
@@ -114,16 +118,22 @@ confirmWritesDurable`, and resetting an unconfirmed batch stops it with
   [`append`, `appendBatch`], [Propose commands unless a stop is pending or
     decided.],
   [`reconfigure(id, members, metadata)`], [Propose a strictly newer stop sign
-    and seal local appends.],
-  [`checkpoint(metadata)`], [Propose same-membership stop with ID plus one; does
-    not create or verify a snapshot.],
+    and seal local appends; the only sealing path.],
   [`isReconfigured()`], [Return the *decided* stop, which permits host
     handover.],
-  [`initFromStop`], [Validate the stop's member slice and start its
-    configuration.],
-  [`read`, `decidedThrough`, `currentLeader`], [Inspect this bounded
-    configuration.],
-  [`configurationId`], [Return the host-supplied durable epoch identity.],
+  [`initFromStop(id, stop, stop_slot, anchor, membership, priority)`],
+    [Validate the stop's member slice and start its configuration at the stop
+    slot on the same global slot line, carrying the inherited trim anchor. A
+    replayed stop naming a configuration the node already runs is completed
+    history and is ignored.],
+  [`continueAt`, `restoreAt`], [Continue or restore a configuration at a floor
+    on the same slot line.],
+  [`advanceMemoryFloor`, `installChosenTrim`, `trimAnchor`, `beginRecovery`],
+    [Window and trim pass-throughs to the core node.],
+  [`read`, `decidedThrough`, `currentLeader`], [Inspect this configuration's
+    resident window state.],
+  [`configurationId`], [Return the host-supplied durable configuration
+    identity.],
 )
 
 == State lifetime
