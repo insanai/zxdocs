@@ -1,12 +1,12 @@
 #let zds-number = "0011"
 #let zds-title = "Global Slots and Certified Log Trimming"
-#let zds-state = "accepted"
+#let zds-state = "committed"
 #let zds-created = "2026-08-26"
 #let zds-discussion = "Remove the 2,044-commit rollover by separating Paxos progress, log retention, and SQLite state transfer"
 #let zds-labels = ("consensus", "paxos", "zaxonlite", "storage", "verification",)
 #let zds-authors = ("paxos-zig project",)
 #let zds-category = "Engineering Discussion"
-#let zds-status = "Accepted"
+#let zds-status = "Implemented for paxos-zig 0.3.0 and zaxonlite 0.4.0"
 #let zds-last-updated = "2026-08-27"
 
 #import "../../shared/zds.typ": zds-document
@@ -1794,6 +1794,138 @@ boundaries now.
 - ZDS 0004's format contract and ZDS 0008's membership contract receive
   explicit amendments when this record is accepted; they are not silently
   contradicted.
+
+= Implementation Notes and Deviations
+
+The v1 implementation landed as specified, with the deviations and
+discoveries below. Each deviation keeps an invariant of this record intact
+while simplifying the mechanism that enforces it.
+
+== Segments are record-capped without payload manifests
+
+Journal segments seal at a fixed record count (16,384) rather than a byte
+budget, and sealed trailers carry no per-segment payload-digest manifest.
+Payload garbage collection instead streams the retained journal to build
+the reachable set, and runs only when reclamation removed history or the
+chosen trim advanced — never on every pump. The trailer keeps the
+`max_promised` ballot rollup, which is the part correctness needs: without
+it, trimming a promise-bearing segment would let the acceptor promise
+backwards after replay.
+
+== No trim hysteresis
+
+Trim proposals are not rate-limited by a hysteresis band. The conservative
+candidate only moves when a data replica publishes a new durable anchor,
+so the anchor cadence already bounds trim frequency; a separate band added
+a tunable without adding a property.
+
+== The first anchor publishes promptly
+
+A node with no durable anchor recovers from genesis, so
+`maybeCreateStateAnchor` fires as soon as anything is applied, and the
+slot-interval cadence (10,000 slots) governs afterwards. This also makes
+trimming live: the conservative trim needs every data replica to have
+reported a nonzero durable frontier.
+
+== Conservative trim subsumes transfer leases in v1
+
+The chosen `transfer_lease` and `lease_complete` entries and the TRIM-file
+lease table exist as specified, but no v1 path proposes them. The v1 trim
+is the minimum durable frontier over all data replicas, and that minimum
+is itself the freeze this record wanted from leases: a joining replacement
+reports a zero frontier until its first anchor, and a lagging replica pins
+the candidate at its own last anchor, so history a transfer target needs
+cannot be reclaimed while it catches up. Killing a transfer sender
+strands nothing: the receiver re-requests from any data replica, and the
+frozen minimum keeps the base retained. Leases become necessary only with
+the deferred quorum-trim variant, and the plumbing for them is in place.
+
+== The checkpoint proof is removed, not revised
+
+The planned proof v3 artifact is not produced. The stop-sign proof existed
+to let a receiver verify a snapshot generation attributed to a sealed
+configuration; the anchor-pinned transfer has a live cluster to ask
+instead. The receiver confirms `(anchor_slot, history_hash)` with a read
+quorum of the current voters — each voter vouches from a small ring of
+recent per-slot history hashes, its own durable anchor, or the chosen trim
+anchor — and then verifies the image digest from the transfer manifest.
+`checkpoint_proof.zig` and the `ZXP2` format are deleted with the format
+cut.
+
+== Raw image copy is a buffered stream
+
+The transfer sender pins the anchored image with an ordinary buffered
+copy; the reflink probe (`FICLONE`, `clonefile`) from Q3 is not
+implemented. The copy is process-private, priced O(database), and happens
+once per transfer, which is already the rare recovery path.
+
+== Lifetime-journal replay folds across ballot lines
+
+A discovery, not a design choice: one journal now spans configuration
+changes, and elections in a successor configuration legitimately begin at
+round one, below ballots promised in the sealed line. Strict replay
+declared that history corrupt. `DurableState.replayFold` folds the
+lifetime journal instead — promises fold to the maximum so the acceptor
+still never promises backwards, accepts whose cells were reused by newer
+slots are dead history and are skipped, and commits and trim anchors keep
+their strict rules. The voter-replacement suite found this by killing and
+restarting a survivor after the handover.
+
+== Stop signs are configuration-scoped observations
+
+A replayed or journal-served stop entry naming a configuration the node
+already runs is completed history: it neither re-arms the membership
+handover nor seals the log. Without this, a restarted survivor looped
+forever trying to complete a handover that had already completed.
+
+== Statistical benchmark gate deferred
+
+The Hodges-Lehmann shift gate with bootstrap confidence intervals is not
+implemented. The moving-window benchmark family (`u64-3n-moving`: 262,144
+values, 256 window wraps on one slot line) records batch-level
+percentiles into the results protocol; the measured p99 sits within 4% of
+p50 and the maximum within 2.5x, with no wrap-correlated spikes, which is
+the property the periodicity check was designed to catch. The gate tool
+remains future work under the existing recorded-results protocol.
+
+= Amendments to Prior Records
+
+This section follows the amendment pattern of ZDS 0006. The prior records
+are not edited; where a clause below and this record disagree, this record
+wins.
+
+== Amendments to ZDS 0004
+
+The bounded-epoch format contract is replaced by the global-slot contract
+of this record. The wire protocol moves from version 8 to version 9 with
+exact-major acceptance unchanged; slots are 64-bit everywhere. The
+per-configuration journal (`paxos-<configuration>.log`) is replaced by the
+lifetime `consensus/` directory: first-slot-named `.zxj` segments (`ZXS2`
+headers, sealed `ZXT2` trailers with the `max_promised` rollup), the
+`ZXM2` manifest generations, the alternating `APPLIED.0`/`APPLIED.1`
+durable state anchors, and the `ZXTR` trim state. Snapshot generations,
+the `CURRENT` pointer, and the `ZXP2` checkpoint proof are removed. Stop
+metadata moves from `zx2` to `zx3` and carries only the next registry
+digest and the replacement seed. Legacy artifacts fail closed at open;
+there is no bridge, permitted because deployment has not launched and
+there are no shipped bytes to migrate.
+
+== Amendments to ZDS 0008
+
+The decided one-for-one replacement operation, its authorization, the
+decided registry, the allocation fence, and the idempotent operation ring
+all stand. Its integration with the epoch rollover is superseded: the stop
+sign no longer names a snapshot generation or manifest digest, survivors
+complete the handover in place and continue the same global slot line
+(delivered and floor at the stop slot, inherited trim anchor) instead of
+initializing a fresh epoch, and the journal is not replaced at the
+boundary. The joining replacement fetches and verifies the decided
+registry against its enrollment descriptor, then catches up through
+ordinary range recovery from the retained journal; only a gap beyond
+retention uses the anchor-pinned state transfer of this record. The
+read-quorum attestation of ZDS 0008's install path is carried forward as
+the history probe over `(anchor_slot, history_hash)` rather than a proof
+digest over a sealed stop sign.
 
 = References
 
