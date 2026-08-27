@@ -228,6 +228,30 @@
     #v(8pt)
 
     #panel(
+      [The window keeps moving],
+      [262,144 values on one global slot line · 1,024-cell window · 256 wraps · floors advancing],
+      {
+        let moving = find("paxos-zig", "u64-3n-moving", "batch64")
+        table(
+          columns: (1.4fr, auto, auto, auto, auto),
+          table.header(
+            [*Measure*], [*p50*], [*p90*], [*p99*], [*max*],
+          ),
+          [batch-average ns / value],
+            [#moving.batch_ns_per_value_p50],
+            [#moving.batch_ns_per_value_p90],
+            [#moving.batch_ns_per_value_p99],
+            [#moving.batch_ns_per_value_max],
+        )
+        v(3pt)
+        text(size: 8pt)[Overall #ns(moving) ns/value across 256 window
+        wraps. Reusing a consensus cell costs the same at wrap 256 as at
+        wrap 1: there is no per-epoch cliff because there is no epoch.]
+      },
+    )
+    #v(8pt)
+
+    #panel(
       [Durability changes the scale],
       [512 values · 3 file journals · writes replay-verified after timing · median of 3],
       table(
