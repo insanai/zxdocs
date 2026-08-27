@@ -105,8 +105,9 @@ Five statements carry the product. Each is a claim you can test.
   state. `linearizable` first completes a quorum read fence.
 + *The journal is the database.* The SQLite file is a materialized image.
   Delete it, or restore a stale copy, and the node converges back to the
-  decided state from snapshot plus journal suffix. You did this to
-  `current.db` in chapter 1. Chapter 6 walks through the machinery.
+  decided state from its durable state anchor plus the journal suffix, or
+  from a verified state transfer. You did this to `current.db` in chapter
+  1. Chapter 6 walks through the machinery.
 
 #predict([
   A `linearizable` read must prove to a quorum that the leader still
@@ -147,9 +148,11 @@ Zaxonlite does not do multi-master writes. It does not do cross-database
 transactions or SQL-visible replication controls. It does not replace a
 failed voter automatically; a served cluster does support
 operator-initiated one-for-one replacement of a data voter through the
-decided `zaxon replace-voter` operation (chapter 7). It bounds one epoch
-at 2,048 slots and one consensus group at nine voters. Both bounds are policy choices of the
-`ReplicatedLog` instantiation, not Paxos theorems.
+decided `zaxon replace-voter` operation (chapter 7). It bounds one
+consensus group at nine voters and the in-memory consensus window at a
+fixed slot count; the global slot line itself is 64-bit and never resets.
+Both bounds are policy choices of the `ReplicatedLog` instantiation, not
+Paxos theorems.
 
 #teach_back([
   Explain to a colleague why `select random()` can never make two replicas

@@ -62,13 +62,13 @@ that capture can trust this behavior:
 
 ```text
 pragma journal_mode = wal;        -- append frames, never rewrite pages
-pragma wal_autocheckpoint = 0;    -- checkpoints only at snapshots
+pragma wal_autocheckpoint = 0;    -- checkpoints only at state anchors
 pragma synchronous = normal;      -- journal fsync is the durability
 sqlite3_wal_hook(db, hook, ...)   -- committed frame count per commit
 ```
 
-With automatic checkpoints disabled, the WAL only grows between
-snapshots, and a written frame is never moved or rewritten. That
+With automatic checkpoints disabled, the WAL only grows between state
+anchors, and a written frame is never moved or rewritten. That
 stability is what makes the next step legal.
 
 #callout(title: [These pragmas are replication invariants], tone: "warning")[
@@ -185,8 +185,8 @@ Now the property everything depends on. Given the same base image and
 the same frames, this transition is deterministic. It is also
 idempotent: applying any decided prefix again, from any intermediate
 state, converges to the same bytes. One property, three payoffs. It
-powers recovery, which rebuilds from a snapshot plus the committed
-suffix. It powers follower apply, which materializes the image offline.
+powers recovery, which rebuilds from a durable state anchor plus the
+committed suffix. It powers follower apply, which materializes the image offline.
 It powers resync after a leadership change. It also makes crash timing
 across the entire apply path harmless, because a half-applied batch is
 repaired by applying it again.

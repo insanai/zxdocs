@@ -269,7 +269,7 @@ sequence. A decided write replays its saved result instead of applying twice.
 An undecided write applies normally. Chapter 8 explains the contract; the
 rule to remember is: same session, same sequence, same statement.
 
-== Snapshot and backup
+== Backup and integrity
 
 ```console
 $ zc backup --connect 127.0.0.1:7001 --to ./orders-backup.db
@@ -301,6 +301,7 @@ own process, in Zig or through the C ABI.
 
 #teach_back([
   Explain to a colleague why deleting `current.db` on a stopped node loses
-  nothing, but deleting one journal file can refuse to start the node. Use
-  the words journal, snapshot, and materialized image.
+  nothing on this fresh database, but deleting one journal file can refuse
+  to start the node. Use the words journal, state anchor, and materialized
+  image.
 ])

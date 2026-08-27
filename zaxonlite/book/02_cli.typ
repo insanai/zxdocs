@@ -187,7 +187,7 @@ results taller than the screen open in a pager (arrows scroll, `q` returns).
 
 ```console
 $ zaxon sql --data ./mydb
-zaxonlite 0.2.0 — interactive shell
+zaxonlite 0.4.0 — interactive shell
 Statements end with ';'. Type .help for commands and keys.
 zaxon> select id, author from notes where id < 3;
 ┌────┬────────┐
@@ -288,9 +288,10 @@ generously. Chapter 8 covers sizing.
 == Cluster commands: `status`, `members`, `leader`, `wait`, `stop`
 
 `status` on an embedded node prints an aligned field list: node id, database
-id, configuration id, role, node type, decided and applied slots, journal
-records, epoch capacity, the journal chain hash, page size, and the current
-snapshot name or `(none)`. Against a server, `status` and `members` print
+id, configuration id, role, node type, the decided, applied, and durable
+slots, the core memory floor, the trimmed-through and retained-first slots,
+journal records, segments, and bytes, the chain hash, and page size.
+Against a server, `status` and `members` print
 the raw JSON response even without `--json`; the server's answer includes
 fields such as the current ballot that the embedded view does not have.
 
@@ -388,10 +389,13 @@ yet created) data directory, recording the decided database ID, the
 configuration, and the registry digest, so the node's first start adopts
 the cluster's identity instead of deriving one from flags.
 
-== Maintenance: `snapshot`, `backup`, `integrity-check`, `recover`
+== Maintenance: `anchor`, `backup`, `integrity-check`, `recover`
 
-`snapshot` compacts: it installs a verified snapshot and seals the current
-journal epoch, printing the new configuration ID. `backup --to <path>`
+`anchor` publishes a durable state anchor: it checkpoints the SQLite WAL,
+synchronizes the image, and records the applied slot so the next recovery
+replays only the journal suffix above it. On a single-node database it
+also trims the journal below the anchor. It prints
+`state anchor published at slot <n>`. `backup --to <path>`
 streams a consistent logical copy, a plain SQLite file, verified end to end
 with SHA-256 before it is installed at the destination. Against a cluster
 it streams from the leader. If the leader dies mid-stream the command
@@ -507,10 +511,15 @@ $ zaxon exec --data ./mydb --json --sql "insert into notes(body) values ('json r
 $ zaxon status --data ./mydb --json
 {"node_id":1,"database_id":"a13f203d26d80813d0834ff231269878",
  "configuration_id":1,"role":"leader","node_type":"data-voter","leader":1,
- "decided_slot":7,"applied_slot":7,"journal_records":31,
- "epoch_capacity":2048,"chain":"8f6a...94f8f","page_size":4096,
- "snapshot":null}
+ "decided_slot":7,"applied_slot":7,"durable_state_slot":0,
+ "memory_floor":7,"chosen_trim_slot":0,"retained_first_slot":1,
+ "journal_records":31,"journal_segment_count":1,"journal_bytes":4213,
+ "chain":"8f6a...94f8f","history":"c01d...77aa","page_size":4096,...}
 ```
+
+Slot fields are unsigned 64-bit integers. A JSON reader that parses them
+as IEEE doubles loses precision past 2^53; use a 64-bit integer parse in
+automation.
 
 The status object is one line on a real terminal, and the chain field is
 the full 64-hex-digit hash. `query --json` emits
