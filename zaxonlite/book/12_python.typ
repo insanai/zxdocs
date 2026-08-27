@@ -50,7 +50,7 @@ a `sqlite3` user reads it without relearning style.
 
 #callout(title: [The database argument is a directory], tone: "note")[
   Everywhere `sqlite3` takes a file path, `zxlite` takes a zaxonlite
-  data directory — journal, payload store, snapshots, and the
+  data directory — journal, payload store, state anchors, and the
   materialized image from chapter 6. The SDK never opens `current.db`
   directly, and a second `connect()` to the same directory fails with
   `OperationalError` because the directory lock has one owner.
@@ -207,10 +207,11 @@ changes, replayed = db.execute_idempotent(
 ```
 
 Retrying sequence 1 after an ambiguous failure returns the recorded
-result with `replayed` set instead of inserting twice. `snapshot()`,
-`backup(path)`, `integrity_check()`, and `expire_sessions(retain)`
-round out the maintenance surface with the same semantics as their C
-counterparts.
+result with `replayed` set instead of inserting twice. `snapshot()`
+(which publishes a durable state anchor, the C ABI's
+`zaxonlite_state_anchor`), `backup(path)`, `integrity_check()`, and
+`expire_sessions(retain)` round out the maintenance surface with the
+same semantics as their C counterparts.
 
 == Search
 
@@ -351,7 +352,7 @@ writes, `RETURNING` and `lastrowid` work before commit, and
 transaction as one WAL transition and acknowledges only after the
 decided slot is applied — the same durability meaning as autocommit,
 held open across your calls. While the transaction is open, one-shot
-writes, snapshots, and membership operations on that node are refused;
+writes, state anchors, and membership operations on that node are refused;
 closing a connection with an open transaction rolls it back. A
 multi-member handle refuses the mode: a leader can change while Python
 thinks, and this SDK does not pretend otherwise.

@@ -38,14 +38,14 @@ crosses the boundary is a fixed-width type from `<stdint.h>` or
 changes require a new symbol suffix or a major library version. Additive
 JSON response fields are compatible, and you must ignore fields you do
 not use. `zaxonlite_version()` returns the library version string. Release
-0.2.0 returns `"0.2.0"`.
+0.4.0 returns `"0.4.0"`.
 
 #api_anchor([`zaxonlite_open` / `zaxonlite_close`],
   [Opens (or creates) one node data directory and releases it.],
   source: [`capi.zig`])
 
-One handle owns one data directory: journal, payload store, snapshots,
-and the materialized SQLite image. Open performs full
+One handle owns one data directory: journal, payload store, state
+anchors, and the materialized SQLite image. Open performs full
 journal-authoritative recovery before returning. The handle you receive
 is therefore already at the decided state. The directory is locked, so a
 second `zaxonlite_open` on the same path returns 4 and leaves
@@ -188,8 +188,8 @@ captures the whole transaction as exactly one WAL transition and
 acknowledges only after the decided slot is applied — the same
 durability meaning as a one-shot write, held open across your calls.
 `zaxonlite_live_rollback` publishes nothing. While a live transaction
-is open, one-shot writes, snapshots, and membership operations on the
-handle are refused, and `zaxonlite_live_active` reports the state.
+is open, one-shot writes, state anchors, and membership operations on
+the handle are refused, and `zaxonlite_live_active` reports the state.
 
 == Sessions: exactly-once retry
 
@@ -284,11 +284,12 @@ host maps them to its own exception hierarchy; the message from
 == Maintenance
 
 Three calls keep a node healthy over months, not minutes.
-`zaxonlite_snapshot` takes an online snapshot and seals the current
-journal epoch. `zaxonlite_backup` streams a consistent logical backup to
-`path`. `zaxonlite_integrity_check` verifies the SQLite image, the
-descriptor chain, and payload availability. It returns 0 only when all
-three pass, and 3 otherwise.
+`zaxonlite_state_anchor` publishes a durable state anchor, so recovery
+replays only the suffix above it; on a single-node database it also
+trims the journal below the anchor. `zaxonlite_backup` streams a
+consistent logical backup to `path`. `zaxonlite_integrity_check`
+verifies the SQLite image, the descriptor chain, and payload
+availability. It returns 0 only when all three pass, and 3 otherwise.
 
 == The cluster facade
 
@@ -480,7 +481,7 @@ int main(void) {
         zaxonlite_free(json);
     }
 
-    zaxonlite_snapshot(db);
+    zaxonlite_state_anchor(db);
     if (zaxonlite_integrity_check(db) != 0) return 3;
     zaxonlite_backup(db, "./data.backup.db");
     zaxonlite_close(db);

@@ -83,7 +83,7 @@ status call answers. A server that dies first surfaces as
      facade.],
   [The peer senders and the protocol tick loop.],
     [The data directory chosen for each member.],
-  [The node, with its journal, payloads, snapshots, and image.],
+  [The node, with its journal, payloads, anchors, and image.],
     [The retry policy around ambiguous write outcomes (chapter 8).],
   [Client routing, including leader redirects.],
     [Freeing every response body returned by `call`.],
@@ -103,7 +103,7 @@ itself.
   its memory through an arena on the `gpa` you pass. Call `deinit()`
   exactly once.
 + `call(request, leader) ![]u8` sends any raw JSON request from the
-  RPC vocabulary: `session`, `wait`, `status`, `members`, `snapshot`,
+  RPC vocabulary: `session`, `wait`, `status`, `members`, `anchor`,
   `backup`, `integrity`, `expire-sessions`, and the rest. With
   `leader = true` the request routes to the leader. With `false` the
   first reachable member answers. You own the returned body. Free it
