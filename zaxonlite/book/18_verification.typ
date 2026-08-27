@@ -363,10 +363,10 @@ and is reconstructed through phase one after a crash instead of forcing a
 second full barrier. The table combines the current Zaxonlite mTLS/full row
 with the pinned rqlite v10.2.7 baseline and labels them as separate executions
 on the same host. A development
-`--sync os` run on the same machine reverses the ranking at roughly a
-tenfold lower write latency, but at the price of power-loss
-durability; chapter 14 states when that trade is acceptable, and
-chapter 6 states why a consensus voter must not make it silently.
+`--sync os` run on the same machine cuts the write latency roughly
+tenfold again, but at the price of power-loss durability; chapter 14
+states when that trade is acceptable, and chapter 6 states why a
+consensus voter must not make it silently.
 
 === Failure and recovery under a realistic workload
 
@@ -433,8 +433,8 @@ throughput table without those checks would be noise.
 #callout(title: [Read the exclusions before quoting anything], tone: "warning")[
   Everything above ran on one development host, over loopback, in one
   recorded run per table, with one client in the write benchmark and
-  four in the simulation, against default configurations and an
-  unreleased `zaxon` build. These numbers are observations of that
+  four in the simulation, against default configurations and a
+  development `zaxon` build. These numbers are observations of that
   run. They are not portable claims, not service-latency predictions,
   and not verdicts about languages or consensus algorithms. Real
   networks, concurrent client fleets, and tuned deployments are all
