@@ -254,83 +254,103 @@ this check is provably the image the log describes.
   promised. The node refuses to open rather than vote with amnesia.
 ]
 
-== Snapshots and epoch rollover
+== The segmented journal
 
-The journal cannot grow forever. An epoch holds at most 2,048 slots, and
-the host checkpoints before the bound, reserving four slots so the stop
-sign always fits. A snapshot is not a local maintenance action here. It
-is a *decided* object, agreed through the same log it seals.
+Global slots are `u64` and never reset, so the journal is one lifetime
+structure, not a file per configuration. It lives in `consensus/` as a
+run of immutable sealed segments plus one active segment. A segment is
+named by its first global slot (`{x:0>16}.zxj`), starts with a `ZXS2`
+header binding the database identity and that first slot, and carries
+framed, CRC-checksummed records. When the active segment reaches its
+record capacity (16,384 records), the writer seals it with a `ZXT2`
+trailer — last slot, record count, a sparse slot index, a digest over
+the whole file, and a `max_promised` ballot rollup — publishes a new
+`MANIFEST` generation naming it, syncs the directory, and only then
+opens the next active segment. Nothing is ever renamed, so a crash at
+any point of that rotation resolves by inspection at the next open, and
+files the manifest does not name are swept as garbage.
+
+The `max_promised` rollup is the one subtle field. Promise records
+carry no slot, so once trimming deletes the segments that held them,
+only the rollup — carried forward by every trailer and manifest — keeps
+a restarted acceptor from promising backwards and double-voting.
+
+Chapter 16 gives the exact byte layouts. The v1 one-file-per-epoch
+journal (`paxos-*.log`) is not read; a directory holding one fails
+closed as unsupported.
+
+== State anchors
+
+The journal cannot grow forever, and replaying a lifetime of history at
+startup would not be acceptable either. The durable state anchor solves
+both. Periodically — promptly after the first applied write, then every
+10,000 slots — a data replica checkpoints the SQLite WAL into
+`current.db`, synchronizes the file, and publishes an `APPLIED` record
+binding the applied global slot, the history hash at that slot, the
+page geometry, and the batch-chain cursor. The two files `APPLIED.0`
+and `APPLIED.1` alternate by generation, so one valid record always
+survives a torn write; recovery selects the newest valid one and
+replays only the suffix above it.
+
+The anchor never copies or hashes the whole database. Its cost is the
+dirty pages the checkpoint folds in plus two synchronized small writes,
+whatever the database size. That is the difference from the retired
+epoch rollover, whose full image copy and hash priced every 2,044
+commits at the size of the database.
 
 #book_figure([
-  An epoch ends at a decided stop sign. Everything before the seal is
-  covered by the installed snapshot, and the next epoch starts a fresh
-  journal at slot 1.
-], epoch_seal())
+  One global slot line. The chosen trim G marks history whose journal
+  segments have been physically unlinked; the anchored image covers
+  everything through the durable anchor A; only the suffix above A is
+  replayed at restart.
+], anchor_trim())
 
-Rollover runs in four steps:
+== Certified trimming
 
-+ materialize: the leader runs a truncating checkpoint on its capture
-  connection, while followers are already fully materialized offline;
-+ build `snapshots/tmp-<config>/` with the database copy and a manifest
-  recording the database id, the sealed configuration, the applied
-  slot, the chain value, and the image's SHA-256, then rename the
-  generation into place;
-+ propose `checkpoint(metadata)` with versioned stop metadata --
-  `zx1 <name> <manifest-sha256>` on a registry-less host, `zx2` with
-  the next-registry digest bound in on a registry-backed server -- the
-  stop sign that seals the epoch;
-+ when the stop sign commits, every member verifies its local
-  generation against the decided digest, installs `CURRENT`, then on a
-  registry-backed server writes the `REGISTRY` pointer, bumps
-  `identity`, starts the next epoch's journal, and re-elects. The
-  extended rollover order is fixed: `CURRENT`, then `REGISTRY`, then
-  `identity`.
+Deletion is a consensus decision, not a local judgement. Each data
+replica reports its durable frontier — the anchored slot and its
+history hash — in authenticated state reports. The leader computes the
+conservative candidate `G = min A_i` over every current data replica
+and proposes `Trim(G, H_G)` as an ordinary chosen entry. Once chosen,
+every node adopts the trim: it persists the `TRIM` record, then unlinks
+the sealed segments that lie wholly at or below its own local delete
+floor — never past its own anchor, and never past an active transfer
+lease. Payload garbage collection follows: an object is deleted only
+when no retained journal record references it. Age and ballot changes
+never delete a payload.
 
-Why does a follower's digest match the leader's? Chapter 5 again:
-followers build their generation from the offline image, and
-byte-deterministic apply makes the two images identical, so their
-digests agree. Consensus decides one manifest hash, and every member can
-check itself against it.
+The minimum over *all* data replicas is deliberate. A lagging replica
+freezes the trim rather than being trimmed past; it can always recover
+from its own anchor plus the retained suffix. A permanently failed data
+voter freezes trimming until it is replaced through the decided
+`replace-voter` operation (chapter 7). Witnesses vote but never
+materialize SQLite, so they never constrain the candidate.
 
-Rollover is crash-resumable at every step. The decided stop sign lives
-in the sealed journal, so a restart replays it, and the completion
-re-runs idempotently until it succeeds.
+A single-node database is its own only data replica: each `anchor`
+degenerates the candidate to the fresh anchor, and the node chooses,
+adopts, and reclaims inline.
+
+What answers Phase 1 for deleted slots? The chosen trim record itself.
+A trimmed acceptor's promise carries its trim anchor — "everything
+through G is chosen under H_G" — and an elected leader never proposes
+at or below the greatest anchor a complete quorum reports. Bytes
+disappear; the protocol fact that the prefix is closed does not.
 
 == Garbage collection
 
-After a rollover the node keeps the new epoch's journal, the sealed
-epoch's journal as a fallback generation, the two newest snapshot
-generations, and every payload referenced by a retained journal.
-Everything older is covered by the installed snapshot and deleted. A
-payload is collected only when no retained journal references it. Age
-and ballot changes never delete a payload. On a registry-backed server,
-superseded registry blobs are collected with the same retention
-discipline as old snapshot generations.
-
-== The journal format
-
-Each record is framed so that replay can tell a torn tail from
-corruption:
-
-#field_table(
-  [0 / 4], [`magic`], [`0x315a584a` ("ZXJ1"), little-endian],
-  [4 / 1], [`version`], [format version, 1],
-  [5 / 1], [`kind`], [write tag: promise 0, accept 1, commit 2],
-  [6 / 2], [`reserved`], [zero],
-  [8 / 8], [`sequence`], [strictly increasing from 1 per epoch],
-  [16 / 4], [`payload_len`], [encoded write length],
-  [20 / 4], [`crc32`], [over header-sans-crc plus payload],
-  [24 / n], [`payload`], [canonical little-endian `Write` encoding],
-)
-
-Writes encode ballots (`round:u64, priority:u32, node:u32`), slots, and
-entries. An entry is either a command descriptor or a stop sign carrying
-a configuration id, the members, and the metadata string.
+Trimming leaves three kinds of garbage, each cleaned without risk to
+retained state. Segment files a crashed rotation or trim left behind
+are swept at the next open, because the `MANIFEST` is the authority on
+what is retained. Payload objects are swept by streaming the retained
+journal to rebuild the reachable set — a crash can leak an object,
+never delete a reachable one. On a registry-backed server, superseded
+registry blobs are collected with the same retention discipline.
 
 #teach_back([
-  Walk a colleague through one epoch rollover, from "epoch nearly full"
-  to "next epoch elected", using the words stop sign, manifest,
-  `CURRENT`, and `identity`. Then name the point in the sequence after
-  which a crash can no longer lose the snapshot, and say which ordering
-  rule makes that true.
+  Walk a colleague through one anchor-and-trim cycle, from "the leader
+  collects state reports" to "segments unlinked", using the words
+  durable frontier, chosen trim, `TRIM` record, and delete floor. Then
+  name the point in the sequence after which a crash can no longer
+  resurrect the deleted history, and say why a lagging replica can
+  still recover.
 ])

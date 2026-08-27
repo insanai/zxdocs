@@ -12,9 +12,9 @@
 ])
 
 #checkpoint([storage], [
-  Chapter 6 defined the journal, the content-addressed payload store, and
-  the snapshot generation. This chapter assumes all three. If "payload by
-  digest" does not ring a bell, read chapter 6 first.
+  Chapter 6 defined the segmented journal, the content-addressed payload
+  store, and the durable state anchor. This chapter assumes all three. If
+  "payload by digest" does not ring a bell, read chapter 6 first.
 ])
 
 In chapter 1 you started three voters, killed the leader, and watched a
@@ -112,26 +112,35 @@ least three voters, because the survivors alone must still satisfy the
 sealed configuration's read quorum. Chapter 2 documents the
 `zaxon replace-voter` and `zaxon membership status` commands.
 
-The lifecycle rides the epoch machinery from chapter 6:
+The lifecycle rides ordinary chosen entries on the same global slot line:
 
-+ The old configuration's voters choose a stop sign whose `zx2` metadata
-  binds the checkpoint, the digest of the next registry, and a bounded
-  replacement seed: the operation ID, the old node, the new node, and
-  its endpoint. The next registry is therefore a pure function of the
-  current registry and the chosen stop sign.
++ The old configuration's voters choose a stop sign whose `zx3` metadata
+  binds the digest of the next registry and a bounded replacement seed:
+  the operation ID, the old node, the new node, and its endpoint. The
+  next registry is therefore a pure function of the current registry and
+  the chosen stop sign. No snapshot is taken and slots do not reset.
 + Survivors rebuild the next registry deterministically from the seed,
-  verify its digest against the decided metadata, and activate it
-  through an in-process transport swap: client TCP connections stay
-  open, peer senders and admission rebuild from the registry, and
+  verify its digest against the decided metadata, and complete the
+  handover in place: the same journal, the same slot line, the delivered
+  frontier and memory floor at the stop slot, the trim anchor inherited.
+  Activation is an in-process transport swap: client TCP connections
+  stay open, peer senders and admission rebuild from the registry, and
   writes pause briefly. A crash on either side of the durable
   `REGISTRY` pointer converges by restart.
 + The replacement voter enrolls only after the stop is chosen. It
-  fetches the decided registry blob during snapshot install, verifies it
-  against the quorum-confirmed proof digest, installs it durably, and
-  only then votes.
+  fetches the decided registry blob from a peer, verifies it against the
+  digest recorded in its `JOIN` descriptor at enrollment, installs it
+  durably, and then catches up from the retained journal through
+  bounded range recovery. Only a gap beyond journal retention uses the
+  anchor-pinned state transfer described below. It votes only after its
+  state is installed.
 + The removed voter stays permanently sealed on its final configuration.
   Admission rejects its node ID even with a still-valid certificate, and
   the monotonic node-ID allocation fence retires the ID forever.
+
+While the replacement catches up it reports a zero durable frontier, so
+the conservative trim freezes at the handover: the history the joiner
+needs cannot be reclaimed under it.
 
 Retrying a replacement is idempotent while its record is retained: the
 registry keeps a fixed ring of the 32 newest replacement records, and an
@@ -204,7 +213,7 @@ surviving voter. And a node missing a payload for a committed slot refuses
 to serve rather than invent state.
 
 #callout(title: [Production TCP is mTLS], tone: "warning")[
-  Protocol v8 can authenticate possession of a provider-file PSK with a
+  Protocol v9 can authenticate possession of a provider-file PSK with a
   challenge-response: a fresh nonce, a connection-unique session key, and a
   monotonically sequenced HMAC on every post-handshake frame. A wrong
   proof, a replay, tampering, or a version downgrade closes the stream.
@@ -261,7 +270,7 @@ voters.
   [5], [Leader], [The ACK releases the certificate, and `learner_commit`
     goes out.],
   [6], [Standby], [Checks that the sender is a configured voter and that
-    the epoch matches. Verifies `h` in its store. Journals the entry and
+    the configuration matches. Verifies `h` in its store. Journals the entry and
     applies it in contiguous slot order. Remembers the sender as its
     leader hint.],
 ))
@@ -270,8 +279,8 @@ A learner checks the claimed sender against its registry. It rejects
 certificates from claimed non-voters. Under the PSK transport this is a
 protocol invariant, not a hostile-peer security boundary, because any PSK
 holder can claim a configured voter ID in the hello; under mutual TLS the
-claimed peer ID is additionally bound to the sender's certificate name. It rejects other epochs and
-conflicting duplicates. It applies slots
+claimed peer ID is additionally bound to the sender's certificate name. It rejects other
+configurations and conflicting duplicates. It applies slots
 only contiguously and buffers at most a compile-time-bounded reorder
 window. A reconnect resets the leader's cursor and replays the chosen
 prefix; the replay is idempotent. The certifying voter also serves as the
