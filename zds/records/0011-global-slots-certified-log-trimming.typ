@@ -844,6 +844,15 @@ indefinitely stuck frontier. It avoids a second recovery-quorum protocol.
 
 == Transfer leases
 
+_Reserved in v1._ The chosen-lease lifecycle below is carried by the
+command codecs and the TRIM file, but no v1 path proposes a lease: the
+conservative trim (the minimum durable frontier over every current data
+replica, frozen while any report is stale) already provides the freeze
+Lemma 6 wants, and the sender's pinned private image copy keeps a
+running transfer safe. The lifecycle becomes live machinery only with
+the deferred quorum-trim variant; see the implementation note
+"Conservative trim subsumes transfer leases in v1".
+
 An on-demand state transfer creates a lease before bytes are sent. For voter
 replacement, the decided stop/reconfiguration announcement carries the lease.
 For repair of an existing member, a chosen `TransferLease` entry contains:
@@ -1784,8 +1793,9 @@ boundaries now.
   database hash.
 - A replica within retention uses range recovery; a replica behind trim uses
   a byte-exact pinned state image and suffix replay.
-- Killing the original transfer sender does not strand the receiver while its
-  cluster-wide lease remains active.
+- Killing the original transfer sender does not strand the receiver: in v1
+  the conservative trim freeze retains every slot the receiver still needs,
+  and any surviving data replica pins a fresh image and completes the send.
 - Wire v9 and durable v2/v3 decoders reject every legacy format; no bridge or
   mixed-version path exists.
 - Stable-leader core performance meets the reviewed regression gate, and
@@ -1906,6 +1916,34 @@ they may be dropped: the slot is inside a certified chosen prefix, and
 a wedged accepted-only occupant would block its cell forever. Modeling
 the in-place install as its own TLA+ action remains open spec work.
 
+== Promise ranges bound reported votes, not the interval frame
+
+This record's PromiseV2 shape asked for `accepted_range.lo` to start
+above the responder's trim anchor. As implemented and as modeled, the
+invariant attaches to the votes: `onPrepare` answers the leader's
+requested chunk interval verbatim but reports no vote at or below its
+anchor (the anchor itself travels in the reply, and
+`PromiseRangeStartsAboveAnchor` checks exactly this in the model), and
+the leader's F and K fences make the interval framing inert. The
+interval is transport framing for per-chunk counting under reordering;
+canonicalizing it to the anchor would add a second copy of a fact the
+fences already own. This note amends the wire-shape clause to the
+reported-vote invariant the model verifies.
+
+== The in-place voter transfer path is dormant under conservative trim
+
+Same-configuration transfer preserves the promise and votes above the
+installed anchor, with the rule unit-tested and modeled as
+`InstallVoter`. No end-to-end scenario drives an established voter
+through it, and that is a consequence of v1 policy rather than missing
+test work: the conservative trim is the minimum durable frontier over
+every current data replica and freezes whenever a report goes stale, so
+a data voter that exists can never fall behind physical retention --
+its own frontier holds the trim. The path stays implemented and
+preserving as defense in depth, and becomes reachable only with the
+deferred quorum-trim variant, which is when an end-to-end scenario for
+it becomes constructible.
+
 == Recovery authorities are reconciled at open
 
 Open now cross-checks the durable trim authorities instead of trusting
@@ -1931,19 +1969,24 @@ observable a diverged hash poisons) remains open test work; the
 voter-replacement suite restarts survivors but stops short of the trim
 round.
 
-== Transfer crash windows have no dedicated failpoint matrix
+== Transfer crash coverage is a boundary ladder, not a fuzzed matrix
 
-The fifteen-case crash matrix covers the write, anchor, trim,
-reclamation, and payload-GC ladders. The state-transfer family of
-failpoints named by the verification plan (after the lease choice, the
-pin copy, each chunk, the digest, the install rename, the receiver
-acknowledgment) is not implemented: the transfer path's crash safety
-rests on its verify-then-install shape -- the receiver stages into a
-private file, installs only after the digest matches and a read quorum
-vouches the anchor binding, and the sender's pin is a disposable copy --
-plus the crash coverage the voter-replacement suite applies around the
-handover. A dedicated multi-process transfer crash matrix remains open
-test work.
+The fifteen-case single-node crash matrix covers the write, anchor,
+trim, reclamation, and payload-GC ladders. The transfer path carries
+seven deterministic failpoints (mid-copy and post-copy on the sender's
+pin; a received chunk, the staged image, either side of the install
+rename, the published anchor, and the in-memory core resume on the
+receiver), and the end-to-end scenario below crashes every
+stateless-phase boundary plus the sender. What it deliberately does not
+do: crash during the post-install suffix replay (that is the ordinary
+restart path the storage matrix and cluster suites already cover),
+crash after the core resume as a separate rung (`after_transfer_resume`
+differs from `after_transfer_anchor` by in-memory state only, so one
+join can crash at exactly one of them), or fuzz interleaved
+multi-process schedules. The transfer's crash safety still rests on its
+verify-then-install shape -- staged private file, digest match, quorum-
+vouched anchor binding, disposable sender pin -- and the ladder proves
+each boundary of that shape once.
 
 == The beyond-retention transfer runs end to end under a crash ladder
 
@@ -1954,22 +1997,27 @@ capacity) that shrinks rotation to test scale. The
 `test-transfer-cluster` scenario drives three voters past several
 rotations, certifies a trim, reclaims below it, replaces a voter, and
 forces the replacement through the anchor-pinned transfer: the receiver
-is crashed at each transfer failpoint in sequence (staged image, before
-the install rename, after the rename, after the anchor publish), the
-sender is killed once while pinning its image and another voter
-completes the send, and the final clean start must converge from the
-installed anchor, serve identical rows, accept writes, and survive its
-own restart.
+is crashed at each stateless-phase failpoint in sequence (a received
+chunk, the staged image, before the install rename, after the rename,
+and after the anchor publish), the sender is killed mid-copy while
+pinning its image and another peer completes the send, and the final
+clean start must converge from the installed anchor, match its peers'
+row multiset and application chain hash, accept writes, and survive its
+own restart. The whole join runs on an otherwise idle cluster, so the
+leaderless recovery probes below are themselves under test.
 
-Building the scenario found a liveness gap, not a safety one: a
-stateless joining voter could win the election, and catch-up and
-snapshot escalation both run against the leader, so leadership starved
-its own recovery forever. A joining data voter with nothing applied now
-withholds campaigning (it still votes) until catch-up or an installed
-transfer applies state. A held joiner discovers the leader through
-ordinary traffic (its first accepted vote adopts the leader's ballot);
-in an entirely idle cluster that discovery waits for the next write,
-which the scenario models with a small write trickle.
+Building the scenario found two liveness gaps, neither a safety one.
+First, a stateless joining voter could win the election, and catch-up
+and snapshot escalation both ran against the leader, so leadership
+starved its own recovery forever; a joining data voter with nothing
+applied now withholds campaigning (it still votes) until state applies.
+Second, a held joiner could not learn the leader on an idle cluster --
+heartbeats above its zero promise are ignored until a first accepted
+vote arrives, and an idle cluster sends no accepts -- so recovery
+depended on an application write. The joiner now probes the decided
+registry's peers directly on a rotating cursor, pairing range catch-up
+with a snapshot request; the sender side arbitrates which applies, and
+no application write is required.
 
 == The ten-million-decision run is partially banked
 
