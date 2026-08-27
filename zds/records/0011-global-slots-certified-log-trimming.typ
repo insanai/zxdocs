@@ -1904,6 +1904,21 @@ whenever range recovery still covers the gap, so the untested path is
 also the rarest one. Building the segment-scale scenario is recorded as
 open test work alongside the transfer crash matrix.
 
+== The ten-million-decision run is partially banked
+
+The full ten-million-decision acceptance run is deferred alongside the
+exhaustive model sweep. Evidence banked so far: the core moving-window
+benchmark drives 262,144 decisions across 256 window wraps on one slot
+line with flat batch percentiles; the long-run gate (`test-longrun`)
+completes 20,000 fsync-backed writes with segment rotation, physical
+reclamation, bounded retention, and an anchored restart, and runs
+nightly at 100,000 writes in CI; and a tmpfs-hosted run on a 32-core
+machine crossed 330,000 writes with dozens of rotations and a stable
+configuration before being stopped by decision. Nothing in the design
+distinguishes decision one million from decision ten million -- slots
+are u64 and retention is windowed -- but the full-count run remains
+owed for the acceptance record.
+
 == Statistical benchmark gate deferred
 
 The Hodges-Lehmann shift gate with bootstrap confidence intervals is not
