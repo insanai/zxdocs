@@ -186,7 +186,7 @@ media, the two modes are equivalent, and this section changes nothing.
 
 The safety has a measured price on macOS. Each replicated write pays
 one full flush per voting node at its commit point — the journal barrier,
-which the payload install rides (chapter 6). Protocol v8 queues the payload
+which the payload install rides (chapter 6). Protocol v9 queues the payload
 and phase-two accept before the leader barrier, so follower storage and flush
 overlap it without allowing an accepted reply into the core early. On this
 Apple-silicon host the current 256-byte, three-voter mTLS run records roughly
@@ -707,8 +707,8 @@ If any step fails, stop that node and diagnose. Never delete or rewrite a
 journal to force a member to join.
 
 #callout(title: [Wire-version bridge], tone: "warning")[
-  Wire compatibility is exact-major: protocol version 8 speaks only to
-  version 8. A release that changes the wire version cannot use this rolling
+  Wire compatibility is exact-major: protocol version 9 speaks only to
+  version 9. A release that changes the wire version cannot use this rolling
   procedure. It requires an explicitly dual-version bridge release, and
   there is no automatic downgrade. Downgrading is supported only when the
   older binary declares every installed durable format and wire version

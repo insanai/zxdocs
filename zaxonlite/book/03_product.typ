@@ -39,7 +39,7 @@ documents every command.
 #callout(title: [Security model and current status], tone: "warning")[
   Zaxonlite is a single-application database, not a multi-user SQL server.
   The application authenticates its users and decides what SQL to issue.
-  Production TCP is mutual TLS 1.3 only. Protocol v8 can still layer the
+  Production TCP is mutual TLS 1.3 only. Protocol v9 can still layer the
   optional shared-PSK challenge inside TLS. An explicit PSK-only development
   mode is restricted to numeric loopback, while plaintext TCP exists solely
   behind the failpoint-gated test switch. Mutual TLS

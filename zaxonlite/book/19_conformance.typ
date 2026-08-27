@@ -145,7 +145,7 @@ which.
     open live transaction holds the node handle exclusively.],
   [*Enforced.* `node.zig` `beginLive` returns
     `error.ClusterTransactionUnsupported` on a multi-member node, and
-    while a live transaction is open the one-shot write, snapshot,
+    while a live transaction is open the one-shot write, state-anchor,
     and membership paths refuse with `error.TransactionOpen`. Commit
     captures exactly one WAL transition and acknowledges only after
     the decided slot is applied; rollback publishes nothing.
@@ -209,50 +209,60 @@ which.
 #table(
   columns: (1fr, 1.55fr),
   table.header([*Guarantee*], [*Evidence*]),
-  [Recovery is snapshot plus committed-suffix replay. The
-    materialized image is never accepted as newer evidence than
-    Paxos state.],
-  [*Enforced.* `node.zig` `rebuildMaterializedImage` deletes
-    `current.db`, the WAL, and the SHM, copies the verified snapshot
-    generation, then replays the contiguous committed suffix with
-    chain validation. The image is never an input to recovery.
+  [Recovery is anchored-image plus committed-suffix replay. The
+    volatile tail of the materialized image is never accepted as newer
+    evidence than Paxos state, and startup cost follows the anchor
+    cadence, not the history size.],
+  [*Enforced.* `node.zig` `materializeFromJournal` deletes the WAL and
+    the SHM, selects the newest valid `APPLIED` anchor
+    (`applied_anchor.select`, geometry-checked against the image), and
+    replays the contiguous committed suffix with chain validation.
+    Without a usable anchor it rebuilds from a genesis-retained
+    journal or refuses with `StateUnavailable`.
 
     *Checked.* `integration_test.zig` "journal is authoritative:
     materialized image rebuilds from scratch", "a stale materialized
     image converges to the journal state", "recovery discards a
     corrupt materialized image even with an empty suffix", and
-    "snapshot seals the epoch and recovery uses snapshot plus
-    suffix"; the cluster step "delete a follower image; node rebuilds
-    from snapshot plus suffix".
+    "a state anchor bounds recovery and survives image loss"; the
+    cluster step "delete a follower image; node rebuilds from anchor
+    plus suffix"; the `test-longrun` gate restarts after several
+    segment rotations with history below the anchor physically gone.
 
-    *Clause.* Format §6; plan "Restart sequence".],
+    *Clause.* ZDS 0011, the recovery ladder; plan "Restart
+    sequence".],
 
   [Only a torn final record is truncated. Interior journal corruption
     is fatal, and the node refuses to vote.],
-  [*Enforced.* `journal.zig` `replay` and `parseRecord`: a record
-    that fails validation is recoverable only when
-    `recordTouchesEof`. Any interior magic, version, sequence, or CRC
-    failure is `CorruptJournal`.
+  [*Enforced.* `segment.zig` `Writer.adopt` and `Reader.next`: a
+    record that fails validation in the active segment is recoverable
+    only when `recordTouchesEof`. Any interior magic, version,
+    sequence, or CRC failure — and any sealed-segment digest
+    mismatch — is `CorruptSegment`/`CorruptJournal`.
 
-    *Checked.* The `journal.zig` tests "journal truncates a torn tail
-    but keeps the durable prefix" and "journal rejects interior
-    corruption"; `integration_test.zig` "torn journal tail is
-    truncated and the node reopens"; `fuzz.zig` `fuzzJournal` with
-    seeded file damage.
+    *Checked.* The `journal.zig` test "a torn active tail is repaired
+    and appending resumes"; the `segment.zig` test "a flipped byte
+    fails the sealed digest closed"; `integration_test.zig` "torn
+    journal tail is truncated and the node reopens"; `fuzz.zig`
+    `fuzzJournal` with seeded file damage.
 
-    *Clause.* Format §5, which truncates only an incomplete final
-    record.],
+    *Clause.* Format §5 as amended by ZDS 0011, which truncates only
+    an incomplete final record.],
 
   [No crash point yields a false success. Once the accept or commit
     prefix is synced, recovery completes the value.],
   [*Enforced.* `failpoint.zig` hooks each pipeline boundary, from
-    `before_payload_sync` through `before_client_reply`, marking the
-    contract the write path must honor.
+    `before_payload_sync` through the anchor, trim, reclamation, and
+    payload-GC barriers, marking the contract the write and
+    maintenance paths must honor.
 
-    *Checked.* The `crash_test.zig` five-failpoint matrix with
-    per-case recovered-count bounds; `fuzz.zig` `fuzzNode` with
-    random SQL, crashes, and rebuild convergence. Not every chapter-6
-    crash row is automated in both roles yet; see the gaps below.
+    *Checked.* The `crash_test.zig` fifteen-case matrix — five write
+    failpoints plus ten anchor-ladder failpoints (database sync,
+    `APPLIED` publish, `TRIM` write, segment unlink, payload-GC
+    publish, each before and after) — with per-case recovered-count
+    bounds; `fuzz.zig` `fuzzNode` with random SQL, crashes, and
+    rebuild convergence. Not every chapter-6 crash row is automated
+    in both roles yet; see the gaps below.
 
     *Clause.* Plan "Successful-write durability theorem"; the
     chapter 6 crash matrix.],
@@ -308,7 +318,7 @@ which.
   [No silent wire-version downgrade. Wrong protocol versions and replayed or
     tampered optional-PSK frames are refused. Production TCP uses mTLS; the
     explicit PSK-only development mode is numeric-loopback-only.],
-  [*Enforced.* `wire.zig` `Hello.decode` accepts exactly version 8
+  [*Enforced.* `wire.zig` `Hello.decode` accepts exactly version 9
     and raises `UnsupportedProtocolVersion` otherwise; `server.zig`
     refuses TCP storage listeners without TLS unless `--dev-psk` is paired
     with an owner-only secret and all addresses are numeric loopback;
@@ -404,14 +414,14 @@ which.
 
   [On a registry-backed server the decided registry, not the startup
     flags, is the membership authority. Stale flags cannot override it or
-    block restart, and every crash window in the rollover
+    block restart, and every crash window in the handover
     write order recovers to a consistent registry.],
   [*Enforced.* `registry.zig` defines the canonical `ZXRG` encoding and
     its SHA-256 digest; the on-disk blob adds a digest trailer and fails
     closed on corruption. `node.zig` derives restart membership from
     the decided registry and ignores stale bootstrap peer flags.
-    The rollover write order is fixed: snapshot proof, `CURRENT`,
-    `REGISTRY`, identity.
+    The handover write order is fixed: registry blob, `REGISTRY`,
+    identity.
 
     *Checked.* Registry unit tests pin the canonical encoding as stable
     across input order and reject corruption. Integration crash-window
@@ -444,27 +454,35 @@ which.
 
     *Clause.* ZDS 0008.],
 
-  [A replacement activates only on sealed-set confirmation, and a
-    retired voter never returns. Quorum confirmation counts distinct
-    voters of the sealed set only; the proposed next voter never counts
-    toward its own admission. The allocation fence retires the old node
-    ID forever, and the returning process stays sealed on its final
-    configuration and is refused admission even with a valid
-    certificate.],
-  [*Enforced.* `checkpoint_proof.zig` binds the `ZXP2` proof to equal
-    sealed and next voter counts and the next-registry digest;
-    confirmation counting in `server.zig` admits sealed-set voters only.
+  [A replacement joins the same global slot line and votes only after
+    its state is installed, and a retired voter never returns. The
+    joining voter verifies the fetched registry against its enrollment
+    join descriptor; a state-transfer receiver counts vouches from a
+    read quorum of distinct current voters before installing an image.
+    The allocation fence retires the old node ID forever, and the
+    returning process stays sealed on its final configuration and is
+    refused admission even with a valid certificate.],
+  [*Enforced.* The stop sign's `zx3` metadata binds the next-registry
+    digest and the replacement seed; `node.zig`
+    `installFetchedRegistry` refuses a blob that fails the join
+    descriptor's digest; `server.zig` `confirmHistoryQuorum` counts
+    distinct current voters vouching `(anchor_slot, history_hash)`
+    before `installTransferredState` verifies the image SHA-256.
     `registry.zig` keeps `highest_allocated_node_id` monotonic, and
     admission rejects a sealed final-configuration member.
 
-    *Checked.* The sealed-set quorum counting unit test; registry
+    *Checked.* The history-probe quorum counting unit test; registry
     fence and ring monotonicity tests; the replacement scenario's
     sealed-voter restart, enrollment with registry fetch and verified
-    install, a crash inside the transport swap converging by restart,
-    a client connection held open across the swap, and a quorum that
-    survives a survivor stop with the replacement voting.
+    install (surviving a crash mid-install), a crash inside the
+    transport swap converging by restart, a client connection held
+    open across the swap, and a quorum that survives a survivor stop
+    with the replacement voting. Restarting a survivor after the
+    handover also proves the folded lifetime-journal replay accepts
+    the successor configuration's ballots below the sealed line's
+    promises.
 
-    *Clause.* ZDS 0008.],
+    *Clause.* ZDS 0008 as amended by ZDS 0011.],
 
   [The typed-v1 client RPC preserves SQLite's five storage classes
     end to end, and a server without the typed contract is refused,
@@ -521,15 +539,18 @@ stated so that this chapter cannot be read as a completeness claim:
   decision table and contract check have unit tests, and a build test asserts
   `SQLITE_OMIT_LOAD_EXTENSION`. It remains an invariant guard for a trusted
   application, not a multi-tenant SQL sandbox, and no fuzzing targets it yet.
-- Transferred snapshots carry the canonical stop sign inside the `ZXP2`
-  proof, and the receiver requires matching proof-digest reports from a
-  read quorum of the sealed voter set before validating and activating the
-  image. Membership-changing snapshot transfer is supported through that
-  proof plus the decided registry: a one-for-one voter replacement is
-  admitted across a sealed epoch with sealed-set confirmation. The scope
-  stays narrow: operator-initiated, one voter at a time, at least three
-  voters, registry-backed servers only. Embedded clusters keep fixed
-  membership, and nothing replaces a voter automatically.
+- An anchor-pinned state transfer trusts a quorum, not a sender: the
+  receiver requires matching history-probe vouches for
+  `(anchor_slot, history_hash)` from a read quorum of the current
+  voters before staging an image, and verifies the manifest's SHA-256
+  before installing it. A joining replacement additionally verifies
+  the fetched decided registry against its enrollment join
+  descriptor. The scope stays narrow: operator-initiated, one voter
+  at a time, at least three voters, registry-backed servers only.
+  Embedded clusters keep fixed membership, and nothing replaces a
+  voter automatically. No automated oracle yet drives a transfer
+  large enough to cross the 4 GiB default bound or exercises a
+  mid-transfer sender death end to end.
 - Connection admission is globally and per-peer capped, handshakes and idle
   sockets have deadlines, transfers are bounded at 4 GiB, and remote queries
   have SQL-text, row, result-byte, and SQLite VM-step budgets. Several aggregate
@@ -544,12 +565,14 @@ stated so that this chapter cannot be read as a completeness claim:
   but no current suite issues it as a differential oracle against the
   fence path. Fence evidence today is the cluster's linearizable
   counts plus the safety argument in chapter 6.
-- The core Paxos library is model-checked in `specs/Paxos.tla`, and a
+- The core Paxos library is model-checked in `specs/Paxos.tla`; a
   bounded host-level model of the voter replacement,
-  `specs/VoterReplacement.tla`, sits beside it. The rest of the
-  Zaxonlite layering has no machine-checked specification. The
-  journal, payload store, capture and apply, and session table rest
-  on the plan's proof section plus the oracles above.
+  `specs/VoterReplacement.tla`, and the ZDS 0011 model of the
+  slot-tagged window, trimming, and anchors, `specs/GlobalTrim.tla`,
+  sit beside it. The rest of the Zaxonlite layering has no
+  machine-checked specification. The payload store, capture and
+  apply, and session table rest on the plan's proof section plus the
+  oracles above.
 - The startup configuration refusals for the nine-voter cap, zero
   campaigners, and duplicate node IDs are enforced but untested by
   automation.

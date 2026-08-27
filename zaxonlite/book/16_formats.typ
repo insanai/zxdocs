@@ -522,6 +522,6 @@ second is what keeps a mixed cluster impossible.
 #teach_back([
   Explain to a colleague why the feature version lives inside the
   replicated image rather than in each node's configuration file, and
-  what a configuration-file version could get wrong during a snapshot
+  what a configuration-file version could get wrong during a state
   transfer to a freshly replaced voter.
 ])
