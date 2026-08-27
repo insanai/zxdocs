@@ -8,7 +8,8 @@
   node's data directory and say which ones are authoritative, state the
   five write-ordering rules and the invariant each protects, walk the
   recovery sequence in order and predict its behavior at any crash
-  point, and explain how a snapshot seals an epoch.
+  point, and explain how state anchors and certified trimming keep the
+  journal bounded.
 ])
 
 == The file set
@@ -19,12 +20,13 @@ One data directory holds everything a node knows:
 data/
   LOCK                     exclusive process lock (flock)
   identity                 node id, database id, current configuration
-  paxos-<config16hex>.log  framed, checksummed protocol journal (per epoch)
+  consensus/               the lifetime segmented consensus journal
+    MANIFEST               the authoritative list of retained segments
+    <firstslot16hex>.zxj   immutable sealed segments + one active segment
+    APPLIED.0, APPLIED.1   alternating durable state anchors
+    TRIM                   adopted trim anchor and transfer leases
   payloads/aa/<62hex>      immutable frame payloads, named by SHA-256
-  snapshots/<config>/      db image + manifest per sealed epoch
-  snapshots/tmp-*          in-progress generations (crash debris, GC'd)
-  CURRENT                  installed snapshot pointer
-  current.db               materialized SQLite image (rebuildable)
+  current.db               materialized SQLite image
   registries/<config16hex> canonical decided registry blobs (TCP serve)
   REGISTRY                 16-hex pointer to the active registry blob
   PENDING-OP               the one in-flight replacement request
@@ -32,12 +34,17 @@ data/
   .ZX-DELETED              transient delete tombstone (crash debris)
 ```
 
-Hold onto one rule: the journal, the payloads, and the snapshots are the
-database. `current.db` is a cache of applying them. The `-wal` and
-`-shm` files are working artifacts of the live connection, and every
-open deletes them before rebuilding. This is why the prediction exercise
-in chapter 1 was safe. Deleting `current.db` on a stopped node deletes a
-cache, and recovery rebuilds it from the authoritative files.
+Hold onto one rule: the journal, the payloads, and the anchored image
+are the database. Above the durable anchor, `current.db` is a cache of
+applying the journal; below the anchor, it is the authoritative record
+of history whose journal segments have been trimmed away. The `-wal`
+and `-shm` files are working artifacts of the live connection, and
+every open deletes them before replaying. This is why the prediction
+exercise in chapter 1 was safe: on a database whose journal is still
+retained from slot one, deleting `current.db` on a stopped node deletes
+a cache, and recovery rebuilds it. Once trimming has removed history,
+the image plus its anchor is the local base, and losing it means a
+state transfer from a peer (or, on a single node, your backups).
 
 The last four entries exist only on a network-hosted `zaxon serve` node,
 which persists its membership as a decided registry (chapter 7). Each
@@ -47,7 +54,7 @@ one; both are authoritative, the same way the journal is. `PENDING-OP`
 holds the one in-flight replacement request, and `JOIN` is the one-shot
 join descriptor `zaxon enroll --data <dir>` writes on an enrolling
 replacement, consumed on first start. All four use the same atomic
-write-sync-rename discipline as `CURRENT`. Deleting `PENDING-OP` or
+write-sync-rename discipline as the journal `MANIFEST`. Deleting `PENDING-OP` or
 `JOIN` renames it to the `.ZX-DELETED` tombstone first, so the removal
 itself can be flushed on every platform; a leftover tombstone is
 harmless crash debris and is cleaned up on the next durable delete. The blob directory is named
@@ -80,15 +87,15 @@ state them as pairs.
 + *Name with the bytes.* Every authoritative create, link, or rename is
   followed by a sync that persists the new name. The invariant: an
   authoritative file survives a crash together with its directory
-  entry. Without this rule, journal names, payload objects, `identity`,
-  `CURRENT`, and snapshot generations could sync their contents and
-  still vanish from the directory. Which handle carries that sync is a
+  entry. Without this rule, journal segments, payload objects,
+  `identity`, the `MANIFEST`, and the anchor records could sync their
+  contents and still vanish from the directory. Which handle carries that sync is a
   platform question, answered later in this chapter.
 + *Commit before apply.* A batch is applied only after its slot
   commits, and batches are applied contiguously in slot order. The
   invariant: the materialized image only ever reflects a decided
-  prefix. Combined with chapter 5's deterministic apply, any snapshot
-  plus any committed suffix rebuilds the same image.
+  prefix. Combined with chapter 5's deterministic apply, any anchored
+  image plus any committed suffix rebuilds the same image.
 + *Acknowledge after session update.* The session row is updated inside
   the captured transaction, and the client is acknowledged only after
   that transaction is decided and applied. The invariant: exactly-once
@@ -131,8 +138,9 @@ the single full barrier that lands both together. That journal barrier
 precedes every vote acknowledgement, recovered value, and client
 acknowledgement (the sync-before-durable-claim rule above), so every counted vote still implies
 durable payload bytes at its consumer. Rarer transitions that create
-their own commit points — snapshot generations, epoch installs, the
-`CURRENT` pointer, backups — keep their own full barriers.
+their own commit points — segment seals, manifest generations, the
+`APPLIED` anchors, the `TRIM` record, backups — keep their own full
+barriers.
 
 The steady-state cluster path overlaps those per-node barriers. The sender
 queues an immutable payload immediately before its phase-two accept. TCP order
