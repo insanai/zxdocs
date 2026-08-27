@@ -2019,20 +2019,21 @@ registry's peers directly on a rotating cursor, pairing range catch-up
 with a snapshot request; the sender side arbitrates which applies, and
 no application write is required.
 
-== The ten-million-decision run is partially banked
+== The ten-million-decision run is banked
 
-The full ten-million-decision acceptance run is deferred alongside the
-exhaustive model sweep. Evidence banked so far: the core moving-window
-benchmark drives 262,144 decisions across 256 window wraps on one slot
-line with flat batch percentiles; the long-run gate (`test-longrun`)
-completes 20,000 fsync-backed writes with segment rotation, physical
-reclamation, bounded retention, and an anchored restart, and runs
-nightly at 100,000 writes in CI; and a tmpfs-hosted run on a 32-core
-machine crossed 330,000 writes with dozens of rotations and a stable
-configuration before being stopped by decision. Nothing in the design
-distinguishes decision one million from decision ten million -- slots
-are u64 and retention is windowed -- but the full-count run remains
-owed for the acceptance record.
+The full acceptance run completed on 27 August 2026: the long-run gate
+(`test-longrun`) drove 10,000,000 fsync-backed writes on one database
+in one unchanged configuration on a 32-core AMD Ryzen 9 5950X
+(tmpfs-hosted data directory), finishing in 22,426 seconds with exit 0.
+The gate's own verdict covers the criteria: hundreds of segment
+rotations with physical reclamation below the certified chosen trim,
+retention bounded to the suffix plus the active segment throughout,
+configuration id 1 from the first write to the last, and an anchored
+restart that recovered exactly ten million rows with the correct
+checksum, a clean integrity report, and a fresh write accepted. The
+supporting evidence remains alongside it: the core moving-window
+benchmark's 262,144 decisions across 256 window wraps with flat batch
+percentiles, and the nightly 100,000-write CI gate.
 
 == Statistical benchmark gate deferred
 
