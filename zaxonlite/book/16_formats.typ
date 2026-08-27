@@ -11,8 +11,8 @@
 
 #objectives([
   By the end of this chapter you should be able to decode a payload header
-  from a hex dump, read a snapshot manifest and an identity file, decode a
-  decided registry blob and its checkpoint proof, name every wire frame
+  from a hex dump, read a journal segment, manifest, state anchor, and
+  identity file, decode a decided registry blob, name every wire frame
   kind and what its body carries, and state the exact size and layout of
   one replicated command.
 ])
@@ -22,6 +22,13 @@ every future version of Zaxonlite must still read it. This chapter states
 each contract precisely enough to check a hex dump against it. Two
 conventions hold everywhere. Integers are little-endian unless a field says
 otherwise. Every hash is SHA-256.
+
+One caveat bounds the contract. The ZDS 0011 release was a clean format
+cut with no bridge: journal format 2, wire protocol 9, and the durable
+state anchor replaced their predecessors outright. Legacy artifacts —
+a `paxos-*.log` journal, a `CURRENT` pointer, a `ZXP2` checkpoint
+proof — are not read; a node opening a directory that holds one fails
+closed as unsupported, and wire version 9 speaks only to version 9.
 
 == Payload ("ZXPL")
 
