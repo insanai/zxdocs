@@ -1966,7 +1966,10 @@ stateless joining voter could win the election, and catch-up and
 snapshot escalation both run against the leader, so leadership starved
 its own recovery forever. A joining data voter with nothing applied now
 withholds campaigning (it still votes) until catch-up or an installed
-transfer applies state.
+transfer applies state. A held joiner discovers the leader through
+ordinary traffic (its first accepted vote adopts the leader's ballot);
+in an entirely idle cluster that discovery waits for the next write,
+which the scenario models with a small write trickle.
 
 == The ten-million-decision run is partially banked
 
