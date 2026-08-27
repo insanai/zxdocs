@@ -206,11 +206,16 @@ implementation quality.
   [Flexible quorum sizes], [Yes], [Validated by `Membership.init`.],
   [Batch proposal], [Yes], [Bounded caller input and effect storage.],
   [Log inspection], [Yes], [Not an application linearizable-read protocol.],
-  [Same-epoch catch-up], [Yes], [`learn` and `commit` messages.],
-  [Reconfiguration boundary], [`ReplicatedLog`], [Decides a stop sign; host
-    transfers state and starts processes.],
-  [Snapshot files and compaction], [No], [`checkpoint` orders only metadata and
-    the next configuration ID.],
+  [Chunk-bounded catch-up], [Yes], [`learn` and `commit` messages; history
+    below the memory floor is served by the host via `serve_range`.],
+  [Global slots and window reuse], [Yes], [The host licenses cell reuse with
+    `advanceMemoryFloor`; accepted-only cells are never evicted.],
+  [Trim anchors], [Yes], [`installChosenTrim` adopts a chosen trim; deciding
+    and encoding trim records is host work.],
+  [Reconfiguration boundary], [`ReplicatedLog`], [Decides a stop sign; the
+    next configuration continues the same slot line via `initFromStop`.],
+  [Journal segments, state images, compaction], [No], [The core never deletes
+    history; the host owns journals, anchors, and state transfer.],
   [Storage, codec, transport, auth], [No], [Required from the host.],
   [Client sessions], [No], [Required for retry semantics.],
 )
@@ -229,13 +234,14 @@ implementation quality.
   [Disk full or sync failure], [Node stops without publishing a durable claim
     or client success from the failed batch. A classified request may already
     have asked a peer to persist; recovery remains safe from verified records.],
-  [Corrupt snapshot], [Hash/version rejection; no epoch activation; recovery
-    from another verified source.],
+  [Corrupt state image], [Hash/version rejection; no `beginRecovery` at its
+    anchor; recovery from another verified source.],
 )
 
 Track ballot changes, role, current leader hint, decided and applied prefixes,
-journal sync latency, queue depth, retransmissions, catch-up distance, epoch ID,
-and client retry counts. `currentLeader()` is a hint for routing and metrics,
+the memory floor and trim anchor, journal sync latency, queue depth,
+retransmissions, catch-up distance, configuration ID, and client retry
+counts. `currentLeader()` is a hint for routing and metrics,
 not a lease certificate.
 
 #teach_back([

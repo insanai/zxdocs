@@ -85,14 +85,14 @@
   edge((1, 1), (0, 1), "-|>"),
 )
 
-// Restart never trusts the materialized database file.
+// Restart never trusts the volatile tail of the materialized image.
 #let recovery_flow() = diagram(
   spacing: (14mm, 10mm),
   edge-stroke: 0.8pt + gray,
   node((0, 0), [Restart], ..plain_style),
-  node((1, 0), [Discard `current.db`, #linebreak() WAL, and SHM], ..voter_style),
-  node((2, 0), [Copy verified #linebreak() snapshot image], ..voter_style),
-  node((2, 1), [Replay committed #linebreak() journal suffix], ..voter_style),
+  node((1, 0), [Discard the SQLite #linebreak() WAL and SHM], ..voter_style),
+  node((2, 0), [Select newest valid #linebreak() `APPLIED` anchor], ..voter_style),
+  node((2, 1), [Replay committed #linebreak() suffix above it], ..voter_style),
   node((1, 1), [Verify chain #linebreak() and payloads], ..voter_style),
   node((0, 1), [Serve], ..learner_style),
   edge((0, 0), (1, 0), "-|>"),
@@ -117,23 +117,34 @@
   edge((1, 1), (0, 1), "-|>"),
 )
 
-// The epoch journal timeline around a stop sign.
-#let epoch_seal() = cetz.canvas(length: 1cm, {
+// The global slot line around the chosen trim and the durable anchor.
+#let anchor_trim() = cetz.canvas(length: 1cm, {
   import cetz.draw: *
-  for index in range(0, 4) {
+  // Trimmed prefix: physically deleted, still logically chosen.
+  for index in range(0, 3) {
     let x = index * 1.3
-    rect((x, 0), (x + 1.2, 0.8), fill: green_light, stroke: green)
-    content((x + 0.6, 0.4), text(size: 8pt)[slot #(index + 1)])
+    rect((x, 0), (x + 1.2, 0.8), stroke: (paint: gray, dash: "dashed"))
+    content((x + 0.6, 0.4), text(size: 8pt, fill: gray)[#(9001 + index)])
   }
-  rect((5.2, 0), (6.4, 0.8), fill: amber_light, stroke: amber)
-  content((5.8, 0.4), text(size: 8pt)[stop])
-  rect((7.0, 0), (8.2, 0.8), fill: blue_light, stroke: blue)
-  content((7.6, 0.4), text(size: 8pt)[slot 1])
-  rect((8.3, 0), (9.5, 0.8), fill: blue_light, stroke: blue)
-  content((8.9, 0.4), text(size: 8pt)[slot 2])
-  content((2.6, -0.5), text(size: 8pt, fill: green)[epoch N: decided prefix])
-  content((5.8, -0.5), text(size: 8pt, fill: amber)[seal])
-  content((8.25, -0.5), text(size: 8pt, fill: blue)[epoch N+1: new journal])
+  // Retained chosen slots covered by the anchored image.
+  for index in range(0, 2) {
+    let x = 4.2 + index * 1.3
+    rect((x, 0), (x + 1.2, 0.8), fill: green_light, stroke: green)
+    content((x + 0.6, 0.4), text(size: 8pt)[#(9004 + index)])
+  }
+  // The suffix above the anchor, replayed at restart.
+  for index in range(0, 2) {
+    let x = 7.0 + index * 1.3
+    rect((x, 0), (x + 1.2, 0.8), fill: blue_light, stroke: blue)
+    content((x + 0.6, 0.4), text(size: 8pt)[#(9006 + index)])
+  }
+  line((4.0, -0.15), (4.0, 0.95), stroke: 0.8pt + amber)
+  content((4.0, 1.2), text(size: 8pt, fill: amber)[trim G = 9003])
+  line((6.8, -0.15), (6.8, 0.95), stroke: 0.8pt + amber)
+  content((6.8, 1.2), text(size: 8pt, fill: amber)[anchor A = 9005])
+  content((1.95, -0.5), text(size: 8pt, fill: gray)[segments unlinked])
+  content((5.4, -0.5), text(size: 8pt, fill: green)[in the anchored image])
+  content((8.3, -0.5), text(size: 8pt, fill: blue)[replayed at restart])
 })
 
 // ----------------------------------------------------------------------
