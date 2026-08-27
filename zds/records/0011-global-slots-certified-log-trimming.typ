@@ -6,7 +6,7 @@
 #let zds-labels = ("consensus", "paxos", "zaxonlite", "storage", "verification",)
 #let zds-authors = ("paxos-zig project",)
 #let zds-category = "Engineering Discussion"
-#let zds-status = "Implemented for paxos-zig 0.3.0 and zaxonlite 0.4.0"
+#let zds-status = "Implemented for paxos-zig 0.6.0 and zaxonlite 0.6.0"
 #let zds-last-updated = "2026-08-27"
 
 #import "../../shared/zds.typ": zds-document

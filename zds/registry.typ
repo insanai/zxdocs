@@ -156,7 +156,7 @@
     state: "committed",
     area: "consensus",
     category: "Engineering Discussion",
-    status: "Implemented for paxos-zig 0.3.0 and zaxonlite 0.4.0",
+    status: "Implemented for paxos-zig 0.6.0 and zaxonlite 0.6.0",
     created: "2026-08-26",
     updated: "2026-08-27",
     summary: "Remove the 2,044-commit rollover by separating Paxos progress, log retention, and SQLite state transfer",
