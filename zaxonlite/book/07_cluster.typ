@@ -292,7 +292,7 @@ heartbeat every 20 ticks, which is 500 ms at the default tick, carrying its
 current decided slot. A local `any` read may include `freshness_ms`. The
 learner rejects the read if leader contact is older than that bound, or if
 the heartbeat says the learner is behind. Without a freshness bound, `any`
-explicitly permits an arbitrarily stale local snapshot. Chapter 8 places
+explicitly permits an arbitrarily stale local view. Chapter 8 places
 `any` in the full read-level contract.
 
 == Commit, apply, and the follower image
