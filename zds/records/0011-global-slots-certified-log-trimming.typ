@@ -2035,15 +2035,20 @@ supporting evidence remains alongside it: the core moving-window
 benchmark's 262,144 decisions across 256 window wraps with flat batch
 percentiles, and the nightly 100,000-write CI gate.
 
-== Statistical benchmark gate deferred
+== Statistical benchmark gate
 
-The Hodges-Lehmann shift gate with bootstrap confidence intervals is not
-implemented. The moving-window benchmark family (`u64-3n-moving`: 262,144
-values, 256 window wraps on one slot line) records batch-level
-percentiles into the results protocol; the measured p99 sits within 4% of
-p50 and the maximum within 2.5x, with no wrap-correlated spikes, which is
-the property the periodicity check was designed to catch. The gate tool
-remains future work under the existing recorded-results protocol.
+`zig build bench-gate` compares two recorded result files with a
+Hodges-Lehmann shift estimate and a deterministic bootstrap 95%
+confidence interval (the plain percentile bootstrap this record's
+verification plan specified; BCa is deliberately not required), failing
+at +3% of the baseline median for in-memory workloads and +5% for
+durable ones. The gate enforces only pairs where both runs carry the
+additive raw `samples_ns_per_value` field the gated workloads now emit
+(at most 64 evenly strided time-ordered measurements); summary-quantile
+pairs are report-only, because a four-point quantile bootstrap is not a
+sample. Environment metadata mismatches between the two files warn
+prominently without failing. Periodicity checks at the window-wrap and
+anchor-cadence lags run report-only over a recorded latency series.
 
 = Amendments to Prior Records
 
