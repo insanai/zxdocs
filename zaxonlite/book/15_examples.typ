@@ -55,8 +55,8 @@ pub fn main(init: std.process.Init) !void {
     std.debug.assert(!first.replayed and retry.replayed);
     std.debug.assert(first.changes == retry.changes);
 
-    // Step 5: snapshot. Seal the epoch, start the next one.
-    try node.snapshot();
+    // Step 5: anchor. Make recovery start at today's state.
+    try node.createStateAnchor();
 }
 ```
 ]
@@ -64,9 +64,9 @@ pub fn main(init: std.process.Init) !void {
 Let us name what each step guarantees, in order.
 
 + *Open.* `Node.open` acquires the directory lock, and a second open fails
-  with `error.NodeLocked`. It verifies identity and the `CURRENT` snapshot
-  pointer, truncates a torn journal tail, discards `current.db` with its WAL
-  and SHM, and rebuilds the image from the verified snapshot plus the
+  with `error.NodeLocked`. It verifies identity and the journal manifest,
+  truncates a torn journal tail, discards the SQLite WAL and SHM, and
+  materializes the image from the newest valid state anchor plus the
   committed journal suffix. Nothing the previous process acknowledged can be
   missing. Nothing it never decided can appear.
 + *Write.* When `exec` returns, the transaction's descriptor is committed,
@@ -84,16 +84,20 @@ Let us name what each step guarantees, in order.
   fails with `error.SequenceGap`, an unknown session with
   `error.UnknownSession`, and a sequence older than the last with
   `error.ResultExpired`. None of those failures has side effects.
-+ *Snapshot.* `snapshot` materializes a verified generation, installs
-  `CURRENT`, advances the configuration ID, and starts an empty journal for
-  the new epoch. Recovery afterward is the snapshot base plus the epoch
-  suffix. Old epochs and unreferenced payloads become garbage.
++ *Anchor.* `createStateAnchor` checkpoints the WAL, synchronizes the
+  image, and publishes the durable anchor. On this one-member node it
+  also chooses the degenerate trim and unlinks the journal below the
+  anchor. Recovery afterward is the anchored image plus the suffix.
+  Trimmed segments and unreferenced payloads become garbage.
 
 #checkpoint("the journal is the database")[
   The integration suite deletes `current.db` outright after step 2's writes
   and reopens the node: the rows come back and `integrityCheck()` passes.
-  Try the same against your program's directory. The materialized image is a
-  projection; the fsynced journal and payload store are the authority.
+  The materialized image is a projection there; the fsynced journal and
+  payload store are the authority. Note the boundary: that drill works
+  while the journal is retained from slot one. After step 5's anchor
+  trims the journal, the anchored image itself is the authoritative
+  base, and deleting it on a single node means restoring from backup.
 ]
 
 == Middle example: a failure-drill lab

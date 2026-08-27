@@ -217,8 +217,8 @@ Know exactly what that buys—and what it does not.
 - Not provided: database-user authorization. This is intentional: the
   embedding or socket-owning application is the single database principal and
   applies end-user policy before calling Zaxonlite.
-- Not protected: confidentiality. SQL text, results, pages, snapshots and
-  backups travel in cleartext.
+- Not protected: confidentiality. SQL text, results, pages, state
+  transfers and backups travel in cleartext.
 
 An encrypted tunnel can hide bytes from the network, but it does not bind the
 PSK holder to a configured node identity. Production startup therefore refuses
@@ -418,12 +418,12 @@ operator-initiated, never automatic.
 ]
 
 #callout(title: [Plaintext at rest], tone: "warning")[
-  The current database, captured payloads, journals, snapshots, and backups are
+  The current database, captured payloads, journals, anchors, and backups are
   plaintext. Zaxonlite reads the WAL and applies page images through direct I/O
   outside SQLite's VFS, so SQLCipher or an encrypted VFS is not presently a
   drop-in option. Use platform full-disk or filesystem encryption when powered-
   off media theft is in scope. An encrypted edge profile is future work and
-  needs its own direct-I/O, recovery, snapshot, backup, key, and rekey tests.
+  needs its own direct-I/O, recovery, anchor, backup, key, and rekey tests.
 ]
 
 == Local service over a Unix-domain socket
@@ -445,9 +445,11 @@ accepted: `--connect unix:<path>`, the `connect` configuration field, or
 == Monitoring
 
 `status --json` is the machine surface. It reports `node_type`, the Paxos
-`role`, the current leader, `decided_slot` and `applied_slot`, the journal
-record count, the epoch capacity, the chain hash, and the installed snapshot
-generation. A served node also reports its ballot. In client mode,
+`role`, the current leader, `decided_slot`, `applied_slot`, and
+`durable_state_slot`, the memory floor, `chosen_trim_slot` and
+`retained_first_slot`, the journal record, segment, and byte counts,
+and the chain hash. A served node also reports its ballot. Slot fields
+are unsigned 64-bit integers; parse them as such, not as doubles. In client mode,
 `members --json` returns the runtime registry with one entry per node: id,
 address, role, the capability flags (`votes`, `campaigns`, `stores_log`,
 `serves_reads`, `serves_writes`, `promotion_eligible`), plus `self` and
@@ -466,8 +468,11 @@ Watch four signals.
 + The `chain` value must be equal across members at the same applied slot,
   because equality means identical applied history; a mismatch is an
   emergency, not a curiosity.
-+ The journal record count against the epoch capacity shows how full the
-  current epoch is, which tells you when a `snapshot` is due.
++ A `chosen_trim_slot` that stops advancing while `journal_bytes` and
+  the segment count grow means some data replica has stopped publishing
+  durable anchors: the conservative trim is frozen at the minimum
+  frontier. Find the lagging or failed replica and repair or replace
+  it before the disk fills.
 
 == Replacing a data voter
 
@@ -538,10 +543,12 @@ ID it has ever seen, so a replacement never reuses an old one.
   Besides the certificate install, `--data` writes the one-shot `JOIN`
   descriptor binding the database ID, the configuration, and the registry
   digest the new node must see.
-+ Start `zaxon serve` on the new host with the decided peers. During its
-  snapshot install the node fetches the registry blob
-  from a member, verifies it against the bound digest, and installs it
-  durably. It votes only after that installation is durable.
++ Start `zaxon serve` on the new host with the decided peers. The node
+  fetches the registry blob from a member, verifies it against the
+  bound digest, installs it durably, and then catches up: through the
+  retained journal when it covers the gap, or through an anchor-pinned
+  state transfer when it does not. It votes only after that
+  installation is durable.
 + Watch `zaxon membership status` until the phase reaches `complete`.
   Update the survivor configuration files for operator clarity. Recovery
   does not depend on that update because the durable registry is authoritative.
@@ -554,12 +561,15 @@ Paxos has decided it, a brief `activating` during the in-process swap,
 `active-degraded` while the new configuration is active but the
 replacement is not yet an active voter, and `complete` when it votes. A
 replaced voter reports `retired`. `installation_state` tracks the new
-node's snapshot transfer: `not-started`, `transferring`, `verifying`,
+node's state transfer: `not-started`, `transferring`, `verifying`,
 `installed`, `active`, or `failed`; `not-applicable` elsewhere.
 
-Plan for five effects. First, one checkpoint transfer to the new voter: the
-replacement is admitted across a sealed epoch, so it installs a snapshot
-before it votes. Second, a bounded write pause at the epoch boundary while
+Plan for five effects. First, one catch-up to the new voter: range
+recovery from the retained journal, or a full anchor-pinned state
+transfer when the gap exceeds retention. The conservative trim freezes
+while the replacement reports a zero durable frontier, so budget disk
+for the retained history until it anchors. Second, a bounded write
+pause at the configuration boundary while
 the stop sign seals and the next configuration activates. Third, client
 read TCP connections stay open across the in-process swap; clients do not
 reconnect. Fourth, reduced fault tolerance until the phase reaches
@@ -602,19 +612,22 @@ decommissioned at leisure.
   table.header([*Symptom*], [*What happens, and what to do*]),
   [One member down], [Writes and linearizable reads continue on the
     remaining two. Restart the member; it catches up on its own, from the
-    journal suffix or through a snapshot transfer across a sealed epoch.],
+    retained journal suffix or through an anchor-pinned state transfer
+    when its gap exceeds retention.],
   [Two members down], [No quorum. Writes and fenced reads refuse, while
     `--level any` reads still answer locally. Add `--freshness-ms` when a
     disconnected or lagging node should refuse instead. Restore a member.],
-  [`current.db` lost or replaced with an old copy], [Nothing is lost. On the
-    next start the node discards the image and rebuilds it from the snapshot
-    plus the journal, validating the batch marker. Just restart it.],
+  [`current.db` lost or replaced with an old copy], [Nothing is lost from
+    the cluster. A too-small or stale image fails the anchor's geometry
+    check; the node rebuilds from the genesis-retained journal when it
+    still has one, and otherwise requests a state transfer from a peer.
+    Restart it.],
   [Journal tail torn by power loss], [The tail is truncated automatically on
     open. This is safe because the lost suffix was never acknowledged to any
     client.],
   [Journal corrupt in the middle], [The node refuses to open, because an
     interior gap would mean serving history it cannot prove. Reimage from
-    the healthy quorum: empty the directory and restart, and snapshot
+    the healthy quorum: empty the directory and restart, and state
     transfer plus catch-up rebuild everything.],
   [Disaster of last resort], [`zaxon backup --to app.db` on any surviving
     member yields a plain SQLite file that opens anywhere.],
@@ -640,9 +653,10 @@ that any SQLite tool can open.
   serve? Decide, then read on.
 ])
 
-The node serves the cluster's rows, not the backup's. Every open discards
-the materialized image and rebuilds it from the snapshot plus the journal.
-The journal is authoritative; the `.db` file is a cache. There is no import
+The node serves the cluster's rows, not the backup's. The backup file
+does not match the durable anchor's geometry and history, so the node
+rebuilds or transfers the real image instead of trusting it. The
+journal and its anchors are authoritative. There is no import
 command, so restoring a logical backup means building a new cluster.
 
 + Provision fresh data directories on every member, which creates a new
@@ -657,8 +671,8 @@ For a node whose directory survives but whose health is in doubt:
 
 + Copy the directory and work only on the copy, never on the sole original.
 + Run `zaxon recover --data <dir>`, which rebuilds the image from the
-  verified snapshot plus the committed journal suffix and then runs the full
-  integrity check, reporting pass or fail per section.
+  durable state anchor plus the committed journal suffix and then runs the
+  full integrity check, reporting pass or fail per section.
 + Exit code 0 means the node is sound, so restart it.
 + Exit code 3, or a node that refuses to open because its durable journal
   prefix is damaged, means the local history is gone; restore a verified

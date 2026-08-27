@@ -174,13 +174,16 @@ These four ops take no request fields beyond `op` itself.
 `status` answers with `node_id`, `database_id`, `configuration_id`,
 `role`, `node_type`, `leader`, `phase`, `quorum_available`,
 `installation_state`, `ballot` (an object with `round`, `priority`, and
-`node`), `decided_slot`, `applied_slot`, `journal_records`,
-`epoch_capacity`, `chain`, `page_size`, the search capability manifest
+`node`), `decided_slot`, `applied_slot`, `durable_state_slot`,
+`memory_floor`, `chosen_trim_slot`, `retained_first_slot`,
+`journal_records`, `journal_segment_count`, `journal_bytes`, `chain`,
+`page_size`, the search capability manifest
 (`fts5_enabled`, `sqlite_vec_version`, `search_feature_version`,
 `simd_backend`, `mmap_size`, `candidate_hard_limit`), `write_gate`
 (the literal `fifo-v1`, naming the ordered write-admission contract),
-`typed_v1` (`true`: this server accepts the typed value format below),
-and `snapshot`. The three
+and `typed_v1` (`true`: this server accepts the typed value format
+below). Slot fields are unsigned 64-bit integers; a JSON reader that
+parses them as IEEE doubles loses precision past 2^53. The three
 membership fields are defined in the membership section below; on a
 registry-less host `phase` is `idle` and `installation_state` is
 `not-applicable`. `status` describes
@@ -244,10 +247,10 @@ backs survives leader changes.
 and `configuration_id`. This is the op behind `zaxon wait` in the
 quickstart.
 
-=== Maintenance: snapshot, integrity, expire-sessions
+=== Maintenance: anchor, integrity, expire-sessions
 
-`snapshot` takes no fields and answers with `configuration_id`, the new
-epoch. `integrity` takes no fields and answers with `ok`, `sqlite_ok`,
+`anchor` takes no fields and answers with `durable_state_slot`, the
+anchored slot. `integrity` takes no fields and answers with `ok`, `sqlite_ok`,
 `chain_ok`, and `payloads_ok`. `expire-sessions` takes `retain` and
 answers with `expired`, the count removed.
 
@@ -307,8 +310,8 @@ no fields, answers
     the admission queue and provably never executed, so a plain retry
     is safe. A bare `timeout` on a write leaves the fate unknown,
     like `ambiguous`: retry idempotently.],
-  [`retry`], [The epoch is rolling over, or leadership changed during a
-    read fence. Retry.],
+  [`retry`], [A membership change is completing, or leadership changed
+    during a read fence. Retry.],
   [`too_large`], [The payload exceeds the 64 MiB wire limit.],
   [`stale`], [A freshness-bounded `any` read could not be served fresh
     enough.],
@@ -349,7 +352,7 @@ leader proves it is still the leader before answering.
 ])
 
 It succeeds. Without a freshness bound, `any` explicitly permits an
-arbitrarily stale local snapshot. If you need a bound, send
+arbitrarily stale local view. If you need a bound, send
 `freshness_ms`. A learner then rejects the read with `stale` in three
 cases: it has never heard from a leader, its last leader contact is
 older than the bound, or the leader's last reported decided slot is
