@@ -1069,8 +1069,10 @@ snapshot and does not reset slots. Before a new voter activates, it installs a
 certified state and suffix through the activation frontier. Surviving voters
 carry the same global trim anchor into the next configuration.
 
-The stop/reconfiguration announcement also establishes the replacement's
-transfer lease and freezes physical deletion at its base $S$. The next
+The stop/reconfiguration announcement freezes physical deletion for the
+replacement: in v1 the conservative trim itself supplies the freeze
+(the joiner's zero frontier pins $G$), with the announcement-carried
+lease reserved for the quorum-trim variant. The next
 configuration does not advance $G$ until the new data voter has installed the
 state and published its first durable-state anchor. Removed nodes do not count
 in the next configuration's conservative minimum.
@@ -1386,7 +1388,8 @@ crash cases, implementation files, and verification burden.
    experimental core option.
 2. Add journal v2, applied anchors, and replay equivalence without trimming.
 3. Add conservative all-data-replica trim and segment/payload reclamation.
-4. Add anchor-pinned raw state transfer and cluster-wide transfer leases.
+4. Add anchor-pinned raw state transfer (cluster-wide leases reserved;
+   the conservative trim freeze stands in for them in v1).
 5. Integrate ZDS 0008 replacement with the frozen trim frontier.
 6. Make the direct format cut and add strict rejection/conformance tests.
 7. Run formal, crash, long-duration, and performance gates.
@@ -1469,8 +1472,10 @@ Crash before and after each of:
 11. local `TRIM` persistence;
 12. segment unlink and directory sync;
 13. payload reachability publication and unlink;
-14. transfer-lease choice, pinned copy/reflink, every transfer chunk, end
-    digest, install rename, receiver acknowledgement, and lease completion.
+14. pinned copy (mid-copy and complete), transfer chunk, staged image,
+    install rename, and published anchor -- the shipped stateless-phase
+    ladder; the lease-choice and lease-completion points are reserved
+    with the lease lifecycle itself.
 
 Every restart must either expose the previous complete generation or the next
 complete generation. It must never vote with a gap, an unverified image, or an
@@ -1730,7 +1735,7 @@ boundaries now.
     [Periodic checkpoint every 30 seconds, or every 10,000 committed slots, or when uncheckpointed WAL reaches 64 MiB. _v1 ships all three triggers;_ the 80%-soft-retention acceleration is deferred with the time/byte horizon it keys on.],
     [Bounds the uncheckpointed recovery lag $E_i - A_i$ while holding SQLite WAL checkpoint and `APPLIED.0/1` barrier overhead to under 1% of write duty cycle on NVMe drives.],
     [Q6: CI performance gate],
-    [Two-tier gate: In-memory core gate with $<= 3%$ Hodges–Lehmann regression ($n = 64$ samples). Durable gate with $<= 10%$ non-inferiority margin normalized against baseline `fsync` cost.],
+    [Two-tier gate: In-memory core gate with $<= 3%$ Hodges–Lehmann regression ($n = 64$ samples). Durable gate with $<= 10%$ non-inferiority margin normalized against baseline `fsync` cost. _v1 ships:_ a $<= 5%$ absolute Hodges–Lehmann bound for durable workloads at the same $n = 64$ bar, without fsync normalization -- recorded runs pin the host, so the calibration loop's noisy-runner rationale does not apply; it returns if the gate ever runs on shared CI runners.],
     [Virtual CI runners exhibit high storage variance. Normalizing against a synthetic `fsync` calibration loop prevents noisy runner false-positives while strictly enforcing steady-state invariant of 1 barrier per transaction group.],
     [Q7: Audit log retention],
     [Strictly decouple operational consensus log retention from compliance audit history. Stream sealed `.zxj` segments asynchronously to an external archive sink (e.g., S3/cold storage).],
@@ -2100,8 +2105,12 @@ understates variance; repeated same-fixture runs in separate files
 remain the gold standard, and the tool says so. Periodicity runs on
 the recorded `batch_ns_series`: the moving workload's full per-batch
 series covers the window-wrap lag, and the zaxonlite write benchmark
-drives real durable anchors and prints lag autocorrelation at the
-anchor-interval and segment-rotation lags (both measured flat).
+drives real durable anchors with two series -- inter-completion time,
+whose correlation at the forced anchor cadence is a positive control
+proving the instrument sees anchor cost (it fails loudly if anchors
+become invisible), and bare per-exec latency, whose anchor-lag
+correlation is the gate property: whether anchoring degrades the
+writes around it, measured flat.
 Existing archived results predate the sample fields; the next recorded
 run banks the first enforceable pair.
 
