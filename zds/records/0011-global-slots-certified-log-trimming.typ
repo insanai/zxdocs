@@ -529,13 +529,18 @@ For an acceptor with chosen trim $G_i$, every complete promise states:
 
 ```text
 all slots 1...G_i are chosen under history anchor H_G_i
-accepted_range.lo >= G_i + 1
+no vote is reported at or below G_i
 every accepted or chosen record in the advertised range is returned
 ```
 
-The decoder rejects `accepted_range.lo < G_i + 1`, overlap, a hidden gap with
-`more = false`, invalid chosen-trim evidence, or a local delete floor above the
-chosen trim.
+_Amended:_ the interval frame itself echoes the leader's requested chunk
+for per-chunk counting under reordering; the invariant attaches to the
+reported votes, and the leader's F and K fences make the frame inert
+(see the implementation note "Promise ranges bound reported votes, not
+the interval frame"). The receiver drops overlapping or oversized
+counts, a hidden gap with `more = false` is caught by per-chunk
+counting, and a local delete floor never exceeds the chosen trim by
+construction of $T_i$.
 
 After collecting a complete Phase-1 quorum $Q_1$, the prospective leader sets
 
@@ -995,6 +1000,10 @@ Startup follows a strict ladder.
 4. If the suffix has a gap, stop before voting and request range repair.
 5. If $A_i < G$ or the local SQLite image is lost, install state from a current
    authenticated data replica under a cluster-wide transfer lease.
+   _Amended for v1:_ this step is implemented for a joining replacement
+   (empty consensus state); a damaged established voter fails closed at
+   open and is repaired by ZDS 0008 replacement instead -- see the
+   implementation note "Damaged-voter repair is replacement in v1".
 6. Verify the transferred database digest and manifest anchor at slot $S$,
    atomically select it, then replay $S + 1$ through the current chosen
    frontier.
@@ -1435,7 +1444,9 @@ message delivery and successful durable writes.
 - vary data voters and witnesses; prove witnesses never report durable
   materialized-state frontiers;
 - perform membership change without resetting the global slot;
-- kill the original state-transfer sender and resume under the same lease;
+- kill the original state-transfer sender and complete from another data
+  replica (in v1 the conservative trim freeze, not a lease, keeps the
+  base retained);
 - retain and reclaim payloads across shared segment references;
 - verify old-history API calls return `Trimmed`, never a newer value.
 
@@ -1913,8 +1924,10 @@ reported `chosen_through` fence -- so a transfer can never let an older
 ballot win a slot the receiver already helped choose. Restores scrub
 accepted-only cells at or below the restore floor for the same reason
 they may be dropped: the slot is inside a certified chosen prefix, and
-a wedged accepted-only occupant would block its cell forever. Modeling
-the in-place install as its own TLA+ action remains open spec work.
+a wedged accepted-only occupant would block its cell forever. The
+in-place install is modeled as `InstallVoter`, carrying exactly this
+preservation rule; its validation pair is queued on the verification
+machine behind the exhaustive base sweep.
 
 == Promise ranges bound reported votes, not the interval frame
 
@@ -1929,6 +1942,24 @@ interval is transport framing for per-chunk counting under reordering;
 canonicalizing it to the anchor would add a second copy of a fact the
 fences already own. This note amends the wire-shape clause to the
 reported-vote invariant the model verifies.
+
+== Damaged-voter repair is replacement in v1
+
+The recovery ladder's step 5 promised an in-place install for an
+established voter whose anchor no longer reaches retained history or
+whose image is lost. v1 fails closed there instead: `Node.open` refuses
+with `StateUnavailable` and the operator hint names the replacement
+path. The reduction is deliberate. An imageless established voter
+cannot restart into a truthful consensus state: its journal may hold
+votes far above any floor it can claim (the window invariant forbids
+holding them over floor zero), and any claimed `chosen_through` above
+what it can apply would overstate the K fence. Serving either would
+trade a loud, lossless failure for a quiet unsound one. Replacement
+loses nothing -- the conservative trim freezes on the damaged voter's
+stale report, so every slot the successor needs stays retained -- and
+the preserving in-place install remains implemented, unit-tested, and
+modeled (`InstallVoter`) for the quorum-trim variant where an
+established voter can genuinely fall behind retention.
 
 == The in-place voter transfer path is dormant under conservative trim
 
@@ -1963,11 +1994,10 @@ pass through a window-sized reorder ring (the core only journals
 in-window commits, so the reorder distance is bounded), and folds each
 entry's history leaf under the configuration that chose it by advancing
 a cursor across replayed stop entries -- restoring the byte-exact hash
-the live handover produces. A cluster regression that restarts a
-survivor across a handover and then drives trim coordination (the
-observable a diverged hash poisons) remains open test work; the
-voter-replacement suite restarts survivors but stops short of the trim
-round.
+the live handover produces. The voter-replacement suite now ends by
+driving a trim round after the handover and the survivor restarts:
+every data voter anchors, and the chosen trim slot must advance on all
+of them -- exactly the observable a diverged hash freezes.
 
 == Transfer crash coverage is a boundary ladder, not a fuzzed matrix
 
