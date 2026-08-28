@@ -1723,8 +1723,8 @@ boundaries now.
     [$W = 4096$ slots, $R = 256$ slots, pipelining credit $c = 4$, target occupancy $rho = 0.75$.],
     [Derived via Little's Law for $lambda_p = 5 dot 10^4 "writes/s"$ at "p99" commit latency $d_(99) = 15 "ms"$ ($W_("min") = 1000 arrow.r 4096$). In-core window memory is under 1.3 MiB. At 161 bytes/command, $R = 256$ forms compact $approx 41 "KB"$ wire frames that fit within standard TCP burst MTU windows below the 64 MiB limit.],
     [Q2: Retention horizon],
-    [Soft retention: 15 minutes or 20 GB of payload/journal bytes. Hard ceiling: 60 minutes or 64 GB. _v1 ships:_ the 64 GiB hard ceiling over journal plus retained payload bytes is the shipped default (`journal_cap_bytes`), refusing writes with `RecoveryRetentionExceeded`; the soft horizon is the opt-in slot-based `retention_slots` (the time/byte form is deferred with quorum trim). Consensus never refuses chosen entries, so the ceiling gates proposal-side admission; a follower out of disk fails loudly on its own write path.],
-    [Covers $X_(99.9) = 900 "s"$ transient restarts (VM migrations, OS reboots). At $lambda = 5000 / "s"$ and $c = 4.2 "KB/slot"$, 15 minutes requires $4.5 dot 10^6$ slots ($approx 18.9 "GB"$). The hard ceiling engages backpressure (`RecoveryRetentionExceeded`) to prevent volume exhaustion if a replica remains down.],
+    [Soft retention: 15 minutes or 20 GB of payload/journal bytes. Hard ceiling: 60 minutes or 64 GB. _v1 ships:_ the 64 GiB hard ceiling over journal plus retained payload bytes is the shipped default (`journal_cap_bytes`), refusing writes with `RecoveryRetentionExceeded`; the soft horizon is the opt-in slot-based `retention_slots` (the time/byte form is deferred with quorum trim). The ceiling is a leader-side admission bound with a proven one-write reserve, so no admitted write lands above it; it is not a cluster-wide volume guarantee -- consensus never refuses chosen entries, so a lagging follower installs what was chosen and fails loudly on its own write path if its volume fills first.],
+    [Covers $X_(99.9) = 900 "s"$ transient restarts (VM migrations, OS reboots). At $lambda = 5000 / "s"$ and $c = 4.2 "KB/slot"$, 15 minutes requires $4.5 dot 10^6$ slots ($approx 18.9 "GB"$). The hard ceiling engages backpressure (`RecoveryRetentionExceeded`) on the admitting leader if a replica remains down; follower volumes are protected by the same cap only insofar as they track the leader's admitted growth.],
     [Q3: Reflink & CoW support],
     [Linux XFS (`FICLONE`), Btrfs (`BTRFS_IOC_CLONE`), macOS APFS (`clonefile(2)`), and Windows ReFS (`FSCTL_DUPLICATE_EXTENTS_TO_FILE`). Fall back to synchronized stream copy on NTFS and ext4.],
     [Runtime probing via `probeReflinkSupport` (matching `durability.zig:probePathnameSemantics`). Durability requires an immediate `syncFile` on the clone followed by `syncDirectory` on the parent to ensure point-in-time barrier safety.],
@@ -1735,8 +1735,8 @@ boundaries now.
     [Periodic checkpoint every 30 seconds, or every 10,000 committed slots, or when uncheckpointed WAL reaches 64 MiB. _v1 ships all three triggers;_ the 80%-soft-retention acceleration is deferred with the time/byte horizon it keys on.],
     [Bounds the uncheckpointed recovery lag $E_i - A_i$ while holding SQLite WAL checkpoint and `APPLIED.0/1` barrier overhead to under 1% of write duty cycle on NVMe drives.],
     [Q6: CI performance gate],
-    [Two-tier gate: In-memory core gate with $<= 3%$ Hodges–Lehmann regression ($n = 64$ samples). Durable gate with $<= 10%$ non-inferiority margin normalized against baseline `fsync` cost. _v1 ships:_ a $<= 5%$ absolute Hodges–Lehmann bound for durable workloads at the same $n = 64$ bar, without fsync normalization -- recorded runs pin the host, so the calibration loop's noisy-runner rationale does not apply; it returns if the gate ever runs on shared CI runners.],
-    [Virtual CI runners exhibit high storage variance. Normalizing against a synthetic `fsync` calibration loop prevents noisy runner false-positives while strictly enforcing steady-state invariant of 1 barrier per transaction group.],
+    [Shipped contract: absolute Hodges–Lehmann bounds at $n = 64$ raw samples -- $<= 3%$ for in-memory workloads, $<= 5%$ for durable ones, no fsync normalization (recorded runs pin the host). _Future, labelled for shared CI:_ a $<= 10%$ non-inferiority margin normalized against a baseline `fsync` calibration loop, for when the gate runs on virtualized runners with noisy storage.],
+    [Pinned-host recording makes absolute bounds meaningful today. Virtual CI runners exhibit high storage variance, which is what the labelled future normalization exists for; the steady-state invariant of one barrier per transaction group holds under either policy.],
     [Q7: Audit log retention],
     [Strictly decouple operational consensus log retention from compliance audit history. Stream sealed `.zxj` segments asynchronously to an external archive sink (e.g., S3/cold storage).],
     [Local disk retention serves only crash-recovery and catch-up (hours/days). Local consensus nodes must never stall cluster log trimming for multi-year audit compliance.],
@@ -1776,9 +1776,10 @@ boundaries now.
   intervals or 10,000 slots maintains sub-second restart recovery times while
   keeping WAL checkpoint latency below 1% of total transaction duty cycle.
 - *Q6: Robust CI gating.* By testing the consensus core in-memory with strict 3%
-  regression margins and evaluating durable storage with barrier-normalized
-  metrics, CI remains sensitive to code regressions without failing on virtualized
-  cloud disk jitter.
+  regression margins and durable storage at an absolute 5% bound on pinned
+  recording hosts (barrier normalization reserved for shared CI runners),
+  the gate stays sensitive to code regressions without failing on disk
+  jitter.
 - *Q7: Archival vs. Operational separation.* Offloading compliance archiving to
   asynchronous segment export ensures that local operational databases retain only
   the active recovery window.
