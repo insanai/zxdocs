@@ -2016,7 +2016,16 @@ join can crash at exactly one of them), or fuzz interleaved
 multi-process schedules. The transfer's crash safety still rests on its
 verify-then-install shape -- staged private file, digest match, quorum-
 vouched anchor binding, disposable sender pin -- and the ladder proves
-each boundary of that shape once.
+each boundary of that shape once. Every rung waits under a deadline and
+proves the process died at exactly the armed failpoint by reading the
+crash line from its own log; the sender rung arms node 1 through its
+process environment on a restart, the mechanism that cannot be lost to
+timing. Building the ladder also exposed a peer-connection defect: the
+per-peer inbound limit rejected the newest connection while a crashed
+predecessor's not-yet-reaped entries held the slots, so a rapid
+crash-restart cycle churned reconnects for minutes. Admission is now
+newest-wins -- at the limit the oldest same-credential connection is
+shut down and reaped, and a fresh reconnect always seats.
 
 == The beyond-retention transfer runs end to end under a crash ladder
 
