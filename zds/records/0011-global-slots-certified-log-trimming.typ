@@ -858,9 +858,10 @@ running transfer safe. The lifecycle becomes live machinery only with
 the deferred quorum-trim variant; see the implementation note
 "Conservative trim subsumes transfer leases in v1".
 
-An on-demand state transfer creates a lease before bytes are sent. For voter
-replacement, the decided stop/reconfiguration announcement carries the lease.
-For repair of an existing member, a chosen `TransferLease` entry contains:
+The reserved lifecycle: an on-demand state transfer would create a lease
+before bytes are sent -- carried by the decided stop announcement for a
+replacement, or as a chosen `TransferLease` entry for in-place repair --
+with the shape:
 
 ```text
 lease_id: u64
@@ -1011,7 +1012,8 @@ Startup follows a strict ladder.
 The first implementation uses an anchor-pinned raw copy, reusing the byte-exact
 invariant the existing follower snapshot path enforces. The source:
 
-1. chooses and durably publishes a transfer lease at base $S$;
+1. pins a fresh durable anchor at base $S$ (v1; the reserved lease
+   choice replaces this step under quorum trim);
 2. holds the node/writer mutex between commands;
 3. checkpoints/truncates the WAL, synchronizes `current.db`, and publishes
    durable state anchor $(S,H_S)$;
@@ -1541,23 +1543,26 @@ recursive deletion target from network input.
 Status adds:
 
 ```text
-global_decided_slot
-global_executed_slot
+decided_slot
+applied_slot
 durable_state_slot
 memory_floor
 chosen_trim_slot
-local_delete_floor
 retained_first_slot
-retained_last_slot
 journal_segment_count
 journal_bytes
 payload_retained_bytes
-retention_age_seconds
-apply_lag_slots
 trim_mode
-state_transfer_phase
-transfer_lease_base
+installation_state
 ```
+
+_Amended to the shipped surface:_ the list above is what v1 status
+exposes, under the implementation's field names. `local_delete_floor`
+is derivable as `retained_first_slot - 1`; apply lag as
+`decided_slot - applied_slot`. `retention_age_seconds` needs per-slot
+timestamps the journal does not record, and `transfer_lease_base`
+belongs to the reserved lease lifecycle; both return with the
+quorum-trim variant.
 
 Alerts distinguish consensus unavailability, execution lag, durable-state lag,
 retention pressure, and a frozen transfer lease. A slow replica first delays
@@ -1713,7 +1718,7 @@ boundaries now.
     [$W = 4096$ slots, $R = 256$ slots, pipelining credit $c = 4$, target occupancy $rho = 0.75$.],
     [Derived via Little's Law for $lambda_p = 5 dot 10^4 "writes/s"$ at "p99" commit latency $d_(99) = 15 "ms"$ ($W_("min") = 1000 arrow.r 4096$). In-core window memory is under 1.3 MiB. At 161 bytes/command, $R = 256$ forms compact $approx 41 "KB"$ wire frames that fit within standard TCP burst MTU windows below the 64 MiB limit.],
     [Q2: Retention horizon],
-    [Soft retention: 15 minutes or 20 GB of payload/journal bytes. Hard ceiling: 60 minutes or 64 GB.],
+    [Soft retention: 15 minutes or 20 GB of payload/journal bytes. Hard ceiling: 60 minutes or 64 GB. _v1 ships:_ the 64 GiB hard ceiling over journal plus retained payload bytes is the shipped default (`journal_cap_bytes`), refusing writes with `RecoveryRetentionExceeded`; the soft horizon is the opt-in slot-based `retention_slots` (the time/byte form is deferred with quorum trim). Consensus never refuses chosen entries, so the ceiling gates proposal-side admission; a follower out of disk fails loudly on its own write path.],
     [Covers $X_(99.9) = 900 "s"$ transient restarts (VM migrations, OS reboots). At $lambda = 5000 / "s"$ and $c = 4.2 "KB/slot"$, 15 minutes requires $4.5 dot 10^6$ slots ($approx 18.9 "GB"$). The hard ceiling engages backpressure (`RecoveryRetentionExceeded`) to prevent volume exhaustion if a replica remains down.],
     [Q3: Reflink & CoW support],
     [Linux XFS (`FICLONE`), Btrfs (`BTRFS_IOC_CLONE`), macOS APFS (`clonefile(2)`), and Windows ReFS (`FSCTL_DUPLICATE_EXTENTS_TO_FILE`). Fall back to synchronized stream copy on NTFS and ext4.],
@@ -1722,7 +1727,7 @@ boundaries now.
     [Segment capacity: 64 MiB (`64 * 1024 * 1024` bytes). Sparse-index stride: $k = 64$ slots.],
     [64 MiB matches modern NVMe erase-block allocation, bounds directory entry counts (a 1 TB log is 16,384 files), avoids long rotation syncs, and matches the 64 MiB wire frame ceiling. A 64-slot stride requires under 4 KB of index per segment (one memory page) for sub-microsecond binary search.],
     [Q5: Applied state anchor cadence],
-    [Periodic checkpoint every 30 seconds, or every 10,000 committed slots, or when uncheckpointed WAL reaches 64 MiB. Accelerate to 5 seconds / 2,000 slots when storage reaches 80% soft retention.],
+    [Periodic checkpoint every 30 seconds, or every 10,000 committed slots, or when uncheckpointed WAL reaches 64 MiB. _v1 ships all three triggers;_ the 80%-soft-retention acceleration is deferred with the time/byte horizon it keys on.],
     [Bounds the uncheckpointed recovery lag $E_i - A_i$ while holding SQLite WAL checkpoint and `APPLIED.0/1` barrier overhead to under 1% of write duty cycle on NVMe drives.],
     [Q6: CI performance gate],
     [Two-tier gate: In-memory core gate with $<= 3%$ Hodges–Lehmann regression ($n = 64$ samples). Durable gate with $<= 10%$ non-inferiority margin normalized against baseline `fsync` cost.],

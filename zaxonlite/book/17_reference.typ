@@ -497,7 +497,8 @@ produces.
     [`segment.zig`],
   [Retained segments per manifest], [65,536], [`manifest.zig`],
   [State anchor cadence], [promptly after the first applied write, then
-    every 10,000 slots], [`node.zig`],
+    every 10,000 slots, 30 seconds, or 64 MiB of uncheckpointed WAL,
+    whichever arrives first], [`node.zig`],
   [Range recovery chunk], [256 records, credit-based pipelining],
     [`wire.zig`],
   [Transfer leases], [4 concurrent], [`trim.zig`],
