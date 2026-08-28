@@ -2086,13 +2086,24 @@ Hodges-Lehmann shift estimate and a deterministic bootstrap 95%
 confidence interval (the plain percentile bootstrap this record's
 verification plan specified; BCa is deliberately not required), failing
 at +3% of the baseline median for in-memory workloads and +5% for
-durable ones. The gate enforces only pairs where both runs carry the
-additive raw `samples_ns_per_value` field the gated workloads now emit
-(at most 64 evenly strided time-ordered measurements); summary-quantile
-pairs are report-only, because a four-point quantile bootstrap is not a
-sample. Environment metadata mismatches between the two files warn
-prominently without failing. Periodicity checks at the window-wrap and
-anchor-cadence lags run report-only over a recorded latency series.
+durable ones. Enforcement requires both runs to carry at least 64 raw
+`samples_ns_per_value` observations, the bar the record's power
+derivation set; the in-memory matrix, the moving workload, and both
+durable workloads now emit them (durable groups are individually
+timed, with headline aggregates still taken from whole-run clocks), so
+durable rows gate. Below the bar, or with summary quantiles only, a
+pair is report-only. A fixture field carried by only one record makes
+the pair incomparable and skipped; mismatched host or toolchain
+metadata downgrades a pair to report-only. Within-run observations
+share one process lifetime and are autocorrelated, so the interval
+understates variance; repeated same-fixture runs in separate files
+remain the gold standard, and the tool says so. Periodicity runs on
+the recorded `batch_ns_series`: the moving workload's full per-batch
+series covers the window-wrap lag, and the zaxonlite write benchmark
+drives real durable anchors and prints lag autocorrelation at the
+anchor-interval and segment-rotation lags (both measured flat).
+Existing archived results predate the sample fields; the next recorded
+run banks the first enforceable pair.
 
 = Amendments to Prior Records
 
