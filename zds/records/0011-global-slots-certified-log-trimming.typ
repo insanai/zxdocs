@@ -1937,10 +1937,13 @@ accepted-only cells at or below the restore floor for the same reason
 they may be dropped: the slot is inside a certified chosen prefix, and
 a wedged accepted-only occupant would block its cell forever. The
 in-place install is modeled as `InstallVoter`, carrying exactly this
-preservation rule; its validation pair runs next on the verification
-machine, behind only the five-node configuration, now that the deep
-base sweep is parked clean at depth eighteen (81 billion states
-generated; the recorded certificate lives in `specs/README.md`).
+preservation rule, and its deliberate-bug validation is banked: a
+variant restoring the reset behavior trips
+`AcceptedOnlySlotNeverEvicted` with a depth-17 counterexample -- the
+reset discards the receiver's accepted-only votes, exactly the
+obligation the invariant guards. The recorded certificates (this
+counterexample, the parked depth-18 base sweep at 81 billion states,
+and the parked five-node sweep) live in `specs/README.md`.
 
 == Promise ranges bound reported votes, not the interval frame
 
