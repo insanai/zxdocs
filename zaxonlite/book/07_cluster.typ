@@ -309,6 +309,19 @@ It closes the capture connection, discards the WAL, and rebuilds the image
 from the decided log before serving again. No undecided frame can leak
 into the served database.
 
+The new leader has the mirror-image hazard. Phase one hands it slots that
+earlier ballots chose or accepted and that it has not yet applied, and it
+becomes leader before those slots decide. A batch's chain base is the
+applied state, so a write admitted in that gap would be built on a stale
+base and, once decided, would fail the chain check on every member. The
+core reports the first slot of the new term as `leaderBase`, and the
+server admits a write only when the applied frontier has reached the
+proposal frontier: everything inherited is decided and applied, and no
+trim or lease of its own is still in flight. A leader that still owes
+itself inherited slots keeps asking its peers for them, and falls back to
+a state transfer if that stalls; installing one demotes it, so a
+caught-up member leads instead.
+
 #callout(title: [Configuration fencing on the wire], tone: "note")[
   Every envelope frame carries the sender's configuration id. A frame from
   an older configuration is dropped. A frame from a newer configuration

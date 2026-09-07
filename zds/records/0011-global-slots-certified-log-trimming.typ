@@ -2159,6 +2159,24 @@ read-quorum attestation of ZDS 0008's install path is carried forward as
 the history probe over `(anchor_slot, history_hash)` rather than a proof
 digest over a sealed stop sign.
 
+== Amendment: leader readiness before state-dependent proposals
+
+A transaction batch's `base_chain_hash` and `base_data_slot` are read
+from the applied frontier at capture. Phase one makes a node leader while
+slots it inherited from earlier ballots are still undecided, so a batch
+captured in that window is built on a stale base and, once decided, fails
+chain validation on every member; the failure is durable because replay
+re-checks the same chain. The core now records the first slot of each
+leadership term (`leaderBase`) and, under the
+`gate_proposals_on_inherited_prefix` option that zaxonlite enables,
+refuses proposals until the inherited prefix is delivered. The host admits
+a write only when its applied frontier has reached the proposal frontier,
+serves `leader` and `linearizable` reads only after the inherited prefix
+is applied (the read fence slot is at least `leaderBase - 1`), and keeps a
+leader that is still behind in range recovery with this record's transfer
+as the fallback; installing a transfer demotes the leader. A chain
+mismatch on a decided batch stays fatal and now names the failing check.
+
 = References
 
 - Leslie Lamport, “The Part-Time Parliament” and “Paxos Made Simple” — the

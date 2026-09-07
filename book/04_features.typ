@@ -42,6 +42,31 @@ Because ticks are input calls, a test or simulator can advance logical time by
 calling `tick` without waiting for real milliseconds. This makes timeout paths
 reproducible; it does not make all liveness schedules trivial to test.
 
+== Taking Over: The Term Base
+
+Phase one ends with `role = .leader`, but not with an idle log. The slots
+the new leader recovered from its promise quorum are still in flight: a
+value accepted under an older ballot is re-proposed under the new one, a
+hole below the known high-water mark is filled with the no-op, and slots
+below a peer's chosen fence are requested with `learn`. New proposals start
+above all of them. That is ordinary Multi-Paxos, and a host whose values
+are independent of each other may pipeline straight through the takeover.
+
+A host whose values *depend* on applied state cannot. A hash chain over
+decided entries, a compare-and-set, or a sequence number derived from the
+last applied entry would be built on a base that omits the inherited slots,
+and the value would be wrong once those slots decide ahead of it. The core
+therefore records the first slot the new leadership may fill and reports it
+through `leaderBase()`; `proposalFrontier()` reports the slot the next
+proposal would take. Deliver through `leaderBase() - 1` before deriving a
+proposal, and drive catch-up yourself if the inherited slots must be
+learned from a peer, because phase one sends that `learn` request once.
+
+The option `gate_proposals_on_inherited_prefix` makes the core enforce the
+rule: `propose` and `proposeBatch` return `error.LeaderCatchingUp` until the
+inherited prefix is delivered. It is off by default, so hosts that pipeline
+independent values keep their behaviour.
+
 == Flexible Quorums: Shifting the Balance
 
 In classic Paxos, majorities are used for both Phase One (prepare) and Phase Two (propose). For a five-node cluster, both quorums must be size 3.

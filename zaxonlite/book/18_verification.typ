@@ -172,6 +172,46 @@ that sessions exist for: the write was decided, the client never heard
 so. The retry in step 7 must not apply twice, and step 12 checks that
 it did not, even after every process has since been killed.
 
+== The takeover scenario
+
+The same controller runs a second script in every `test-cluster` run
+(`cluster-test <zaxon> [runs] [mandatory|takeover]` selects one). It
+targets the gap between winning phase one and having applied what phase
+one inherited. Two data voters share the cluster with a witness, so the
+takeover always falls to the other data voter, and the witness runs with
+`--test-vote-delay-ms 1500`, a test-only flag that holds its phase-two
+votes while promises and heartbeats flow normally. A slot the new leader
+re-proposes therefore stays undecided for about a second and a half after
+it becomes leader: the window in which an unguarded leader would capture
+a write on a stale chain base. The data voters run with
+`--test-storage-delay-ms 100`, which stretches every journal barrier just
+enough for a crashing leader's accept to reach its peers first.
+
+#transcript((
+  [1], [Controller], [Starts all three, then runs three client threads
+    that create a table and insert through the first election, each
+    reading back a linearizable count after every acknowledged write.],
+  [2], [Oracle], [No member may log a chain mismatch, and a linearizable
+    count must see at least every acknowledged row.],
+  [3], [Controller], [Seeds a second table and waits until both data
+    voters have applied it with identical digests.],
+  [4], [Controller], [Arms the leader's `after_accept_sync` failpoint
+    and submits a write. The leader dies after its own vote, so the
+    slot is accepted by the survivors but undecided.],
+  [5], [Controller], [Writes again at the new leader as soon as it
+    answers, and records how long the write waited.],
+  [6], [Oracle], [No chain mismatch anywhere; the crashed write and the
+    new write are each visible exactly once.],
+  [7], [Controller], [Restarts the crashed leader and waits for
+    catch-up.],
+  [8], [Oracle], [Replay logs no chain mismatch, and the two data
+    voters carry identical digests.],
+))
+
+Without the readiness barrier step 5 proposes into the open window and
+step 6 fails on every member; with it the write in step 5 simply waits
+for the inherited slot.
+
 == The replacement cluster scenario
 
 `zig build test-replace-cluster` runs the same controller discipline

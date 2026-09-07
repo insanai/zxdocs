@@ -121,6 +121,13 @@ The default is `linearizable`, as you saw in chapter 1. Chapter 7
 explains the `freshness_ms` bound that tightens `any` on a learner, and
 chapter 13 shows how a client requests each level.
 
+Both leader levels have one more precondition. A freshly elected leader
+inherits slots the previous ballot chose, and until it has applied them
+its state can miss writes the old leader acknowledged. So `leader` and
+`linearizable` reads wait until the leader has applied every slot below
+its term base, the first slot the new leadership may fill. The same wait
+guards writes, because a batch's chain base is that applied state.
+
 == The quorum read fence
 
 How do we make a read linearizable without writing to the log? The leader
@@ -128,7 +135,8 @@ proves that it is still the leader. The proof is a fence. It performs no
 log append and no disk sync:
 
 + The leader records its current ballot $b$ and a fence slot
-  $s = "decidedThrough"$.
+  $s = max("decidedThrough", "leaderBase" - 1)$, so the fence covers
+  every slot inherited from earlier ballots as well as its own.
 + It probes every peer with one question: is $b$ still exactly the
   ballot you have promised?
 + Each peer answers from its durable `promised`. The answer is an

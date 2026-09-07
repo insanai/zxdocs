@@ -76,7 +76,10 @@ confirmWritesDurable`, and resetting an unconfirmed batch stops it with
   [`step(envelope)`], [Process one authenticated, decoded member envelope for
     this recipient.],
   [`propose`, `proposeBatch`], [Assign slots after phase one; return
-    `NotLeader` otherwise.],
+    `NotLeader` otherwise, or `LeaderCatchingUp` under the inherited-prefix
+    gate while recovered slots are undelivered.],
+  [`leaderBase`, `proposalFrontier`], [The first slot the current
+    leadership may fill, and the slot the next proposal would take.],
   [`reconnected`, `requestCatchUp`], [Repair one peer path or emit a
     chunk-bounded `learn` request.],
   [`committedAt`, `readDecided`], [Inspect the local decided log; not an
@@ -174,6 +177,8 @@ to the core and adds `max_batch` and `max_metadata_bytes`.
   [`ConfigurationMismatch`], [The message's configuration ID differs from the
     local one.],
   [`NotLeader`], [Proposal attempted before completed phase one.],
+  [`LeaderCatchingUp`], [Proposal attempted before the slots inherited in
+    phase one were delivered; only with `gate_proposals_on_inherited_prefix`.],
   [`CampaignDisabled`], [This voter is configured to never start elections.],
   [`BallotExhausted`], [No greater `u64` round exists.],
   [`InvalidSlot`], [Slot zero, or a floor or trim claim above the delivered
