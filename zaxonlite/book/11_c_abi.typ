@@ -38,7 +38,7 @@ crosses the boundary is a fixed-width type from `<stdint.h>` or
 changes require a new symbol suffix or a major library version. Additive
 JSON response fields are compatible, and you must ignore fields you do
 not use. `zaxonlite_version()` returns the library version string. Release
-0.6.1 returns `"0.6.1"`.
+0.6.2 returns `"0.6.2"`.
 
 #api_anchor([`zaxonlite_open` / `zaxonlite_close`],
   [Opens (or creates) one node data directory and releases it.],
@@ -351,7 +351,10 @@ failures return misuse only for null arguments and invalid registries.
 Remote errors surface as code 4 with the error name in
 `zaxonlite_cluster_last_error`, and for `_call_json` you also receive
 the `{"ok":false,...}` response body itself. `zaxonlite_cluster_close`
-requests a graceful stop and joins the server thread.
+signals the local server directly and joins its thread, even when a client
+connection cannot complete authentication. Startup applies its configured
+timeout to connection establishment and the complete status readiness probe;
+a startup failure requests shutdown before joining the background thread.
 
 == The remote client
 

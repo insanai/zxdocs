@@ -116,6 +116,36 @@ connections. The request contains a one-time secret, the database and target
 bindings, and a signed CSR; it cannot execute SQL or any RPC. Chapter 14
 describes token issuance and failure recovery.
 
+== Connection deadlines and shutdown
+
+Version 0.6.2 gives each client connection attempt one ten-second budget
+covering socket connection, TLS, hello, and PSK authentication. Zig callers
+can set `client.Transport.connect_timeout_ms`; `null` disables the budget,
+while zero expires immediately. Slow partial
+progress does not renew the deadline. An unreachable seed or failed handshake
+can move the cluster client to another seed, up to its existing twelve-attempt
+limit; explicit authenticated leader redirects remain supported.
+
+`Connection.openWithTransportDeadline` accepts an outer timestamp on Zig's
+monotonic `.awake` clock and uses the earlier deadline. The companion
+`Connection.callWithDeadline` bounds a request and its response; a timed-out
+connection must be closed. Ordinary RPCs and backup streams do not inherit
+an establishment deadline after authentication finishes.
+
+Once application request transmission begins, a transport failure is returned
+to the caller without an automatic replay. A partial request or lost reply
+cannot establish whether a write committed. Use session IDs and sequence
+numbers to resolve uncertain writes idempotently.
+
+Stopping a server closes its listener and interrupts active socket I/O. It
+also wakes queued writes, leader-frontier waits, pending proposals, read
+fences, and applied/leader waits. Each wait observes shutdown directly,
+independently of protocol ticks. A write already confirmed committed retains
+its result; an unresolved proposal has an unknown outcome. A condition wait
+woken by shutdown or node failure never reports success merely because it
+was woken. Peer authentication and gateway dialing cannot keep shutdown
+blocked indefinitely.
+
 == The RPC contract
 
 One `rpc_request` frame carries one JSON object. The server replies with
