@@ -25,7 +25,7 @@ body, so it is never zero. The bound is 64 MiB, and anything larger is a
 protocol error. The first frame on any connection must be a `hello`:
 
 #field_table(
-  [0, 2], [`version`], [Protocol version. Must equal 8 exactly. Any
+  [0, 2], [`version`], [Protocol version. Must equal 9 exactly. Any
     other value is rejected (`UnsupportedProtocolVersion`) and the
     connection closes. There is no downgrade negotiation, because a
     silent fallback would turn a configuration error into a security

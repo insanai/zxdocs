@@ -279,6 +279,14 @@ Chapter 16 gives the exact byte layouts. The v1 one-file-per-epoch
 journal (`paxos-*.log`) is not read; a directory holding one fails
 closed as unsupported.
 
+Retained reads open each manifest-listed segment as a sealed segment,
+verify its digest, and stop at the record boundary before its trailer.
+This applies to image resynchronization after leadership loss, restart
+rebuilding, range catch-up, and integrity checks. Version 0.6.2 corrects
+these reads so a valid trailer is not mistaken for a corrupt record;
+actual digest or record corruption still fails closed. The active segment
+has no trailer and is read only through its current written boundary.
+
 == State anchors
 
 The journal cannot grow forever, and replaying a lifetime of history at

@@ -21,7 +21,7 @@
     columns: (1fr, auto),
     text(size: 7.5pt, weight: "bold", tracking: 1.25pt,
       fill: cover_green_line)[AN EMBEDDED REPLICATED DATABASE],
-    text(size: 7.5pt, tracking: 0.8pt, fill: cover_muted)[ZIG · UNRELEASED],
+    text(size: 7.5pt, tracking: 0.8pt, fill: cover_muted)[ZIG · 0.6.2],
   )
 
   v(15mm)
@@ -55,7 +55,7 @@
       #text(size: 8.5pt, fill: cover_muted)[
         with the paxos-zig library and the `zaxon` command line]
     ],
-    text(size: 8.5pt, fill: cover_muted)[July 2026],
+    text(size: 8.5pt, fill: cover_muted)[September 2026],
   )
   pagebreak()
 }

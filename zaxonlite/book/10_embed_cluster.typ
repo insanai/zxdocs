@@ -71,7 +71,9 @@ may free your registry and address buffers the moment `open` returns.
 `open` then spawns the server thread and polls its own endpoint until a
 status call answers. A server that dies first surfaces as
 `error.ServerStartupFailed`. Silence past the timeout surfaces as
-`error.ServerStartupTimeout`.
+`error.ServerStartupTimeout`. One monotonic deadline covers dialing,
+TLS/PSK authentication, and the readiness response. Failed startup requests
+local shutdown and joins the server before freeing the facade.
 
 == Who owns what
 
@@ -218,16 +220,21 @@ with TLS remaining end-to-end to a storage backend.
 
 == Shutdown ordering in `close`
 
-`close` is deliberate about order. A normal member first asks its own
-server to stop through a client `stop` RPC. A gateway instead flips its
-shutdown flag and pokes the listener awake. `close` then joins the
-server thread. The listener, peer senders, and node therefore close on
-the server's own path, with the journal already durable. Only then does
-`close` free the arena-held registry and the facade itself.
+`close` requests shutdown through a local lifecycle flag. The server wakes
+all consensus waiters, interrupts tracked peer and client sockets, closes
+its listener, and drains its threads before the facade frees its registry
+and transport state. A gateway also wakes its accept loop and interrupts
+both directions of each proxy connection. Cleanup therefore remains possible
+when a quorum is unavailable or peer authentication has stalled.
+
+An explicit client `stop` RPC receives a separate reply grace period: the
+server waits for the reply-flushed event against one monotonic 250 ms
+deadline before interrupting sockets. Local embedded shutdown has no RPC
+reply to flush and skips that wait.
 
 Close members in any order. Once fewer than a quorum of voters remain,
 the survivors keep serving `any`-level reads. Writes and linearizable
-reads block until a quorum returns. A request still in flight when
+reads wait for progress until their request deadlines expire. A request still in flight when
 `close` runs may or may not have committed. Its caller must treat the
 outcome as ambiguous, exactly as in chapter 8. `close` never returns
 an error, and it is safe to call after the server has already exited on
