@@ -182,25 +182,22 @@
 
 #let bench_write_table() = {
   let historical = json("../../../zaxonlite/benchmarks/results/latest.json")
-  let transport = json("../../../zaxonlite/benchmarks/results/transport-latest.json")
-  let zx = transport.runs.find(run => run.mode == "tls" and run.sync == "full")
+  let zx = historical.results.find(run => run.system == "zaxonlite")
   let rq = historical.results.find(run => run.system == "rqlite")
   [
-    #text(size: 8pt, fill: gray)[Current Zaxonlite transport run plus the
-      recorded rqlite v10.2.7 baseline from #historical.run_at_utc.]
+    #text(size: 8pt, fill: gray)[Paired Zaxonlite and rqlite v10.2.7
+      results from #historical.run_at_utc.]
     #v(4pt)
     #table(
       columns: (1.2fr, auto, auto, auto, auto, auto),
       table.header(
         [*System*], [*writes/s*], [*p50 ms*], [*p95 ms*], [*p99 ms*], [*max ms*],
       ),
-      [Zaxonlite], [#zx.write_ops_s],
-        [#calc.round(zx.write_p50_us / 1000, digits: 2)],
-        [#calc.round(zx.at("write_p95_us", default: zx.write_p99_us) / 1000,
-          digits: 2)],
-        [#calc.round(zx.write_p99_us / 1000, digits: 2)],
-        [#calc.round(zx.at("write_max_us", default: zx.write_p99_us) / 1000,
-          digits: 2)],
+      [Zaxonlite], [#calc.round(zx.operations_per_second, digits: 1)],
+        [#calc.round(zx.latency_ms.p50, digits: 2)],
+        [#calc.round(zx.latency_ms.p95, digits: 2)],
+        [#calc.round(zx.latency_ms.p99, digits: 2)],
+        [#calc.round(zx.latency_ms.max, digits: 1)],
       [rqlite], [#calc.round(rq.operations_per_second, digits: 1)],
         [#calc.round(rq.latency_ms.p50, digits: 2)],
         [#calc.round(rq.latency_ms.p95, digits: 2)],
@@ -208,16 +205,17 @@
         [#calc.round(rq.latency_ms.max, digits: 1)],
     )
     #text(size: 8pt, fill: gray)[
-      1,000 single-row durable autocommit writes, 256 payload bytes each,
-      three loopback voters and one sequential persistent connection. The runs
-      are separate executions on the same host, so treat this as a reproducible
-      baseline rather than a paired statistical trial.
+      #zx.operations single-row durable autocommit writes, #zx.payload_bytes
+      payload bytes each, three loopback voters and one sequential persistent
+      connection. Both systems were recorded on (#historical.host). Treat this
+      as a reproducible baseline rather than a paired statistical trial.
     ]
   ]
 }
 
 #let transport_bench_table() = {
   let data = json("../../../zaxonlite/benchmarks/results/transport-latest.json")
+  let provenance = json("../../../zaxonlite/benchmarks/results/trim-soak-latest.json")
   let row(run) = (
     raw(run.mode),
     raw(run.sync),
@@ -238,21 +236,63 @@
     #text(size: 8pt, fill: gray)[
       #data.note. #data.runs.at(0).writes writes and
       #data.runs.at(0).reads reads per configuration; RSS is the largest
-      server process after the workload.
+      server process after the workload. Recorded #provenance.date on
+      #provenance.host (#provenance.os).
     ]
   ]
 }
 
 #let trim_soak_table() = {
   let data = json("../../../zaxonlite/benchmarks/results/trim-soak-latest.json")
-  table(
-    columns: (auto, auto, auto, auto, auto),
-    table.header(
-      [*Duration*], [*Writes*], [*Decision slot*], [*Trim through*], [*Retained first*],
-    ),
-    [#data.duration_seconds s], [#data.writes], [#data.trim_decision_slot],
-    [#data.chosen_trim_slot], [#data.retained_first_slot],
+  [
+    #table(
+      columns: (auto, auto, auto, auto, auto),
+      table.header(
+        [*Duration*], [*Writes*], [*Decision slot*], [*Trim through*], [*Retained first*],
+      ),
+      [#data.duration_seconds s], [#data.writes], [#data.trim_decision_slot],
+      [#data.chosen_trim_slot], [#data.retained_first_slot],
+    )
+    #text(size: 8pt, fill: gray)[Recorded #data.date on #data.host (#data.os).]
+  ]
+}
+
+#let search_bench_table() = {
+  let data = json("../../../zaxonlite/benchmarks/results/search-latest.json")
+  let provenance = json("../../../zaxonlite/benchmarks/results/trim-soak-latest.json")
+  let value(name) = data.results.find(result => result.name == name).value
+  let speedup(dim) = (
+    value("rerank_simd_d" + str(dim)) /
+    value("rerank_scalar_d" + str(dim))
   )
+  [
+    #table(
+      columns: (auto, auto, auto, auto),
+      table.header([*Dimension*], [*Scalar vectors/s*], [*SIMD vectors/s*], [*Speedup*]),
+      ..(384, 768, 1024, 1536).map(dim => (
+        [#dim],
+        [#calc.round(value("rerank_scalar_d" + str(dim)))],
+        [#calc.round(value("rerank_simd_d" + str(dim)))],
+        [#calc.round(speedup(dim), digits: 2)×],
+      )).flatten(),
+    )
+    #v(5pt)
+    #table(
+      columns: (1fr, auto),
+      table.header([*Storage/query measure*], [*Recorded value*]),
+      [Float32-to-bit storage ratio], [#calc.round(value("storage_ratio"), digits: 2)×],
+      [Hybrid query, mmap off],
+        [#calc.round(value("hybrid_query_mmap0") / 1000, digits: 2) ms],
+      [Hybrid query, 256 MiB mmap],
+        [#calc.round(value("hybrid_query_mmap256") / 1000, digits: 2) ms],
+      [Text/image recall\@10, oversample 4],
+        [text #value("recall_text_at_10_oversample_4") · image
+          #value("recall_image_at_10_oversample_4")],
+    )
+    #text(size: 8pt, fill: gray)[Recorded #provenance.date on
+      #provenance.host (#provenance.os); the checked fixture and all recall
+      assertions passed.]
+  ]
 }
 
 #let bench_realworld_table() = {

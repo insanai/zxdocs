@@ -337,7 +337,8 @@ after a leadership move) is retried through the configured endpoint
 list, and the retry stays in that operation's latency sample. It
 reports ops/s with p50, p95, p99, and max latency per workload, plus
 each server process's RSS and CPU delta across the run. The defaults
-are 1000 writes and 2000 reads. In `tls` mode the harness generates a
+are 1000 writes and 2000 reads; the checked-in remote run uses the counts
+printed beneath its table. In `tls` mode the harness generates a
 throwaway CA and per-node `zaxon-node-<id>` certificates with the
 `openssl` CLI, so the three processes exercise the real mutual-TLS peer
 and client paths.
@@ -351,18 +352,15 @@ copied into prose. The current write row uses a fixed 256-byte value.
 
 #transport_bench_table()
 
-Two lines dominate this table. Across transport modes the write row
-barely moves, because a sequential replicated write is dominated by
-quorum fsyncs and the mTLS cost disappears inside them; the read rows
-show encryption's real price on this host — a few microseconds at p50
-and a throughput cost under about 16% — plus roughly 5–6 MiB of
-additional RSS per node for OpenSSL state. Across *sync* modes the
-write row moves by more than an order of magnitude: `full` issues one
-`F_FULLFSYNC` per commit point on macOS — the payload install flushes
-to the drive and the journal sync is the single drive-cache barrier
-that makes both power-loss durable — while `os` trusts `fsync(2)` and
-the drive cache. The write latency under `full` is therefore two
-barriers overlap: an ordered stream queues `payload_data` immediately before
+The recorded Linux host exposes two different stories. Read rows retain a
+clear transport gradient: TLS costs several microseconds at p50 and roughly
+4–5 MiB of RSS per node. Writes are instead dominated by the host's backing
+storage, with multi-second tail stalls in both `full` and `os`; this run cannot
+support a throughput comparison between sync modes or transports. On macOS,
+`full` issues `F_FULLFSYNC` while `os` trusts `fsync(2)` and the drive cache;
+on Linux both policies ultimately depend on the filesystem and device beneath
+`fsync(2)`. In either case the payload and journal barriers overlap: an ordered
+stream queues `payload_data` immediately before
 the phase-two accept, the receiver installs it before stepping the accept,
 and the leader holds its node mutex until its own vote barrier completes.
 Thus neither a volatile local vote nor an unstored payload can count, while
@@ -426,14 +424,15 @@ mode issues `F_FULLFSYNC` on macOS, exactly as Go's file sync does for
 rqlite. Group fsync already consolidates Zaxonlite's per-write flushes
 to one barrier per node per commit point (the journal sync; payload
 installs ride it — see chapter 6). The gap that remains is ordering:
-Protocol v9 retains the v5 barrier overlap. Only phase-two accept requests are
+Protocol v10 retains the v5 barrier overlap. Only phase-two accept requests are
 released before the leader barrier; promises, accepted replies, recovered
 values, commit delivery, and client replies remain behind durable evidence.
 A commit-only local marker is derived from an already durable accepting quorum
 and is reconstructed through phase one after a crash instead of forcing a
-second full barrier. The table combines the current Zaxonlite mTLS/full row
-with the pinned rqlite v10.2.7 baseline and labels them as separate executions
-on the same host. A development
+second full barrier. The table uses the paired Zaxonlite and rqlite v10.2.7
+results from the historical same-host comparison record. The new remote
+transport matrix remains separate above because cross-machine rows are not a
+meaningful product comparison. A development
 `--sync os` run on the same machine cuts the write latency roughly
 tenfold again, but at the price of power-loss durability; chapter 14
 states when that trade is acceptable, and chapter 6 states why a
@@ -574,6 +573,8 @@ normalization, relevance structure, manifest, and hashes.
 against an exact float32 scan on every run. This proves search
 mechanics, not neural-model quality. The offline GME/Qwen 2B harness is
 retained for later text/image qualification; audio remains unclaimed.
+
+#search_bench_table()
 
 == What this release does not verify
 
