@@ -23,12 +23,12 @@ each contract precisely enough to check a hex dump against it. Two
 conventions hold everywhere. Integers are little-endian unless a field says
 otherwise. Every hash is SHA-256.
 
-One caveat bounds the contract. The ZDS 0011 release was a clean format
-cut with no bridge: journal format 2, wire protocol 9, and the durable
-state anchor replaced their predecessors outright. Legacy artifacts —
+One caveat bounds the contract. The 0.7.0 release is a clean format cut with
+no bridge: journal format 3, wire protocol 10, and trim identities derived
+from chosen slots replace their predecessors outright. Legacy artifacts —
 a `paxos-*.log` journal, a `CURRENT` pointer, a `ZXP2` checkpoint
 proof — are not read; a node opening a directory that holds one fails
-closed as unsupported, and wire version 9 speaks only to version 9.
+closed as unsupported, and wire version 10 speaks only to version 10.
 
 == Payload ("ZXPL")
 
@@ -59,7 +59,7 @@ must tile the frame range in order, with no gap and no overlap. Each
 transaction must end on a commit frame. A payload that fails any check is
 rejected before Paxos state may reference it.
 
-== Journal segment ("ZXS2", "ZXR2", "ZXT2")
+== Journal segment ("ZXS3", "ZXR3", "ZXT3")
 
 The `consensus/` directory holds the lifetime journal as immutable
 segments plus one active segment, each named `{x:0>16}.zxj` by its first
@@ -67,8 +67,8 @@ global slot. Names are hints; the header and the manifest are the
 authority. The 64-byte segment header:
 
 #field_table(
-  [0 / 4], [`magic`], [`0x3253585a` ("ZXS2")],
-  [4 / 1], [`version`], [2],
+  [0 / 4], [`magic`], [`0x3353585a` ("ZXS3")],
+  [4 / 1], [`version`], [3],
   [5 / 3], [reserved], [zero],
   [8 / 16], [`database_id`], [must match the node's identity],
   [24 / 8], [`first_global_slot`], [the first slot this segment covers],
@@ -80,8 +80,8 @@ Records follow, each framed so replay can tell a torn tail from
 corruption:
 
 #field_table(
-  [0 / 4], [`magic`], [`0x3252585a` ("ZXR2")],
-  [4 / 1], [`version`], [2],
+  [0 / 4], [`magic`], [`0x3352585a` ("ZXR3")],
+  [4 / 1], [`version`], [3],
   [5 / 1], [`kind`], [write tag: promise 0, accept 1, commit 2,
     trim_anchor 3],
   [6 / 2], [reserved], [zero],
@@ -100,7 +100,7 @@ stop sign carrying a configuration id, the members, and the metadata
 string. A segment seals at 16,384 records with a trailer:
 
 #field_table(
-  [0 / 4], [`magic`], [`0x3254585a` ("ZXT2")],
+  [0 / 4], [`magic`], [`0x3354585a` ("ZXT3")],
   [4 / 8], [`last_global_slot`], [greatest slot in the segment],
   [12 / 8], [`record_count`], [records between header and trailer],
   [20 / 16], [`max_promised`], [ballot rollup: the highest promise or
@@ -122,22 +122,22 @@ rollup is load-bearing: promise records carry no slot, so once trimming
 unlinks the segments that held them, only this rollup — carried forward
 by the manifest — keeps a restarted acceptor from promising backwards.
 
-== Journal manifest ("ZXM2")
+== Journal manifest ("ZXM3")
 
 `consensus/MANIFEST` names the current segment generation. It is
 replaced atomically on every rotation and trim; a file the manifest
 does not name is garbage.
 
 #field_table(
-  [0 / 4], [`magic`], [`0x324d585a` ("ZXM2")],
-  [4 / 2], [`version`], [2],
+  [0 / 4], [`magic`], [`0x334d585a` ("ZXM3")],
+  [4 / 2], [`version`], [3],
   [6 / 2], [reserved], [zero],
   [8 / 8], [`generation`], [monotonic manifest generation],
   [16 / 16], [`database_id`], [must match the node's identity],
   [32 / 16], [`max_promised`], [ballot rollup across deleted history
     plus the retained run],
   [48 / 8], [`chosen_through`], [the writer's chosen prefix],
-  [56 / 8], [`trim_id`], [the adopted trim's monotonic id],
+  [56 / 8], [`decision_slot`], [global slot of the chosen trim command],
   [64 / 8], [`trimmed_through`], [the durable trim anchor slot],
   [72 / 32], [`trim_history_hash`], [history hash at the trim anchor],
   [104 / 8], [`active_first_slot`], [first slot of the active segment],
@@ -190,10 +190,10 @@ replaced atomically.
 
 #field_table(
   [0 / 4], [`magic`], [`0x5254585a` ("ZXTR")],
-  [4 / 2], [`version`], [1],
+  [4 / 2], [`version`], [2],
   [6 / 2], [reserved], [zero],
-  [8 / 8], [`trim_id`], [monotonic; a same-id different-anchor record
-    is corruption],
+  [8 / 8], [`decision_slot`], [global slot of the chosen trim command;
+    a same-slot different-anchor record is corruption],
   [16 / 8], [`through_slot`], [every slot at or below it is chosen],
   [24 / 32], [`history_hash`], [history hash at the trim anchor],
   [56 / 8], [`configuration_id`], [configuration that chose the trim],
@@ -242,16 +242,16 @@ recovery, not a Byzantine proof.
 == Identity file
 
 ```text
-format=2
+format=3
 node_id=<decimal>
 database_id=<32 hex>
 configuration_id=<decimal>
 role=<data-voter|witness|standby|read-replica>
 ```
 
-Format 1 omitted `role`. A node reads such a file as `data-voter` and
-upgrades it to format 2 on the next identity write. Opening a directory
-under a different role is refused. That refusal protects safety. A restart
+Formats 1 and 2 are rejected as unsupported. There is no role-defaulting or
+migration path; all members must be recreated together for 0.7.0.
+Opening a directory under a different role is refused. That refusal protects safety. A restart
 must never silently turn a voter into a learner, or the reverse. Gateways
 keep no identity file because they hold no state.
 
@@ -416,19 +416,21 @@ default on backup downloads.
     len:u16, bytes`: chosen journal evidence for a bounded range.],
 )
 
-The current `hello` version is 9, the ZDS 0011 format cut: 64-bit
+The current `hello` version is 10. It makes the chosen global command slot
+the trim identity and deliberately shares no frames with version 9. Version
+9 was the ZDS 0011 format cut: 64-bit
 global slots on every frame, the chunked `promise_range` phase-one
 reply, bounded range recovery, durable-state reports, and the
 anchor-pinned state transfer with its history probe. It shares no frame
 encodings with version 8 and there is deliberately no bridge. Older
 versions are rejected outright, never silently downgraded: acceptance
-stays exact-major, so version 9 speaks only to version 9. Earlier
+stays exact-major, so version 10 speaks only to version 10. Earlier
 versions added, in order: the storage-ACK gate and promise payload
 gating (2), mutual authentication and backup streaming (3), certified
 learner delivery and freshness heartbeats (4), quorum-confirmed
 transfer (5), the bounded one-time token/CSR enrollment exchange (6),
 the decided registry transfer (7), and `installation_ready` (8). The
-enrollment exchange is unchanged in v9: a certificate-less TLS
+enrollment exchange is unchanged in v10: a certificate-less TLS
 connection is accepted only by a deliberately configured issuer, only
 for connection kind 2, and only for the single bounded request; the
 opaque owner-only `ZXET` bundle binds the random token to the CA,
@@ -459,7 +461,7 @@ A `Command` encodes into a fixed 153-byte canonical form: one tag byte, two
 be zero, and decode enforces that padding. Tag 0 is `noop`. Tag 1 is
 `transaction_batch` and uses every descriptor field in order. Tag 2 is
 `read_barrier` and uses the nonce. Tag 3 is `trim`
-(`trim_id:u64, through_slot:u64, history_hash:[32]u8,
+(`through_slot:u64, history_hash:[32]u8,
 configuration_id:u64, policy:u8`, where 0, all data replicas, is the
 only valid v1 policy). Tag 4 is `transfer_lease` and tag 5 is
 `lease_complete`, the reserved lease entries no v1 path proposes.

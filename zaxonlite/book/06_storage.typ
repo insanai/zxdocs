@@ -259,10 +259,10 @@ this check is provably the image the log describes.
 Global slots are `u64` and never reset, so the journal is one lifetime
 structure, not a file per configuration. It lives in `consensus/` as a
 run of immutable sealed segments plus one active segment. A segment is
-named by its first global slot (`{x:0>16}.zxj`), starts with a `ZXS2`
+named by its first global slot (`{x:0>16}.zxj`), starts with a `ZXS3`
 header binding the database identity and that first slot, and carries
 framed, CRC-checksummed records. When the active segment reaches its
-record capacity (16,384 records), the writer seals it with a `ZXT2`
+record capacity (16,384 records), the writer seals it with a `ZXT3`
 trailer — last slot, record count, a sparse slot index, a digest over
 the whole file, and a `max_promised` ballot rollup — publishes a new
 `MANIFEST` generation naming it, syncs the directory, and only then

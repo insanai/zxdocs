@@ -810,13 +810,15 @@ $H_(G_("candidate"))$. The leader may then propose one ordinary Paxos entry:
 
 ```text
 Trim {
-    trim_id: u64
     through_slot: u64
     history_hash: [32]u8
     configuration_id: u64
     policy: all_data_replicas
 }
 ```
+
+The chosen global slot containing this command is its trim decision identity;
+the identity is not redundantly serialized in the command.
 
 Once chosen, $G$ advances. The chosen record is the cluster-wide Phase-1
 anchor; it is not a certificate that bytes have already been deleted. Each
@@ -2176,6 +2178,29 @@ is applied (the read fence slot is at least `leaderBase - 1`), and keeps a
 leader that is still behind in range recovery with this record's transfer
 as the fallback; installing a transfer demotes the leader. A chain
 mismatch on a decided batch stays fatal and now names the failing check.
+
+== Amendment: serialized host trim proposals and slot identity
+
+The abstract atomic `ChooseTrim` action is refined by the host sequence
+`ComputeCandidate -> ProposeTrim -> ChooseLogSlot -> Deliver -> AdoptTrim`.
+The leader computes a candidate only while its applied frontier is settled at
+the proposal frontier. Appending the trim immediately makes that predicate
+false, so repeated ticks, envelope pumps, delayed votes, and leadership
+takeover cannot enqueue a second trim before the first is delivered. A
+successor first applies an inherited trim and only then computes another.
+At a configuration handover, surviving data replicas publish an anchor under
+the new configuration identity. A fresh later-generation replacement installs
+that anchor before range recovery, so it never re-hashes old slots under the
+new configuration number.
+
+The trim command carries no allocated counter. Its chosen global Paxos slot
+is the durable decision identity stored in `TRIM` and the journal manifest and
+adapted into paxos-zig's `TrimAnchor.trim_id`. Exact replay is idempotent;
+older decision slots are stale; every later decision must strictly advance
+`through_slot`. This makes a same-identity/different-anchor pair impossible
+without journal corruption. `specs/HostTrim.tla` checks this host refinement
+and its three deliberate-bug configurations reproduce the missing-guard,
+counter-identity, and non-advancing-decision failures.
 
 = References
 
