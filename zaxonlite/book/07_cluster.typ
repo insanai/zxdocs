@@ -138,6 +138,11 @@ The lifecycle rides ordinary chosen entries on the same global slot line:
   Admission rejects its node ID even with a still-valid certificate, and
   the monotonic node-ID allocation fence retires the ID forever.
 
+A fresh materializing voter whose identity names configuration 2 or later but
+has neither applied state nor a durable `JOIN` descriptor is refused at open.
+It must be re-enrolled from the decided replacement; otherwise it has no safe
+certified base from which to vote or recover.
+
 While the replacement catches up it reports a zero durable frontier, so
 the conservative trim freezes at the handover: the history the joiner
 needs cannot be reclaimed under it.

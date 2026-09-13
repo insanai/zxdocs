@@ -2067,12 +2067,16 @@ row multiset and application chain hash, accept writes, and survive its
 own restart. The whole join runs on an otherwise idle cluster, so the
 leaderless recovery probes below are themselves under test.
 
-Building the scenario found two liveness gaps, neither a safety one.
-First, a stateless joining voter could win the election, and catch-up
-and snapshot escalation both ran against the leader, so leadership
-starved its own recovery forever; a joining data voter with nothing
-applied now withholds campaigning (it still votes) until state applies.
-Second, a held joiner could not learn the leader on an idle cluster --
+Building the scenario found one safety gap and two liveness consequences.
+A stateless joining voter could process Paxos envelopes before installing its
+certified base. It could cast an accepted vote above the eventual transfer
+anchor, then `beginRecovery` would clear that window cell during installation,
+forgetting a possible member of a choosing quorum. The durable `JOIN` marker now
+blocks every ordinary Paxos envelope, including votes, until APPLIED publishes
+the transferred anchor. It also withholds campaigning so leadership cannot
+starve recovery. A fresh later-configuration voter without that descriptor
+fails closed rather than entering an unrecoverable hold. Finally, a held joiner
+could not learn the leader on an idle cluster --
 heartbeats above its zero promise are ignored until a first accepted
 vote arrives, and an idle cluster sends no accepts -- so recovery
 depended on an application write. The joiner now probes the decided
@@ -2194,8 +2198,8 @@ takeover cannot enqueue a second trim before the first is delivered. A
 successor first applies an inherited trim and only then computes another.
 At a configuration handover, surviving data replicas publish an anchor under
 the new configuration identity. A fresh later-generation replacement installs
-that anchor before range recovery, so it never re-hashes old slots under the
-new configuration number.
+that anchor before consuming any Paxos envelope, so it neither votes before its
+certified base nor re-hashes old slots under the new configuration number.
 
 The trim command carries no allocated counter. Its chosen global Paxos slot
 is the durable decision identity stored in `TRIM` and the journal manifest and
