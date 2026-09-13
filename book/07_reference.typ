@@ -48,6 +48,9 @@
     answer that vouches the released prefix from the adopted anchor.],
 )
 
+`trim_id` is opaque to the core. Zaxonlite supplies the chosen trim command's
+global consensus slot, so one identity names exactly one ordered decision.
+
 Consume one batch as: append writes in order; sync the batch; call
 `confirmWritesDurable`; send messages; apply released entries in order. Do not
 call another transition before draining the batch. On append or sync failure,

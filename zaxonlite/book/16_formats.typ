@@ -250,10 +250,10 @@ role=<data-voter|witness|standby|read-replica>
 ```
 
 Formats 1 and 2 are rejected as unsupported. There is no role-defaulting or
-migration path; all members must be recreated together for 0.7.0.
-Opening a directory under a different role is refused. That refusal protects safety. A restart
-must never silently turn a voter into a learner, or the reverse. Gateways
-keep no identity file because they hold no state.
+migration path; all members must be recreated together for 0.7.0. Opening a
+directory under a different role is refused. That refusal protects safety: a
+restart must never silently turn a voter into a learner, or the reverse.
+Gateways keep no identity file because they hold no state.
 
 == Decided registry ("ZXRG")
 

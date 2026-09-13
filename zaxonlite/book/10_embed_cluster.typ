@@ -116,6 +116,13 @@ redirect hint each declining member returns. It retries for up to
 twelve attempts with 150 ms pauses, which is enough to ride out an
 election. After that it gives up with `error.NoLeaderReachable`.
 
+`localServerState()` is different from an RPC status call: it reads only this
+facade's completion, exit, shutdown, and first-failure atomics. It returns
+`healthy`, `stopping`, `stopped: exit_code`, or `failed: error_name`. Once the
+local member fails, `exec`, `query`, and `call` return
+`error.LocalNodeFailed` instead of hiding that member behind a healthy peer;
+a cleanly finished member returns `error.LocalNodeStopped`.
+
 #transcript((
   [1], [You], [Call `exec` on member 2's facade. Member 2 is not the
     leader, but you do not need to know that.],

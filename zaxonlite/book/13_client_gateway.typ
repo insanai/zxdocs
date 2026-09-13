@@ -205,7 +205,8 @@ These four ops take no request fields beyond `op` itself.
 `role`, `node_type`, `leader`, `phase`, `quorum_available`,
 `installation_state`, `ballot` (an object with `round`, `priority`, and
 `node`), `decided_slot`, `applied_slot`, `durable_state_slot`,
-`memory_floor`, `chosen_trim_slot`, `retained_first_slot`,
+`memory_floor`, `trim_decision_slot`, `chosen_trim_slot`, `trim_ignored`,
+`retained_first_slot`,
 `journal_records`, `journal_segment_count`, `journal_bytes`, `chain`,
 `page_size`, the search capability manifest
 (`fts5_enabled`, `sqlite_vec_version`, `search_feature_version`,
@@ -218,7 +219,11 @@ membership fields are defined in the membership section below; on a
 registry-less host `phase` is `idle` and `installation_state` is
 `not-applicable`. `status` describes
 the one node you asked, so it is the op you send with
-`require_leader = false` when you want a follower's view.
+`require_leader = false` when you want a follower's view. It also reports
+`health` (`healthy`, `stopping`, or `failed`) and the first `failure` name;
+failed status has `ok:false` and `quorum_available:false`. Fatal shutdown closes
+admission within one ticker interval, so this JSON may be observable only
+briefly; the process diagnostic and exit code 4 are the operator signal.
 
 `members` answers with `voter_membership:"decided"` on a registry-backed
 server and `voter_membership:"static"` on a registry-less local host,

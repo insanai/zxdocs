@@ -914,10 +914,13 @@ wall-clock guess. An expired receiver starts again from a new anchor.
   ),
 )
 
-Trim IDs are monotonic and idempotent. A lower trim is ignored after
-validation. A same-ID different-anchor record is fatal corruption. Nodes may
-physically delete at different times. `chosen_trim_slot`, `local_delete_floor`,
-and `retained_first_slot` are reported separately.
+The chosen trim command's global log slot is its decision identity. Exact replay
+at that slot is idempotent; an older decision slot, or a later decision that
+authorizes no additional deletion, is diagnosed and ignored. A twin with
+different content at one decision slot, or different history/configuration at
+the installed trim frontier, is fatal divergence. Nodes may physically delete
+at different times. `trim_decision_slot`, `chosen_trim_slot`,
+`local_delete_floor`, and `retained_first_slot` are reported separately.
 
 == Deferred quorum trim as one order statistic
 
@@ -1445,7 +1448,7 @@ message delivery and successful durable writes.
 - split phase-one replies at every chunk boundary and reorder chunks;
 - make an entire Phase-1 quorum contain only trimmed acceptors and verify that
   the new leader never fills the anchored prefix;
-- inject gaps, duplicates, stale tags, stale trim IDs, conflicting anchors,
+- inject gaps, duplicates, stale tags, stale trim decision slots, conflicting anchors,
   and near-`u64` overflow;
 - compare in-memory continuation with crash/restart at every segment rotation;
 - vary data voters and witnesses; prove witnesses never report durable
@@ -2196,11 +2199,12 @@ new configuration number.
 The trim command carries no allocated counter. Its chosen global Paxos slot
 is the durable decision identity stored in `TRIM` and the journal manifest and
 adapted into paxos-zig's `TrimAnchor.trim_id`. Exact replay is idempotent;
-older decision slots are stale; every later decision must strictly advance
-`through_slot`. This makes a same-identity/different-anchor pair impossible
-without journal corruption. `specs/HostTrim.tla` checks this host refinement
-and its three deliberate-bug configurations reproduce the missing-guard,
-counter-identity, and non-advancing-decision failures.
+older decision slots and later records that authorize no more deletion are
+diagnosed and ignored. A decision-slot twin or conflicting history at the same
+trim frontier is fatal divergence. This makes a same-identity/different-anchor
+pair impossible without journal corruption. `specs/HostTrim.tla` checks this
+host refinement and its three deliberate-bug configurations reproduce the
+missing-guard, counter-identity, and unsafe non-advancing-adoption failures.
 
 = References
 

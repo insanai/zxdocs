@@ -446,9 +446,12 @@ accepted: `--connect unix:<path>`, the `connect` configuration field, or
 
 `status --json` is the machine surface. It reports `node_type`, the Paxos
 `role`, the current leader, `decided_slot`, `applied_slot`, and
-`durable_state_slot`, the memory floor, `chosen_trim_slot` and
-`retained_first_slot`, the journal record, segment, and byte counts,
-and the chain hash. A served node also reports its ballot. Slot fields
+`durable_state_slot`, the memory floor, `trim_decision_slot`,
+`chosen_trim_slot`, `trim_ignored`, and `retained_first_slot`, the journal
+record, segment, and byte counts, and the chain hash. A served node also
+reports its ballot, `health`, and the first `failure` name. Fatal status may be
+reachable for less than one tick before admission closes; the terminal
+diagnostic and exit code 4 are the operator signal. Slot fields
 are unsigned 64-bit integers; parse them as such, not as doubles. In client mode,
 `members --json` returns the runtime registry with one entry per node: id,
 address, role, the capability flags (`votes`, `campaigns`, `stores_log`,

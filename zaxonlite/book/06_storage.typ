@@ -279,6 +279,12 @@ Chapter 16 gives the exact byte layouts. The v1 one-file-per-epoch
 journal (`paxos-*.log`) is not read; a directory holding one fails
 closed as unsupported.
 
+The 0.7.0 format cut has no in-place upgrade. Stop every member before touching
+storage, delete each member data directory (including `consensus/TRIM`, the
+segmented journal and manifest, `IDENTITY`, APPLIED anchors, payloads, and the
+SQLite image), then recreate every member together. Never mix a recreated
+member with a 0.6.x peer or copy selected old files into the new directory.
+
 Retained reads open each manifest-listed segment as a sealed segment,
 verify its digest, and stop at the record boundary before its trailer.
 This applies to image resynchronization after leadership loss, restart
