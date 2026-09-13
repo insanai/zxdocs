@@ -130,10 +130,10 @@ The lifecycle rides ordinary chosen entries on the same global slot line:
 + The replacement voter enrolls only after the stop is chosen. It
   fetches the decided registry blob from a peer, verifies it against the
   digest recorded in its `JOIN` descriptor at enrollment, installs it
-  durably, and then catches up from the retained journal through
-  bounded range recovery. Only a gap beyond journal retention uses the
-  anchor-pinned state transfer described below. It votes only after its
-  state is installed.
+  durably, and installs a survivor's anchor-pinned state transfer before
+  consuming the retained suffix. The durable `JOIN` marker holds voting,
+  campaigning, and ordinary Paxos envelopes until that APPLIED anchor is
+  published, and survives a crash anywhere in the registry/transfer sequence.
 + The removed voter stays permanently sealed on its final configuration.
   Admission rejects its node ID even with a still-valid certificate, and
   the monotonic node-ID allocation fence retires the ID forever.
@@ -347,7 +347,10 @@ leader replays voter-certified chosen entries.
 Behind the cluster trim, the retained journal is not enough: the history
 the member needs has been physically deleted. The member requests a
 full-image state transfer instead, and the sender declines it while
-range recovery would still do the job. The sender pins a fresh durable
+range recovery would still do the job. A fresh replacement entering a later
+configuration also requires the transfer even when history is retained from
+genesis, because the anchor establishes its inherited history base before it
+processes Paxos envelopes. The sender pins a fresh durable
 anchor: it checkpoints, synchronizes `current.db`, publishes the anchor,
 and makes a private byte-exact copy of the image while holding the
 writer mutex. It streams the decided registry blob first (a joining

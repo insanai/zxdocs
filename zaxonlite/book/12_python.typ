@@ -264,6 +264,13 @@ with start_server(
         db.execute("create table item(id integer primary key)")
 ```
 
+`Server.state()` returns `ServerState.HEALTHY`, `STOPPING`, `STOPPED`, or
+`FAILED` from the hosted member itself, while `server.failure` carries the
+first native error name. After local failure, `server.endpoint` and
+`server.close()` raise `OperationalError` in the availability category;
+`close()` still joins the server thread and releases the native handle before
+raising.
+
 A single member with a `unix:` address serves one local node over an
 owner-only socket (mode 600), exactly as `zaxon serve --listen unix:`
 does in chapter 14: the filesystem is the authorization boundary, a

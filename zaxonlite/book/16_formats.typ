@@ -324,7 +324,8 @@ phase=<prepared|proposed>
 `JOIN` is the one-shot join descriptor that `zaxon enroll --data <dir>`
 writes into a replacement node's fresh data directory. It tells the first
 `serve` which database and configuration to join and which registry digest
-to demand:
+to demand. The record remains authoritative across restart until the node
+durably publishes the APPLIED anchor for its transferred base image:
 
 ```text
 format=1

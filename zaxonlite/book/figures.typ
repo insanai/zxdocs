@@ -243,6 +243,18 @@
   ]
 }
 
+#let trim_soak_table() = {
+  let data = json("../../../zaxonlite/benchmarks/results/trim-soak-latest.json")
+  table(
+    columns: (auto, auto, auto, auto, auto),
+    table.header(
+      [*Duration*], [*Writes*], [*Decision slot*], [*Trim through*], [*Retained first*],
+    ),
+    [#data.duration_seconds s], [#data.writes], [#data.trim_decision_slot],
+    [#data.chosen_trim_slot], [#data.retained_first_slot],
+  )
+}
+
 #let bench_realworld_table() = {
   let data = json("../../../zaxonlite/benchmarks/results/realworld-latest.json")
   let zx = data.results.zaxonlite

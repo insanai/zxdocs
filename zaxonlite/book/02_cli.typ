@@ -290,7 +290,8 @@ generously. Chapter 8 covers sizing.
 `status` on an embedded node prints an aligned field list: node id, database
 id, configuration id, role, node type, the decided, applied, and durable
 slots, the core memory floor, the trimmed-through and retained-first slots,
-journal records, segments, and bytes, the chain hash, and page size.
+the trim decision slot and ignored-trim count, journal records, segments, and
+bytes, the chain hash, and page size.
 Against a server, `status` and `members` print
 the raw JSON response even without `--json`; the server's answer includes
 fields such as the current ballot that the embedded view does not have.
@@ -512,7 +513,8 @@ $ zaxon status --data ./mydb --json
 {"node_id":1,"database_id":"a13f203d26d80813d0834ff231269878",
  "configuration_id":1,"role":"leader","node_type":"data-voter","leader":1,
  "decided_slot":7,"applied_slot":7,"durable_state_slot":0,
- "memory_floor":7,"chosen_trim_slot":0,"retained_first_slot":1,
+ "memory_floor":7,"trim_decision_slot":0,"chosen_trim_slot":0,
+ "trim_ignored":0,"retained_first_slot":1,
  "journal_records":31,"journal_segment_count":1,"journal_bytes":4213,
  "chain":"8f6a...94f8f","history":"c01d...77aa","page_size":4096,...}
 ```

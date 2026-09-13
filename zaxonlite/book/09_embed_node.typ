@@ -295,7 +295,8 @@ definition current, so every read is linearizable.
     one-member node it also chooses the degenerate trim and reclaims
     inline. `maybeCreateStateAnchor()` is the cadence-aware form the
     server pump calls: it anchors promptly after the first applied
-    write, then every 10,000 slots. No write may be in flight
+    write, then every 10,000 applied slots while transaction state has
+    advanced. No write may be in flight
     (`error.WriteInFlight`).],
   [`proposeTrim(candidate)` / `reclaim()` / `frontier()`], [The
     cluster-host trimming surface. `frontier()` reports this replica's

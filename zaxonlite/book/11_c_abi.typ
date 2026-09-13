@@ -359,7 +359,9 @@ a startup failure requests shutdown before joining the background thread.
 `zaxonlite_cluster_state(handle, failure, capacity)` observes only the hosted
 member: 0 is healthy, 1 stopping, 2 stopped, and 4 failed. On failure it copies
 the first error name into the bounded optional buffer. The symbol is additive;
-existing return codes and option-struct layouts are unchanged.
+existing return codes and option-struct layouts are unchanged. A null handle,
+or a null failure buffer paired with a nonzero capacity, returns the misuse
+code.
 
 == The remote client
 

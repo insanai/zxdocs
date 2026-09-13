@@ -53,7 +53,9 @@ configuration's membership, and the `REGISTRY` pointer names the active
 one; both are authoritative, the same way the journal is. `PENDING-OP`
 holds the one in-flight replacement request, and `JOIN` is the one-shot
 join descriptor `zaxon enroll --data <dir>` writes on an enrolling
-replacement, consumed on first start. All four use the same atomic
+replacement. It remains durable across registry-fetch and transfer crashes
+and is consumed only after the replacement publishes its installed APPLIED
+anchor. All four use the same atomic
 write-sync-rename discipline as the journal `MANIFEST`. Deleting `PENDING-OP` or
 `JOIN` renames it to the `.ZX-DELETED` tombstone first, so the removal
 itself can be flushed on every platform; a leftover tombstone is
@@ -298,13 +300,19 @@ has no trailer and is read only through its current written boundary.
 The journal cannot grow forever, and replaying a lifetime of history at
 startup would not be acceptable either. The durable state anchor solves
 both. Periodically — promptly after the first applied write, then every
-10,000 slots — a data replica checkpoints the SQLite WAL into
+10,000 applied slots — a data replica with new transaction state checkpoints
+the SQLite WAL into
 `current.db`, synchronizes the file, and publishes an `APPLIED` record
 binding the applied global slot, the history hash at that slot, the
 page geometry, and the batch-chain cursor. The two files `APPLIED.0`
 and `APPLIED.1` alternate by generation, so one valid record always
 survives a torn write; recovery selects the newest valid one and
 replays only the suffix above it.
+
+Periodic anchors require the materialized transaction frontier to advance;
+trim and other maintenance commands do not create an idle anchor/trim feedback
+loop. A configuration handover publishes its required anchor directly even when
+no page changed.
 
 The anchor never copies or hashes the whole database. Its cost is the
 dirty pages the checkpoint folds in plus two synchronized small writes,

@@ -87,6 +87,9 @@ tail. So we keep both, and everything between.
     rebuild-convergence oracle?], [`zig build fuzz`],
   [Soak], [Does sustained mixed load, with restarts and state anchors,
     ever drift from a live row-count model?], [`zig build soak`],
+  [Trim soak], [Do three real loopback members sustain writes and fast
+    anchors with monotonic trims, converge, reclaim, restart, and continue?],
+    [`zig build test-trim-soak`],
   [Benchmark], [What do writes, reads, recovery, and rebuild cost in
     ReleaseFast on this machine?], [`zig build benchmark`],
   [Cluster benchmark], [What do replicated writes and reads cost across
@@ -124,6 +127,24 @@ explicitly deferred CI gate, not a result this release claims. The
 rqlite and dqlite comparison harnesses are scripts under
 `zaxonlite/benchmarks/`, not build steps. They appear in the measured
 section below.
+
+== Recorded trim soak
+
+The 0.7.0 trim soak ran three real loopback server processes for 60 seconds
+with a 200 ms anchor cadence and 256-record journal segments. It watches every
+member's chosen trim and trim decision slots for regression, requires healthy
+status throughout, then checks byte-identical `TRIM` files, equal digests,
+clean integrity, physical prefix reclamation, exact acknowledged row count,
+full-cluster restart, and one successful post-restart write.
+
+#trim_soak_table()
+
+The recorded 13 September 2026 Apple M1 macOS run committed 3,031 writes with
+no trim regression. The final trim decision was 3,778, its through slot was
+3,776, and the retained journal began at 3,729. The machine-readable record is
+`benchmarks/results/trim-soak-latest.json`. This is a correctness soak, not a
+throughput claim; reproduce it with `zig build test-trim-soak` and change the
+duration with `-Dtrim-soak-seconds=N`.
 
 == The mandatory cluster scenario
 

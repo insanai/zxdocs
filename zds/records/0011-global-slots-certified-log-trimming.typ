@@ -1737,7 +1737,7 @@ boundaries now.
     [Segment capacity: 64 MiB (`64 * 1024 * 1024` bytes). Sparse-index stride: $k = 64$ slots.],
     [64 MiB matches modern NVMe erase-block allocation, bounds directory entry counts (a 1 TB log is 16,384 files), avoids long rotation syncs, and matches the 64 MiB wire frame ceiling. A 64-slot stride requires under 4 KB of index per segment (one memory page) for sub-microsecond binary search.],
     [Q5: Applied state anchor cadence],
-    [Periodic checkpoint every 30 seconds, or every 10,000 committed slots, or when uncheckpointed WAL reaches 64 MiB. _v1 ships all three triggers;_ the 80%-soft-retention acceleration is deferred with the time/byte horizon it keys on.],
+    [Periodic checkpoint every 30 seconds, or every 10,000 committed slots, or when uncheckpointed WAL reaches 64 MiB, provided materialized transaction state advanced. Configuration handover publishes its required anchor directly. _v1 ships all three triggers;_ the 80%-soft-retention acceleration is deferred with the time/byte horizon it keys on.],
     [Bounds the uncheckpointed recovery lag $E_i - A_i$ while holding SQLite WAL checkpoint and `APPLIED.0/1` barrier overhead to under 1% of write duty cycle on NVMe drives.],
     [Q6: CI performance gate],
     [Shipped contract: absolute Hodges–Lehmann bounds at $n = 64$ raw samples -- $<= 3%$ for in-memory workloads, $<= 5%$ for durable ones, no fsync normalization (recorded runs pin the host). _Future, labelled for shared CI:_ a $<= 10%$ non-inferiority margin normalized against a baseline `fsync` calibration loop, for when the gate runs on virtualized runners with noisy storage.],
@@ -1853,16 +1853,17 @@ backwards after replay.
 
 Trim proposals are not rate-limited by a hysteresis band. The conservative
 candidate only moves when a data replica publishes a new durable anchor,
-so the anchor cadence already bounds trim frequency; a separate band added
-a tunable without adding a property.
+and periodic anchors require transaction progress, so the anchor cadence
+already bounds trim frequency without feeding on trim commands themselves;
+a separate band added a tunable without adding a property.
 
 == The first anchor publishes promptly
 
 A node with no durable anchor recovers from genesis, so
-`maybeCreateStateAnchor` fires as soon as anything is applied, and the
-slot-interval cadence (10,000 slots) governs afterwards. This also makes
-trimming live: the conservative trim needs every data replica to have
-reported a nonzero durable frontier.
+`maybeCreateStateAnchor` fires as soon as the first transaction is applied,
+and the slot-interval cadence (10,000 applied slots with transaction progress)
+governs afterwards. This also makes trimming live: the conservative trim needs
+every data replica to have reported a nonzero durable frontier.
 
 == Conservative trim subsumes transfer leases in v1
 

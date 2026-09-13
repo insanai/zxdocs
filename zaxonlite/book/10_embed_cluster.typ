@@ -122,6 +122,10 @@ facade's completion, exit, shutdown, and first-failure atomics. It returns
 local member fails, `exec`, `query`, and `call` return
 `error.LocalNodeFailed` instead of hiding that member behind a healthy peer;
 a cleanly finished member returns `error.LocalNodeStopped`.
+The process server exits with code 4 within one maintenance tick of a terminal
+failure, so an RPC may expose `health: failed` only briefly before admission
+closes. Embedded hosts should use `localServerState()` as the reliable local
+failure observation.
 
 #transcript((
   [1], [You], [Call `exec` on member 2's facade. Member 2 is not the
