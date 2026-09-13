@@ -139,12 +139,12 @@ full-cluster restart, and one successful post-restart write.
 
 #trim_soak_table()
 
-The recorded 13 September 2026 Apple M1 macOS run committed 3,031 writes with
-no trim regression. The final trim decision was 3,778, its through slot was
-3,776, and the retained journal began at 3,729. The machine-readable record is
-`benchmarks/results/trim-soak-latest.json`. This is a correctness soak, not a
-throughput claim; reproduce it with `zig build test-trim-soak` and change the
-duration with `-Dtrim-soak-seconds=N`.
+The table is compiled directly from the checked-in machine-readable record at
+`benchmarks/results/trim-soak-latest.json`, written only after every assertion
+and the post-restart write succeed via
+`zig build test-trim-soak -- --record benchmarks/results/trim-soak-latest.json`.
+This is a correctness soak, not a throughput claim; change the duration with
+`-Dtrim-soak-seconds=N`.
 
 == The mandatory cluster scenario
 
