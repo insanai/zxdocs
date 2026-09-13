@@ -372,14 +372,14 @@ leadership — visible as occasional large maxima — which is exactly the
 behavior an operator should expect from a workload that saturates a
 full-flush storage budget.
 
-== Measured against rqlite
+== Measured against replicated SQLite peers
 
 Benchmarks are the easiest place for a book to lie, so this dashboard
 states its scope before it shows a number.
 
 #bench_boxes()
 
-Every number in the two tables below is read from recorded result
+Every number in the tables below is read from recorded result
 files under `zaxonlite/benchmarks/results/` when the book is built.
 We never copy a measured number into prose. If prose and table ever
 disagreed, the table would be right.
@@ -476,6 +476,11 @@ directories, and checks every local copy.
 
 #bench_realworld_table()
 
+In this Linux recording rqlite is substantially faster in the healthy and
+follower-down phases, while zaxonlite reaches the first post-leader-crash
+success sooner and restores the full cluster sooner. Those are observations
+of this host and run, not a claim that one implementation dominates the other.
+
 Walk the rows top to bottom. The healthy row is each product's mixed
 throughput ceiling on this host. The follower-down row shows what a
 quorum can still do with a member missing. The leader-killed row is
@@ -498,29 +503,49 @@ and every SQLite integrity check came back clean. Zaxonlite
 additionally passed its chain and payload-store verification. A
 throughput table without those checks would be noise.
 
+=== Linux dqlite comparison
+
+The Linux host also ran the narrower sequential-write harness against
+dqlite. This is the same one-client, one-row-autocommit shape as the
+earlier write comparison, with three voters, 256-byte values, 100
+untimed warmup writes, and 1,000 measured writes. Both products retain
+durable quorum state in per-node directories; dqlite materializes
+SQLite in memory from its durable Raft state and snapshots, while
+Zaxonlite materializes its reproducible SQLite image from the Paxos
+journal.
+
+#bench_dqlite_table()
+
+This table does not extend the realistic failure-and-recovery comparison
+to dqlite. The current dqlite harness checks every measured value and
+reports sequential durable-write latency, but it does not kill members,
+measure elections or catch-up, or restart the whole cluster. Adding
+dqlite to those rows requires a separate lifecycle-aware harness.
+
 === What these numbers are not
 
 #callout(title: [Read the exclusions before quoting anything], tone: "warning")[
-  Everything above ran on one development host, over loopback, in one
-  recorded run per table, with one client in the write benchmark and
-  four in the simulation, against default configurations and a
-  development `zaxon` build. These numbers are observations of that
+  Each table above came from one development host, over loopback, in one
+  recorded run, with one client in the write benchmarks and four in the
+  simulation, against default configurations and a
+  ReleaseFast `zaxon` build. These numbers are observations of that
   run. They are not portable claims, not service-latency predictions,
   and not verdicts about languages or consensus algorithms. Real
   networks, concurrent client fleets, and tuned deployments are all
   excluded.
 ]
 
-Two omissions are deliberate. The initial rqlite bootstrap time is
+Two limitations are deliberate. The initial rqlite bootstrap time is
 not reported, because the manual join path sat out its default
 three-second retry interval; charging a timer as if it were work
-would be unfair. And the dqlite comparison is deferred entirely. Its
-harness is committed at `benchmarks/compare-dqlite-3node.sh`, but
-dqlite is supported on Linux, so no dqlite number appears anywhere in
-this book until the script has run on a Linux host.
+would be unfair. And dqlite appears only in the sequential-write table:
+the harness at `benchmarks/compare-dqlite-3node.sh` has now run on Linux,
+but it does not implement the realistic workload's crash schedule.
 
 To reproduce, run `benchmarks/compare-rqlite-3node.sh` and
-`benchmarks/compare-rqlite-realworld-3node.py`. Each writes JSON
+`benchmarks/compare-rqlite-realworld-3node.py`, or run
+`benchmarks/compare-dqlite-3node.sh` on Linux with its pinned fixture.
+Each writes JSON
 under `benchmarks/results/`, and rebuilding the book re-renders the
 dashboard from your run.
 

@@ -297,39 +297,72 @@
 
 #let bench_realworld_table() = {
   let data = json("../../../zaxonlite/benchmarks/results/realworld-latest.json")
-  let zx = data.results.zaxonlite
-  let rq = data.results.rqlite
+  let zx = data.results.find(result => result.system == "zaxonlite")
+  let rq = data.results.find(result => result.system == "rqlite")
+  let phase(result, name) = result.phases.find(phase => phase.name == name)
+  let leader(result) = phase(result, "leader_crashed")
+  let follower(result) = phase(result, "one_follower_crashed")
   let round1(value) = calc.round(value, digits: 1)
   [
     #table(
       columns: (1.55fr, auto, auto),
       table.header([*Order-processing phase*], [*Zaxonlite*], [*rqlite*]),
       [Healthy cluster, mixed reads and writes (ops/s)],
-        [#round1(zx.healthy_operations_per_second)],
-        [#round1(rq.healthy_operations_per_second)],
+        [#round1(phase(zx, "healthy").operations_per_second)],
+        [#round1(phase(rq, "healthy").operations_per_second)],
       [One follower down (ops/s)],
-        [#round1(zx.follower_down_operations_per_second)],
-        [#round1(rq.follower_down_operations_per_second)],
+        [#round1(follower(zx).operations_per_second)],
+        [#round1(follower(rq).operations_per_second)],
       [Leader killed, after failover (ops/s)],
-        [#round1(zx.leader_down_operations_per_second)],
-        [#round1(rq.leader_down_operations_per_second)],
+        [#round1(leader(zx).operations_per_second)],
+        [#round1(leader(rq).operations_per_second)],
       [Leader crash to first success (ms)],
-        [#round1(zx.leader_crash_to_first_success_ms)],
-        [#round1(rq.leader_crash_to_first_success_ms)],
+        [#round1(leader(zx).time_to_first_success_ms)],
+        [#round1(leader(rq).time_to_first_success_ms)],
       [Restarted follower catch-up (ms)],
-        [#round1(zx.restarted_follower_catch_up_ms)],
-        [#round1(rq.restarted_follower_catch_up_ms)],
+        [#round1(follower(zx).catch_up_ms)],
+        [#round1(follower(rq).catch_up_ms)],
       [Restarted leader catch-up (ms)],
-        [#round1(zx.restarted_leader_catch_up_ms)],
-        [#round1(rq.restarted_leader_catch_up_ms)],
+        [#round1(leader(zx).restarted_node_catch_up_ms)],
+        [#round1(leader(rq).restarted_node_catch_up_ms)],
       [Full cluster restart to service (ms)],
-        [#round1(zx.total_cluster_restart_ms)],
-        [#round1(rq.total_cluster_restart_ms)],
+        [#round1(zx.total_cluster_restart.recovery_ms)],
+        [#round1(rq.total_cluster_restart.recovery_ms)],
     )
     #text(size: 8pt, fill: gray)[
-      Recorded #data.run_at_utc.slice(0, 10) UTC.
-      Both systems finished with #data.correctness.zaxonlite.orders orders,
-      identical rows on every node, and clean integrity checks.
+      Recorded #data.run_at_utc.slice(0, 10) UTC on #data.host with
+      #data.tools.zaxon.version and rqlite v10.2.7. Both systems finished
+      with #zx.correctness.expected.orders orders, identical rows on every
+      node, and clean integrity checks.
     ]
+  ]
+}
+
+#let bench_dqlite_table() = {
+  let data = json("../../../zaxonlite/benchmarks/results/dqlite-latest.json")
+  let zx = data.results.find(result => result.system == "zaxonlite")
+  let dq = data.results.find(result => result.system == "dqlite")
+  let row(result) = (
+    [#result.system],
+    [#calc.round(result.operations_per_second, digits: 1)],
+    [#calc.round(result.latency_ms.p50, digits: 2)],
+    [#calc.round(result.latency_ms.p95, digits: 2)],
+    [#calc.round(result.latency_ms.p99, digits: 2)],
+    [#calc.round(result.latency_ms.max, digits: 2)],
+  )
+  [
+    #table(
+      columns: (1.2fr, auto, auto, auto, auto, auto),
+      table.header(
+        [*System*], [*writes/s*], [*p50 ms*], [*p95 ms*], [*p99 ms*], [*max ms*],
+      ),
+      ..row(zx),
+      ..row(dq),
+    )
+    #text(size: 8pt, fill: gray)[Recorded #data.run_at_utc.slice(0, 10) UTC
+      on #data.host with #data.tools.zaxon,
+      #data.pins.libdqlite.split(" ").at(0), and
+      #data.pins.go_dqlite.split(" ").at(0). #zx.operations writes per system;
+      every measured value was read back and verified.]
   ]
 }
