@@ -145,6 +145,8 @@ and the post-restart write succeed via
 `zig build test-trim-soak -- --record benchmarks/results/trim-soak-latest.json`.
 This is a correctness soak, not a throughput claim; change the duration with
 `-Dtrim-soak-seconds=N`.
+The acknowledged write count depends on concurrent host load, is recorded only
+as run context, and is neither compared across runs nor used as a release gate.
 
 == The mandatory cluster scenario
 

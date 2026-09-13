@@ -142,6 +142,9 @@ A fresh materializing voter whose identity names configuration 2 or later but
 has neither applied state nor a durable `JOIN` descriptor is refused at open.
 It must be re-enrolled from the decided replacement; otherwise it has no safe
 certified base from which to vote or recover.
+Conversely, a durable `JOIN` descriptor is accepted only for a data voter:
+replacement enrollment is a voting transition, not a way to bootstrap a witness,
+standby, or read replica.
 
 While the replacement catches up it reports a zero durable frontier, so
 the conservative trim freezes at the handover: the history the joiner
